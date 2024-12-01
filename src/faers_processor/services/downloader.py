@@ -1,5 +1,7 @@
 """Service for downloading FAERS data."""
+import concurrent.futures
 import logging
+import os
 import re
 import zipfile
 from abc import ABC, abstractmethod
@@ -11,8 +13,7 @@ import aiohttp
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-import concurrent.futures
-import io
+
 
 class DataDownloader(ABC):
     """Abstract base class for data downloading."""
@@ -32,7 +33,7 @@ class FAERSDownloader(DataDownloader):
     """FAERS specific data downloader implementation."""
 
     FAERS_BASE_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
-    
+
     def __init__(self, output_dir: Path):
         """Initialize the FAERS downloader.
         
@@ -53,11 +54,11 @@ class FAERSDownloader(DataDownloader):
             # Get the webpage content
             response = requests.get(self.FAERS_BASE_URL, timeout=30)
             response.raise_for_status()
-            
+
             # Parse HTML and find zip file links
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.find_all('a', href=True)
-            
+
             # Filter for ASCII zip files and normalize quarter format
             quarters = []
             for link in links:
@@ -69,9 +70,9 @@ class FAERSDownloader(DataDownloader):
                         # Ensure quarter is in lowercase format
                         quarter = filename.split('_ascii_')[1].replace('.zip', '').lower()
                         quarters.append(quarter)
-            
+
             return sorted(list(set(quarters)))  # Remove duplicates and sort
-            
+
         except Exception as e:
             logging.error(f"Error getting quarters list: {str(e)}")
             return []
@@ -85,15 +86,15 @@ class FAERSDownloader(DataDownloader):
         try:
             # Ensure quarter is in lowercase
             quarter = quarter.lower()
-            
+
             # Create quarter directory
             quarter_dir = self.output_dir / quarter
             quarter_dir.mkdir(exist_ok=True)
-            
+
             # Get the webpage content to find the correct URL
             response = requests.get(self.FAERS_BASE_URL, timeout=30)
             response.raise_for_status()
-            
+
             # Find the correct download link
             soup = BeautifulSoup(response.text, 'html.parser')
             download_url = None
@@ -102,41 +103,41 @@ class FAERSDownloader(DataDownloader):
                 if f'ascii_{quarter}.zip' in href:
                     download_url = link['href']  # Use original URL case
                     break
-                    
+
             if not download_url:
                 raise ValueError(f"Could not find download URL for quarter {quarter}")
-            
+
             # Download the zip file
             zip_path = quarter_dir / f"faers_ascii_{quarter}.zip"
             response = requests.get(download_url, stream=True)
             response.raise_for_status()
-            
+
             total_size = int(response.headers.get('content-length', 0))
             block_size = 8192
-            
+
             with open(zip_path, 'wb') as f:
                 with tqdm(
-                    total=total_size,
-                    unit='iB',
-                    unit_scale=True,
-                    desc=f"Downloading {quarter}"
+                        total=total_size,
+                        unit='iB',
+                        unit_scale=True,
+                        desc=f"Downloading {quarter}"
                 ) as pbar:
                     for data in response.iter_content(block_size):
                         size = f.write(data)
                         pbar.update(size)
-            
+
             # Extract files
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(quarter_dir)
-            
+
             # Clean up zip file
             zip_path.unlink()
-            
+
             # Handle special case for 2018Q1
             demo_file = quarter_dir / 'ascii' / 'DEMO18Q1_new.txt'
             if demo_file.exists():
                 demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
-                
+
         except Exception as e:
             logging.error(f"Error downloading {quarter}: {str(e)}")
             raise
@@ -168,13 +169,13 @@ class FAERSDownloader(DataDownloader):
             async with self.session.get(url) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get('content-length', 0))
-                
+
                 with tqdm(total=total_size, unit='iB', unit_scale=True) as pbar:
                     async with aiofiles.open(destination, mode='wb') as f:
                         async for chunk in response.content.iter_chunked(8192):
                             await f.write(chunk)
                             pbar.update(len(chunk))
-                            
+
         except Exception as e:
             logging.error(f"Error downloading {url}: {str(e)}")
             raise
@@ -190,13 +191,13 @@ class FAERSDownloader(DataDownloader):
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 total_size = sum(info.file_size for info in zip_ref.filelist)
                 extracted_size = 0
-                
+
                 with tqdm(total=total_size, unit='iB', unit_scale=True) as pbar:
                     for info in zip_ref.filelist:
                         zip_ref.extract(info, extract_path)
                         extracted_size += info.file_size
                         pbar.update(info.file_size)
-                        
+
         except Exception as e:
             logging.error(f"Error extracting {zip_path}: {str(e)}")
             raise
@@ -229,7 +230,7 @@ class FAERSDownloader(DataDownloader):
             return
 
         logging.info(f"Found {len(quarters)} quarters available for download")
-        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for quarter in quarters:
@@ -238,7 +239,7 @@ class FAERSDownloader(DataDownloader):
                     quarter=quarter
                 )
                 futures.append((quarter, future))
-            
+
             with tqdm(total=len(futures), desc="Downloading quarters") as pbar:
                 for quarter, future in futures:
                     try:

@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List
 
+import dask.dataframe as dd
 import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
@@ -14,11 +15,11 @@ class FAERSProcessor:
     """Processes FAERS data files."""
 
     def __init__(
-        self,
-        data_dir: Path,
-        external_dir: Path,
-        chunk_size: int = 100000,
-        use_dask: bool = False
+            self,
+            data_dir: Path,
+            external_dir: Path,
+            chunk_size: int = 100000,
+            use_dask: bool = False
     ):
         """Initialize processor with configuration.
         
@@ -33,10 +34,10 @@ class FAERSProcessor:
         self.external_dir = external_dir
         self.chunk_size = chunk_size
         self.use_dask = use_dask
-        
+
         # Initialize standardizer with external data
         self.standardizer = DataStandardizer(external_dir)
-        
+
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -621,13 +622,13 @@ class FAERSProcessor:
         try:
             # Get list of all quarters
             quarters = [d.name for d in self.data_dir.iterdir() if d.is_dir()]
-            
+
             if not quarters:
                 logging.warning("No quarters found to process")
                 return
-                
+
             logging.info(f"Found {len(quarters)} quarters to process")
-            
+
             # Process each quarter
             with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
                 for quarter in quarters:
@@ -636,36 +637,36 @@ class FAERSProcessor:
                         demo_file = next(self.data_dir.glob(f"{quarter}/*DEMO*.txt"), None)
                         drug_file = next(self.data_dir.glob(f"{quarter}/*DRUG*.txt"), None)
                         reac_file = next(self.data_dir.glob(f"{quarter}/*REAC*.txt"), None)
-                        
+
                         if not all([demo_file, drug_file, reac_file]):
                             logging.warning(f"Missing files for quarter {quarter}")
                             continue
-                            
+
                         # Process demographics
                         demo_df = self.process_file(demo_file, 'demographics')
                         if not demo_df.empty:
                             save_path = self.output_dir / f"{quarter}_demographics.parquet"
                             demo_df.to_parquet(save_path, engine='pyarrow', index=False)
-                        
+
                         # Process drugs
                         drug_df = self.process_file(drug_file, 'drugs')
                         if not drug_df.empty:
                             save_path = self.output_dir / f"{quarter}_drugs.parquet"
                             drug_df.to_parquet(save_path, engine='pyarrow', index=False)
-                        
+
                         # Process reactions
                         reac_df = self.process_file(reac_file, 'reactions')
                         if not reac_df.empty:
                             save_path = self.output_dir / f"{quarter}_reactions.parquet"
                             reac_df.to_parquet(save_path, engine='pyarrow', index=False)
-                        
+
                         logging.info(f"Successfully processed quarter {quarter}")
-                        
+
                     except Exception as e:
                         logging.error(f"Error processing quarter {quarter}: {str(e)}")
                     finally:
                         pbar.update(1)
-                        
+
         except Exception as e:
             logging.error(f"Error in process_all: {str(e)}")
             raise
@@ -700,7 +701,7 @@ class FAERSProcessor:
                     keep_default_na=True,
                     chunksize=self.chunk_size
                 )
-                
+
             # Process based on data type
             if data_type == 'demographics':
                 result = self.standardizer.process_demographics(df)
@@ -708,13 +709,13 @@ class FAERSProcessor:
                 result = self.standardizer.process_drugs(df)
             else:  # reactions
                 result = self.standardizer.process_reactions(df)
-                
+
             # Compute if using Dask
             if self.use_dask:
                 result = result.compute()
-                
+
             return result
-            
+
         except Exception as e:
             logging.error(f"Error processing file {file_path}: {str(e)}")
             return pd.DataFrame()
