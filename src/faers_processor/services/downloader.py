@@ -11,7 +11,8 @@ import aiohttp
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-
+import concurrent.futures
+import io
 
 class DataDownloader(ABC):
     """Abstract base class for data downloading."""
@@ -31,6 +32,7 @@ class FAERSDownloader(DataDownloader):
     """FAERS specific data downloader implementation."""
 
     FAERS_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+    BASE_URL = "https://fis.fda.gov/content/Exports/faers_ascii_"
 
     def __init__(self, output_dir: Path):
         """Initialize the FAERS downloader.
@@ -199,6 +201,69 @@ class FAERSDownloader(DataDownloader):
                 demo_file = extract_dir / 'ascii' / 'DEMO18Q1_new.txt'
                 if demo_file.exists():
                     demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
+
+    def download_all_quarters(self, max_workers: int = 4) -> None:
+        """Download all available FAERS quarters.
+        
+        Args:
+            max_workers: Maximum number of parallel downloads
+        """
+        quarters = self.get_quarters()
+        if not quarters:
+            logging.error("No quarters available for download")
+            return
+
+        logging.info(f"Found {len(quarters)} quarters available for download")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for quarter in quarters:
+                future = executor.submit(
+                    self.download_quarter,
+                    quarter=quarter,
+                    output_dir=self.output_dir
+                )
+                futures.append((quarter, future))
+            
+            with tqdm(total=len(futures), desc="Downloading quarters") as pbar:
+                for quarter, future in futures:
+                    try:
+                        future.result()
+                        logging.info(f"Successfully downloaded quarter {quarter}")
+                    except Exception as e:
+                        logging.error(f"Error downloading quarter {quarter}: {str(e)}")
+                    pbar.update(1)
+
+    def download_quarter(self, quarter: str) -> None:
+        """Download and extract a specific FAERS quarter.
+        
+        Args:
+            quarter: Quarter identifier (e.g., '23Q1')
+        """
+        url = f"{self.BASE_URL}{quarter}.zip"
+        quarter_dir = self.output_dir / quarter
+        quarter_dir.mkdir(exist_ok=True)
+        
+        try:
+            # Download the zip file
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            # Extract the zip file
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+                zip_ref.extractall(quarter_dir)
+            
+            logging.info(f"Successfully downloaded and extracted {quarter}")
+            
+        except requests.RequestException as e:
+            logging.error(f"Error downloading {quarter}: {str(e)}")
+            raise
+        except zipfile.BadZipFile as e:
+            logging.error(f"Error extracting {quarter}: {str(e)}")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error processing {quarter}: {str(e)}")
+            raise
 
 
 class FAERSDataDownloader:
