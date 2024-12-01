@@ -1,0 +1,11 @@
+code,description,variations,category
+MD,Medical Doctor,"PHYSICIAN,DOCTOR,DR,MEDICAL PRACTITIONER",Healthcare Provider
+PH,Pharmacist,"CHEMIST,DRUGGIST,APOTHECARY",Healthcare Provider
+CN,Consumer,"PATIENT,SELF,INDIVIDUAL,CO",Patient/Consumer
+OT,Other,"OTHER,UNKNOWN,NOT SPECIFIED,LW",Other
+RN,Registered Nurse,"NURSE,NURSING STAFF,REGISTERED NURSE",Healthcare Provider
+PA,Physician Assistant,"PHYSICIAN ASSISTANT,PA-C",Healthcare Provider
+NP,Nurse Practitioner,"ARNP,NURSE PRACTITIONER",Healthcare Provider
+DO,Doctor of Osteopathy,"OSTEOPATH,D.O.",Healthcare Provider
+DT,Dentist,"DENTAL SURGEON,DDS,DMD",Healthcare Provider
+PT,Physical Therapist,"PHYSIOTHERAPIST,PT",Healthcare Provider
