@@ -58,18 +58,19 @@ class FAERSDownloader(DataDownloader):
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.find_all('a', href=True)
             
-            # Filter for ASCII zip files
+            # Filter for ASCII zip files and normalize quarter format
             quarters = []
             for link in links:
                 href = link['href']
-                if '.zip' in href and 'ascii' in href.lower():
+                if '.zip' in href.lower() and 'ascii' in href.lower():
                     # Extract quarter from filename (e.g., faers_ascii_2023q1.zip -> 2023q1)
                     filename = os.path.basename(href)
                     if '_ascii_' in filename:
-                        quarter = filename.split('_ascii_')[1].replace('.zip', '')
+                        # Ensure quarter is in lowercase format
+                        quarter = filename.split('_ascii_')[1].replace('.zip', '').lower()
                         quarters.append(quarter)
             
-            return sorted(quarters)
+            return sorted(list(set(quarters)))  # Remove duplicates and sort
             
         except Exception as e:
             logging.error(f"Error getting quarters list: {str(e)}")
@@ -82,6 +83,9 @@ class FAERSDownloader(DataDownloader):
             quarter: Quarter identifier (e.g., '2023q1')
         """
         try:
+            # Ensure quarter is in lowercase
+            quarter = quarter.lower()
+            
             # Create quarter directory
             quarter_dir = self.output_dir / quarter
             quarter_dir.mkdir(exist_ok=True)
@@ -94,9 +98,9 @@ class FAERSDownloader(DataDownloader):
             soup = BeautifulSoup(response.text, 'html.parser')
             download_url = None
             for link in soup.find_all('a', href=True):
-                href = link['href']
-                if f'ascii_{quarter}.zip' in href.lower():
-                    download_url = href
+                href = link['href'].lower()  # Convert to lowercase for comparison
+                if f'ascii_{quarter}.zip' in href:
+                    download_url = link['href']  # Use original URL case
                     break
                     
             if not download_url:
