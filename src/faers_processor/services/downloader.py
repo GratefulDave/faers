@@ -1,56 +1,58 @@
 """Service for downloading FAERS data."""
-import asyncio
-import aiohttp
-import aiofiles
-from bs4 import BeautifulSoup
-from pathlib import Path
-import zipfile
-from typing import List, Set
 import logging
-from abc import ABC, abstractmethod
-import requests
-import shutil
 import re
+import shutil
+import zipfile
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import List, Set
+
+import aiofiles
+import aiohttp
+import requests
+from bs4 import BeautifulSoup
+
 
 class DataDownloader(ABC):
     """Abstract base class for data downloading."""
-    
+
     @abstractmethod
     async def download_file(self, url: str, destination: Path) -> None:
         """Download a single file."""
         pass
-    
+
     @abstractmethod
     async def extract_file(self, zip_path: Path, extract_path: Path) -> None:
         """Extract a downloaded zip file."""
         pass
 
+
 class FAERSDownloader(DataDownloader):
     """FAERS specific data downloader implementation."""
-    
+
     FAERS_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
-    
+
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.session = None
-        
+
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
         return self
-        
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
-            
+
     async def get_download_links(self) -> Set[str]:
         """Get all FAERS download links."""
         async with self.session.get(self.FAERS_URL) as response:
             soup = BeautifulSoup(await response.text(), 'lxml')
             links = {a['href'] for a in soup.find_all('a', href=True)
-                    if '.zip' in a['href'] and 'ascii' in a['href']}
+                     if '.zip' in a['href'] and 'ascii' in a['href']}
             return links
-            
+
     async def download_file(self, url: str, destination: Path) -> None:
         """Download a single FAERS file."""
         async with self.session.get(url) as response:
@@ -59,35 +61,36 @@ class FAERSDownloader(DataDownloader):
                     await f.write(await response.read())
             else:
                 logging.error(f"Failed to download {url}: {response.status}")
-                
+
     async def extract_file(self, zip_path: Path, extract_path: Path) -> None:
         """Extract a downloaded zip file."""
         extract_path.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(extract_path)
         zip_path.unlink()  # Remove zip file after extraction
-        
+
     async def download_all(self):
         """Download and extract all FAERS data."""
         links = await self.get_download_links()
         for link in links:
             zip_name = self.output_dir / Path(link).name
             extract_dir = self.output_dir / zip_name.stem
-            
+
             await self.download_file(link, zip_name)
             await self.extract_file(zip_name, extract_dir)
-            
+
             # Handle special case for 2018Q1
             if '2018q1' in str(extract_dir):
                 demo_file = extract_dir / 'ascii' / 'DEMO18Q1_new.txt'
                 if demo_file.exists():
                     demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
 
+
 class FAERSDataDownloader:
     """Handles downloading and extraction of FAERS data files."""
-    
+
     FAERS_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
-    
+
     def __init__(self, raw_dir: Path, clean_dir: Path):
         """
         Initialize downloader.
@@ -100,7 +103,7 @@ class FAERSDataDownloader:
         self.clean_dir = clean_dir
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.clean_dir.mkdir(parents=True, exist_ok=True)
-    
+
     def download_latest_quarter(self) -> List[Path]:
         """
         Download the latest quarter of FAERS data.
@@ -111,43 +114,43 @@ class FAERSDataDownloader:
         # Get FAERS webpage
         response = requests.get(self.FAERS_URL, timeout=500)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
         # Find ASCII zip files
         zip_links = [
             link['href'] for link in soup.find_all('a')
             if link.get('href', '').endswith('.zip') and 'ascii' in link['href'].lower()
         ]
-        
+
         if not zip_links:
             logging.error("No FAERS ASCII zip files found")
             return []
-        
+
         # Get latest quarter
         latest_zip = zip_links[0]
         quarter = re.search(r'\d{2}q\d', latest_zip.lower()).group()
-        
+
         # Download and extract
         zip_path = self.raw_dir / f"faers_{quarter}.zip"
         extract_dir = self.raw_dir / f"faers_{quarter}"
-        
+
         logging.info(f"Downloading FAERS data for {quarter}")
         response = requests.get(latest_zip, stream=True)
         with open(zip_path, 'wb') as f:
             shutil.copyfileobj(response.raw, f)
-        
+
         # Extract files
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(extract_dir)
-        
+
         # Clean up zip file
         zip_path.unlink()
-        
+
         # Fix known file issues
         self._fix_known_issues(extract_dir)
-        
+
         # Return paths to extracted files
         return list(extract_dir.rglob('*.txt'))
-    
+
     def _fix_known_issues(self, extract_dir: Path):
         """Fix known issues in FAERS files."""
         fixes = {
@@ -155,7 +158,7 @@ class FAERSDataDownloader:
             'DRUG11Q3.txt': ('$$$$$$7652730', '\n'),
             'DRUG11Q4.txt': ('021487$7941354', '\n')
         }
-        
+
         for filename, (old, new) in fixes.items():
             file_path = extract_dir / 'ascii' / filename
             if file_path.exists():
@@ -164,7 +167,7 @@ class FAERSDataDownloader:
                 content = content.replace(old, old + new)
                 with open(file_path, 'w') as f:
                     f.write(content)
-    
+
     def get_file_list(self) -> List[Path]:
         """Get list of all downloaded FAERS files."""
         files = []
