@@ -8,6 +8,9 @@ import zipfile
 from typing import List, Set
 import logging
 from abc import ABC, abstractmethod
+import requests
+import shutil
+import re
 
 class DataDownloader(ABC):
     """Abstract base class for data downloading."""
@@ -79,3 +82,93 @@ class FAERSDownloader(DataDownloader):
                 demo_file = extract_dir / 'ascii' / 'DEMO18Q1_new.txt'
                 if demo_file.exists():
                     demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
+
+class FAERSDataDownloader:
+    """Handles downloading and extraction of FAERS data files."""
+    
+    FAERS_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+    
+    def __init__(self, raw_dir: Path, clean_dir: Path):
+        """
+        Initialize downloader.
+        
+        Args:
+            raw_dir: Directory for raw FAERS data
+            clean_dir: Directory for cleaned data
+        """
+        self.raw_dir = raw_dir
+        self.clean_dir = clean_dir
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        self.clean_dir.mkdir(parents=True, exist_ok=True)
+    
+    def download_latest_quarter(self) -> List[Path]:
+        """
+        Download the latest quarter of FAERS data.
+        
+        Returns:
+            List of paths to downloaded files
+        """
+        # Get FAERS webpage
+        response = requests.get(self.FAERS_URL, timeout=500)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Find ASCII zip files
+        zip_links = [
+            link['href'] for link in soup.find_all('a')
+            if link.get('href', '').endswith('.zip') and 'ascii' in link['href'].lower()
+        ]
+        
+        if not zip_links:
+            logging.error("No FAERS ASCII zip files found")
+            return []
+        
+        # Get latest quarter
+        latest_zip = zip_links[0]
+        quarter = re.search(r'\d{2}q\d', latest_zip.lower()).group()
+        
+        # Download and extract
+        zip_path = self.raw_dir / f"faers_{quarter}.zip"
+        extract_dir = self.raw_dir / f"faers_{quarter}"
+        
+        logging.info(f"Downloading FAERS data for {quarter}")
+        response = requests.get(latest_zip, stream=True)
+        with open(zip_path, 'wb') as f:
+            shutil.copyfileobj(response.raw, f)
+        
+        # Extract files
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+        
+        # Clean up zip file
+        zip_path.unlink()
+        
+        # Fix known file issues
+        self._fix_known_issues(extract_dir)
+        
+        # Return paths to extracted files
+        return list(extract_dir.rglob('*.txt'))
+    
+    def _fix_known_issues(self, extract_dir: Path):
+        """Fix known issues in FAERS files."""
+        fixes = {
+            'DRUG11Q2.txt': ('$$$$$$7475791', '\n'),
+            'DRUG11Q3.txt': ('$$$$$$7652730', '\n'),
+            'DRUG11Q4.txt': ('021487$7941354', '\n')
+        }
+        
+        for filename, (old, new) in fixes.items():
+            file_path = extract_dir / 'ascii' / filename
+            if file_path.exists():
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                content = content.replace(old, old + new)
+                with open(file_path, 'w') as f:
+                    f.write(content)
+    
+    def get_file_list(self) -> List[Path]:
+        """Get list of all downloaded FAERS files."""
+        files = []
+        for txt_file in self.raw_dir.rglob('*.txt'):
+            if not any(x in str(txt_file).upper() for x in ['STAT', 'SIZE']):
+                files.append(txt_file)
+        return files
