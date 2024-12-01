@@ -1,7 +1,8 @@
 """Models for FAERS data structures."""
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
+
 
 @dataclass
 class Demographics:
@@ -21,6 +22,7 @@ class Demographics:
     event_date: Optional[datetime] = None
     report_date: Optional[datetime] = None
 
+
 @dataclass
 class Drug:
     """Represents drug information from FAERS."""
@@ -30,6 +32,7 @@ class Drug:
     drug_name: str
     substance: Optional[str] = None
     prod_ai: Optional[str] = None
+
 
 @dataclass
 class DrugInfo:
@@ -48,12 +51,14 @@ class DrugInfo:
     dechal: Optional[str] = None
     rechal: Optional[str] = None
 
+
 @dataclass
 class Indication:
     """Drug indication model."""
     primary_id: str
     drug_seq: str
     indi_pt: str
+
 
 @dataclass
 class Reaction:
@@ -62,17 +67,20 @@ class Reaction:
     pt: str  # Preferred Term
     drug_rec_act: Optional[str] = None
 
+
 @dataclass
 class Outcome:
     """Represents outcome information from FAERS."""
     primary_id: str
     outcome_code: str
 
+
 @dataclass
 class ReportSource:
     """Report source model."""
     primary_id: str
     rpsr_cod: str
+
 
 @dataclass
 class Therapy:

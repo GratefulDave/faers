@@ -1,7 +1,6 @@
 """Service for downloading FAERS data."""
 import logging
 import re
-import shutil
 import zipfile
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import List, Set
 
 import aiofiles
 import aiohttp
+import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 

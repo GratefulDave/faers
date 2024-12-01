@@ -14,29 +14,29 @@ Performance Features:
 """
 
 import logging
-import multiprocessing
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Union, Any
+from typing import List, Dict, Tuple, Optional, Any
 
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import vaex
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 # Optimize NumPy for ARM64 if available
 try:
     import platform
+
     if platform.machine() == 'arm64':
         import numpy.__config__
+
         if 'openblas' in numpy.__config__.get_info('openblas_lapack_info'):
             logging.info("Using optimized OpenBLAS for ARM64")
 except ImportError:
     logging.warning("Could not check for ARM64 optimizations")
+
 
 class DataStandardizer:
     """
@@ -90,7 +90,7 @@ class DataStandardizer:
             DataFrame with standardized dates
         """
         df = data.copy()
-        
+
         with tqdm(total=len(date_columns), desc="Standardizing dates") as pbar:
             for col in date_columns:
                 if col in df.columns:
@@ -99,11 +99,11 @@ class DataStandardizer:
                         df[col] = pd.to_datetime(df[col], errors='coerce')
                     except Exception as e:
                         logging.warning(f"Error converting {col} to datetime: {str(e)}")
-                        
+
                         # Try custom date parsing for problematic formats
                         df[col] = df[col].apply(self._parse_custom_date)
                 pbar.update(1)
-                
+
         return df
 
     def _parse_custom_date(self, date_str: str) -> Optional[pd.Timestamp]:
@@ -117,7 +117,7 @@ class DataStandardizer:
         """
         if pd.isna(date_str):
             return None
-            
+
         try:
             # Try common FAERS date formats
             formats = [
@@ -127,15 +127,15 @@ class DataStandardizer:
                 '%d-%b-%Y',
                 '%Y-%b-%d'
             ]
-            
+
             for fmt in formats:
                 try:
                     return pd.Timestamp(datetime.strptime(str(date_str), fmt))
                 except ValueError:
                     continue
-                    
+
             return None
-            
+
         except Exception as e:
             logging.debug(f"Could not parse date {date_str}: {str(e)}")
             return None
@@ -152,7 +152,7 @@ class DataStandardizer:
         df = data.copy()
         if 'sex' not in df.columns:
             return df
-            
+
         # Define standardization mapping
         sex_map = {
             'M': 'M',
@@ -166,16 +166,16 @@ class DataStandardizer:
             'UNKNOWN': 'U',
             '0': 'U'
         }
-        
+
         # Apply standardization
         df['sex'] = df['sex'].str.upper().map(sex_map)
-        
+
         # Log statistics
         value_counts = df['sex'].value_counts()
         logging.info("Sex value counts after standardization:")
         for value, count in value_counts.items():
             logging.info(f"  {value}: {count}")
-            
+
         return df
 
     def standardize_age(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -188,12 +188,12 @@ class DataStandardizer:
             DataFrame with standardized age values
         """
         df = data.copy()
-        
+
         # Check required columns
         age_cols = ['age', 'age_cod']
         if not all(col in df.columns for col in age_cols):
             return df
-            
+
         try:
             # Convert age codes
             age_code_map = {
@@ -205,30 +205,30 @@ class DataStandardizer:
                 'HR': 'HOUR'
             }
             df['age_cod'] = df['age_cod'].str.upper().map(age_code_map)
-            
+
             # Convert to numeric, coercing errors to NaN
             df['age'] = pd.to_numeric(df['age'], errors='coerce')
-            
+
             # Convert to years based on age code
             conversions = {
                 'DECADE': 10,
                 'YEAR': 1,
-                'MONTH': 1/12,
-                'WEEK': 1/52,
-                'DAY': 1/365,
-                'HOUR': 1/(365*24)
+                'MONTH': 1 / 12,
+                'WEEK': 1 / 52,
+                'DAY': 1 / 365,
+                'HOUR': 1 / (365 * 24)
             }
-            
+
             for code, factor in conversions.items():
                 mask = df['age_cod'] == code
                 df.loc[mask, 'age_in_years'] = df.loc[mask, 'age'] * factor
-                
+
             # Log statistics
             logging.info(f"Age range: {df['age_in_years'].min():.1f} to {df['age_in_years'].max():.1f} years")
             logging.info(f"Mean age: {df['age_in_years'].mean():.1f} years")
-            
+
             return df
-            
+
         except Exception as e:
             logging.error(f"Error standardizing age: {str(e)}")
             return data
@@ -243,12 +243,12 @@ class DataStandardizer:
             DataFrame with standardized weight values
         """
         df = data.copy()
-        
+
         # Check required columns
         weight_cols = ['wt', 'wt_cod']
         if not all(col in df.columns for col in weight_cols):
             return df
-            
+
         try:
             # Convert weight codes
             weight_code_map = {
@@ -258,10 +258,10 @@ class DataStandardizer:
                 'L': 'L'
             }
             df['wt_cod'] = df['wt_cod'].str.upper().map(weight_code_map)
-            
+
             # Convert to numeric, coercing errors to NaN
             df['wt'] = pd.to_numeric(df['wt'], errors='coerce')
-            
+
             # Convert to kilograms based on weight code
             conversions = {
                 'KG': 1,
@@ -269,17 +269,17 @@ class DataStandardizer:
                 'G': 0.001,
                 'L': 1  # Assuming density of 1 kg/L
             }
-            
+
             for code, factor in conversions.items():
                 mask = df['wt_cod'] == code
                 df.loc[mask, 'wt_in_kgs'] = df.loc[mask, 'wt'] * factor
-                
+
             # Log statistics
             logging.info(f"Weight range: {df['wt_in_kgs'].min():.1f} to {df['wt_in_kgs'].max():.1f} kg")
             logging.info(f"Mean weight: {df['wt_in_kgs'].mean():.1f} kg")
-            
+
             return df
-            
+
         except Exception as e:
             logging.error(f"Error standardizing weight: {str(e)}")
             return data
@@ -296,7 +296,7 @@ class DataStandardizer:
         df = data.copy()
         if 'reporter_country' not in df.columns:
             return df
-            
+
         try:
             # Load country mappings
             if self.external_dir:
@@ -308,18 +308,18 @@ class DataStandardizer:
                     country_map = {}
             else:
                 country_map = {}
-            
+
             # Apply standardization
             df['reporter_country'] = df['reporter_country'].str.upper().map(country_map)
-            
+
             # Log statistics
             value_counts = df['reporter_country'].value_counts()
             logging.info("Top 10 reporter countries after standardization:")
             for country, count in value_counts.head(10).items():
                 logging.info(f"  {country}: {count}")
-                
+
             return df
-            
+
         except Exception as e:
             logging.error(f"Error standardizing countries: {str(e)}")
             return data
@@ -336,7 +336,7 @@ class DataStandardizer:
         df = data.copy()
         if 'occp_cod' not in df.columns:
             return df
-            
+
         try:
             # Define occupation mapping
             occp_map = {
@@ -347,18 +347,18 @@ class DataStandardizer:
                 'LW': 'LAWYER',
                 'HP': 'OTHER_HEALTH_PROFESSIONAL'
             }
-            
+
             # Apply standardization
             df['occp_cod'] = df['occp_cod'].str.upper().map(occp_map)
-            
+
             # Log statistics
             value_counts = df['occp_cod'].value_counts()
             logging.info("Occupation counts after standardization:")
             for occ, count in value_counts.items():
                 logging.info(f"  {occ}: {count}")
-                
+
             return df
-            
+
         except Exception as e:
             logging.error(f"Error standardizing occupations: {str(e)}")
             return data
@@ -391,7 +391,7 @@ class DataStandardizer:
         value = str(value).lower().strip()
         true_values = {'y', 'yes', 'true', '1', 't'}
         false_values = {'n', 'no', 'false', '0', 'f'}
-        
+
         if value in true_values:
             return True
         if value in false_values:
@@ -440,13 +440,13 @@ class DataStandardizer:
         """
         if pd.isna(date_str):
             return False
-            
+
         try:
             date_str = str(date_str).zfill(8)
             year = int(date_str[:4])
             month = int(date_str[4:6])
             day = int(date_str[6:8])
-            
+
             # Check basic ranges
             if not (min_year <= year <= datetime.now().year):
                 return False
@@ -454,7 +454,7 @@ class DataStandardizer:
                 return False
             if not (1 <= day <= 31):
                 return False
-                
+
             # Check month-specific day ranges
             days_in_month = {
                 2: 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
@@ -463,9 +463,9 @@ class DataStandardizer:
             max_days = days_in_month.get(month, 31)
             if day > max_days:
                 return False
-                
+
             return True
-            
+
         except (ValueError, TypeError):
             return False
 
@@ -1014,24 +1014,24 @@ class DataStandardizer:
         # Make a copy to avoid modifying the input
         df = df.copy()
         total_rows = len(df)
-        
+
         with tqdm(total=total_rows, desc="Standardizing drug names") as pbar:
             # Clean drug names
             df[drugname_col] = df[drugname_col].apply(lambda x: self._clean_drugname(x))
             pbar.update(total_rows // 3)
-            
+
             # Apply drug dictionary
             drug_dict = self.get_drug_dictionary()
             df[drugname_col] = df[drugname_col].map(lambda x: drug_dict.get(x.lower(), x) if pd.notna(x) else x)
             pbar.update(total_rows // 3)
-            
+
             # Update categories
             categorical_cols = ['role_cod', 'drugname', 'route', 'dose_form']
             for col in categorical_cols:
                 if col in df.columns:
                     df[col] = df[col].astype('category')
             pbar.update(total_rows // 3)
-        
+
         return df
 
     def analyze_age_groups(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
@@ -1577,13 +1577,13 @@ class DataStandardizer:
         """
         if pd.isna(date_str):
             return False
-            
+
         try:
             date_str = str(date_str).zfill(8)
             year = int(date_str[:4])
             month = int(date_str[4:6])
             day = int(date_str[6:8])
-            
+
             # Check basic ranges
             if not (min_year <= year <= datetime.now().year):
                 return False
@@ -1591,7 +1591,7 @@ class DataStandardizer:
                 return False
             if not (1 <= day <= 31):
                 return False
-                
+
             # Check month-specific day ranges
             days_in_month = {
                 2: 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
@@ -1600,10 +1600,11 @@ class DataStandardizer:
             max_days = days_in_month.get(month, 31)
             if day > max_days:
                 return False
-                
+
             return True
-            
+
         except (ValueError, TypeError):
             return False
 
-{{ ... }}
+
+{{...}}

@@ -1,7 +1,7 @@
 """Service for processing FAERS data files."""
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -18,7 +18,7 @@ class FAERSProcessor:
         self.data_dir = data_dir
         self.output_dir = output_dir
         self.standardizer = DataStandardizer()
-        
+
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -32,13 +32,13 @@ class FAERSProcessor:
             Dictionary mapping file types to processed DataFrames
         """
         processed_data = {}
-        
+
         # Get list of files to process
         files = list(self.data_dir.glob(f'*{quarter}*.txt'))
         if not files:
             logging.warning(f"No files found for quarter {quarter}")
             return processed_data
-            
+
         with tqdm(total=len(files), desc="Processing files") as pbar:
             for file in files:
                 try:
@@ -48,7 +48,7 @@ class FAERSProcessor:
                     pbar.update(1)
                 except Exception as e:
                     logging.error(f"Error processing {file}: {str(e)}")
-                    
+
         return processed_data
 
     def unify_files(self, data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -63,23 +63,23 @@ class FAERSProcessor:
         if not data:
             logging.error("No data to unify")
             return pd.DataFrame()
-            
+
         try:
             # Start with demographics
             demo = data.get('DEMO', pd.DataFrame())
             if demo.empty:
                 logging.error("No demographics data found")
                 return pd.DataFrame()
-                
+
             # Process each file type
             with tqdm(total=len(data), desc="Unifying files") as pbar:
                 for file_type, df in data.items():
                     if file_type != 'DEMO':
                         demo = self._merge_dataframe(demo, df, file_type)
                     pbar.update(1)
-                    
+
             return demo
-            
+
         except Exception as e:
             logging.error(f"Error unifying files: {str(e)}")
             return pd.DataFrame()
@@ -106,7 +106,7 @@ class FAERSProcessor:
 
             # Generate summary (for logging only)
             self._generate_summary(unified_data)
-            
+
             # Save output
             output_path = self.output_dir / f"faers_{quarter}_processed.parquet"
             unified_data.to_parquet(output_path)
@@ -126,7 +126,7 @@ class FAERSProcessor:
         if data.empty:
             logging.warning("No data for summary generation")
             return
-            
+
         try:
             # Calculate summary statistics
             summary = {
@@ -135,7 +135,7 @@ class FAERSProcessor:
                 'Date Range': f"{data['fda_dt'].min()} to {data['fda_dt'].max()}",
                 'Missing Values (%)': (data.isna().sum() / len(data) * 100).round(2).to_dict()
             }
-            
+
             # Log summary statistics
             for key, value in summary.items():
                 if key != 'Missing Values (%)':
@@ -144,7 +144,7 @@ class FAERSProcessor:
                     logging.info("Missing Values (%):")
                     for col, pct in value.items():
                         logging.info(f"  {col}: {pct}%")
-            
+
             # Create and save summary plot
             try:
                 fig, ax = plt.subplots(figsize=(10, 6))
@@ -152,18 +152,19 @@ class FAERSProcessor:
                 ax.set_title('Reports by FDA Receipt Date')
                 ax.set_xlabel('Date')
                 ax.set_ylabel('Number of Reports')
-                
+
                 plot_path = self.output_dir / "reports_by_date.png"
                 fig.savefig(plot_path)
                 plt.close(fig)
                 logging.info(f"Summary plot saved to {plot_path}")
             except Exception as plot_error:
                 logging.warning(f"Could not generate summary plot: {str(plot_error)}")
-            
+
         except Exception as e:
             logging.error(f"Error generating summary: {str(e)}")
 
-    def validate_data(self, data: pd.DataFrame) -> bool:
+    @staticmethod
+    def validate_data(data: pd.DataFrame) -> bool:
         """Validate processed data.
         
         Args:
@@ -202,7 +203,8 @@ class FAERSProcessor:
             logging.error(f"Error validating data: {str(e)}")
             return False
 
-    def _get_file_type(self, filename: str) -> str:
+    @staticmethod
+    def _get_file_type(filename: str) -> str:
         """Extract file type from filename."""
         file_types = {
             'DEMO': ['demo', 'demographic'],
@@ -212,7 +214,7 @@ class FAERSProcessor:
             'RPSR': ['rpsr', 'source'],
             'THER': ['ther', 'therapy']
         }
-        
+
         filename = filename.lower()
         for file_type, patterns in file_types.items():
             if any(pattern in filename for pattern in patterns):
@@ -227,7 +229,7 @@ class FAERSProcessor:
             if not merge_cols:
                 logging.warning(f"No merge columns defined for {file_type}")
                 return base_df
-                
+
             # Perform merge
             merged = pd.merge(
                 base_df,
@@ -236,14 +238,15 @@ class FAERSProcessor:
                 how='left',
                 suffixes=('', f'_{file_type.lower()}')
             )
-            
+
             return merged
-            
+
         except Exception as e:
             logging.error(f"Error merging {file_type}: {str(e)}")
             return base_df
 
-    def _get_merge_columns(self, file_type: str) -> List[str]:
+    @staticmethod
+    def _get_merge_columns(file_type: str) -> List[str]:
         """Get merge columns for a file type."""
         merge_columns = {
             'DRUG': ['primaryid', 'caseid'],
@@ -530,7 +533,8 @@ class FAERSProcessor:
 
         return ther_data
 
-    def unify_data(self, files_list: List[str], name_key: Dict[str, str],
+    @staticmethod
+    def unify_data(files_list: List[str], name_key: Dict[str, str],
                    column_subset: List[str], duplicated_cols_x: List[str] = None,
                    duplicated_cols_y: List[str] = None) -> pd.DataFrame:
         """
@@ -547,7 +551,7 @@ class FAERSProcessor:
             Unified DataFrame with standardized columns
         """
         unified_data = None
-        
+
         with tqdm(total=len(files_list), desc="Unifying files") as pbar:
             for file_path in files_list:
                 # Read the file
@@ -555,10 +559,10 @@ class FAERSProcessor:
                     df = pd.read_csv(file_path)
                 else:  # Assume text file with pipe delimiter
                     df = pd.read_csv(file_path, sep='$')
-                
+
                 # Rename columns using name_key
                 df = df.rename(columns={v: k for k, v in name_key.items()})
-                
+
                 if unified_data is None:
                     unified_data = df
                 else:
@@ -570,9 +574,9 @@ class FAERSProcessor:
                         # Merge based on common columns excluding duplicates
                         common_cols = list(set(unified_data.columns) & set(df.columns))
                         common_cols = [col for col in common_cols
-                                    if col not in duplicated_cols_x
-                                    and col not in duplicated_cols_y]
-                        
+                                       if col not in duplicated_cols_x
+                                       and col not in duplicated_cols_y]
+
                         unified_data = pd.merge(unified_data, df, on=common_cols, how='outer')
 
                         # Handle duplicate columns
@@ -583,13 +587,13 @@ class FAERSProcessor:
                     else:
                         # Simple outer merge on all common columns
                         unified_data = pd.merge(unified_data, df, how='outer')
-                
+
                 pbar.update(1)
-        
+
         # Subset columns if specified
         if column_subset:
             # Only keep columns that exist in the data
             valid_columns = [col for col in column_subset if col in unified_data.columns]
             unified_data = unified_data[valid_columns]
-        
+
         return unified_data
