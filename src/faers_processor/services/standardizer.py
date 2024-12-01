@@ -19,7 +19,7 @@ class DataStandardizer:
         # Load country mappings
         country_file = self.external_dir / 'manual_fix' / 'countries.csv'
         if country_file.exists():
-            self.country_map = pd.read_csv(country_file, sep=';').set_index('country')['Country_Name'].to_dict()
+            self.country_map = pd.read_csv(country_file, sep=';', dtype=str).set_index('country')['Country_Name'].to_dict()
         
         # Load occupation codes
         self.valid_occupations = {'MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN'}
@@ -27,29 +27,29 @@ class DataStandardizer:
         # Load route standardization
         route_file = self.external_dir / 'manual_fix' / 'route_st.csv'
         if route_file.exists():
-            self.route_map = pd.read_csv(route_file, sep=';').set_index('route')['route_st'].to_dict()
+            self.route_map = pd.read_csv(route_file, sep=';', dtype=str).set_index('route')['route_st'].to_dict()
         
         # Load dose form standardization
         dose_form_file = self.external_dir / 'manual_fix' / 'dose_form_st.csv'
         if dose_form_file.exists():
-            self.dose_form_map = pd.read_csv(dose_form_file, sep=';').set_index('dose_form')['dose_form_st'].to_dict()
+            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', dtype=str).set_index('dose_form')['dose_form_st'].to_dict()
         
         # Load dose frequency standardization
         dose_freq_file = self.external_dir / 'manual_fix' / 'dose_freq_st.csv'
         if dose_freq_file.exists():
-            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';').set_index('dose_freq')['dose_freq_st'].to_dict()
+            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', dtype=str).set_index('dose_freq')['dose_freq_st'].to_dict()
     
     def standardize_sex(self, df: pd.DataFrame, col: str = 'sex') -> pd.DataFrame:
         """Standardize sex values to F/M."""
         df = df.copy()
-        df[col] = df[col].where(df[col].isin(['F', 'M']), None)
+        df.loc[~df[col].isin(['F', 'M']), col] = np.nan
         return df
     
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize age values and add age groups."""
         df = df.copy()
         
-        # Age conversion factors
+        # Age unit conversion factors to days
         age_factors = {
             'DEC': 3650,
             'YR': 365,
@@ -62,43 +62,38 @@ class DataStandardizer:
         }
         
         # Convert age to days
-        df['age_corrector'] = df['age_cod'].map(lambda x: age_factors.get(x, 365))
-        df['age_in_days'] = df.apply(
-            lambda x: round(abs(float(x['age'])) * x['age_corrector']) 
-            if pd.notna(x['age']) and pd.notna(x['age_corrector']) 
-            else None, 
-            axis=1
-        )
+        df['age_corrector'] = df['age_cod'].map(age_factors)
+        df['age_corrector'] = df['age_corrector'].fillna(365)  # Default to years if missing
+        df['age_in_days'] = np.abs(pd.to_numeric(df['age'], errors="coerce")) * df['age_corrector']
         
-        # Handle plausible compilation error
-        df['age_in_days'] = df.apply(
-            lambda x: x['age_in_days'] if x['age_in_days'] <= 122*365 
-            else (x['age_in_days']/x['age_corrector'] if x['age_cod'] == 'DEC' else None)
-            if pd.notna(x['age_in_days']) else None,
-            axis=1
-        )
+        # Handle plausibility
+        max_age_days = 122 * 365  # Max recorded human age
+        df.loc[df['age_in_days'] > max_age_days, 'age_in_days'] = np.nan
+        df.loc[(df['age_in_days'] > max_age_days) & (df['age_cod'] == 'DEC'), 'age_in_days'] = \
+            df.loc[(df['age_in_days'] > max_age_days) & (df['age_cod'] == 'DEC'), 'age_in_days'] / \
+            df.loc[(df['age_in_days'] > max_age_days) & (df['age_cod'] == 'DEC'), 'age_corrector']
         
         # Calculate age in years
-        df['age_in_years'] = df['age_in_days'].apply(lambda x: round(x/365) if pd.notna(x) else None)
+        df['age_in_years'] = np.round(df['age_in_days'] / 365)
         
         # Assign age groups
-        df['age_grp'] = None
-        df.loc[df['age_in_years'].notna(), 'age_grp'] = 'E'
-        df.loc[df['age_in_years'] < 65, 'age_grp'] = 'A'
-        df.loc[df['age_in_years'] < 18, 'age_grp'] = 'T'
-        df.loc[df['age_in_years'] < 12, 'age_grp'] = 'C'
-        df.loc[df['age_in_years'] < 2, 'age_grp'] = 'I'
-        df.loc[df['age_in_days'] < 28, 'age_grp'] = 'N'
+        df['age_grp'] = 'E'  # Default to Elderly
+        df.loc[df['age_in_years'] < 65, 'age_grp'] = 'A'  # Adult
+        df.loc[df['age_in_years'] < 18, 'age_grp'] = 'T'  # Teen
+        df.loc[df['age_in_years'] < 12, 'age_grp'] = 'C'  # Child
+        df.loc[df['age_in_years'] < 2, 'age_grp'] = 'I'   # Infant
+        df.loc[df['age_in_days'] < 28, 'age_grp'] = 'N'   # Neonate
         
-        # Clean up
-        df = df.drop(['age_corrector', 'age', 'age_cod'], axis=1)
+        # Clean up temporary columns
+        df = df.drop(columns=['age_corrector', 'age', 'age_cod'])
+        
         return df
     
     def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize weight values to kilograms."""
         df = df.copy()
         
-        # Weight conversion factors
+        # Weight conversion factors to kg
         weight_factors = {
             'LBS': 0.453592,
             'IB': 0.453592,
@@ -109,19 +104,16 @@ class DataStandardizer:
         }
         
         # Convert weight to kg
-        df['wt_corrector'] = df['wt_cod'].map(lambda x: weight_factors.get(x, 1))
-        df['wt_in_kgs'] = df.apply(
-            lambda x: round(abs(float(x['wt'])) * x['wt_corrector'])
-            if pd.notna(x['wt']) and pd.notna(x['wt_corrector'])
-            else None,
-            axis=1
-        )
+        df['wt_corrector'] = df['wt_cod'].map(weight_factors)
+        df['wt_corrector'] = df['wt_corrector'].fillna(1)  # Default to kg if missing
+        df['wt_in_kgs'] = np.round(np.abs(pd.to_numeric(df['wt'], errors="coerce")) * df['wt_corrector'])
         
-        # Remove implausible values
-        df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = None
+        # Handle implausible values (>635 kg)
+        df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = np.nan
         
-        # Clean up
-        df = df.drop(['wt_corrector', 'wt', 'wt_cod'], axis=1)
+        # Clean up temporary columns
+        df = df.drop(columns=['wt_corrector', 'wt', 'wt_cod'])
+        
         return df
     
     def standardize_country(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -130,61 +122,62 @@ class DataStandardizer:
         
         for col in ['occr_country', 'reporter_country']:
             if col in df.columns:
-                df[col] = df[col].map(lambda x: self.country_map.get(x, x))
+                df[col] = df[col].map(self.country_map)
         
         return df
     
     def standardize_occupation(self, df: pd.DataFrame, col: str = 'occp_cod') -> pd.DataFrame:
         """Standardize occupation codes."""
         df = df.copy()
-        df[col] = df[col].where(df[col].isin(self.valid_occupations), None)
+        valid_codes = ["MD", "CN", "OT", "PH", "HP", "LW", "RN"]
+        df.loc[~df[col].isin(valid_codes), col] = np.nan
         return df
     
     def standardize_route(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize administration routes."""
         df = df.copy()
         df['route'] = df['route'].str.lower().str.strip()
-        df['route'] = df['route'].map(lambda x: self.route_map.get(x, None) if pd.notna(x) else None)
+        df['route'] = df['route'].map(self.route_map)
         return df
     
     def standardize_dose_form(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize dose forms."""
         df = df.copy()
         df['dose_form'] = df['dose_form'].str.lower().str.strip()
-        df['dose_form'] = df['dose_form'].map(lambda x: self.dose_form_map.get(x, None) if pd.notna(x) else None)
+        df['dose_form'] = df['dose_form'].map(self.dose_form_map)
         return df
     
     def standardize_dose_freq(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize dose frequencies."""
         df = df.copy()
-        df['dose_freq'] = df['dose_freq'].map(lambda x: self.dose_freq_map.get(x, None) if pd.notna(x) else None)
+        df['dose_freq'] = df['dose_freq'].map(self.dose_freq_map)
         return df
     
-    def standardize_dates(self, df: pd.DataFrame, date_cols: List[str]) -> pd.DataFrame:
+    def standardize_dates(self, df: pd.DataFrame, date_cols: List[str], min_year: int = 1985) -> pd.DataFrame:
         """Standardize date fields."""
         df = df.copy()
-        
-        def check_date(dt):
-            if pd.isna(dt):
-                return None
-                
-            n = len(str(dt))
-            year = int(str(dt)[:4])
-            
-            if n == 4:
-                if 1985 <= year <= datetime.now().year:
-                    return dt
-            elif n == 6:
-                if 198500 <= dt <= int(f"{datetime.now().year}12"):
-                    return dt
-            elif n == 8:
-                if 19850000 <= dt <= int(f"{datetime.now().year}1231"):
-                    return dt
-            return None
+        max_date = datetime.now().strftime("%Y%m%d")
         
         for col in date_cols:
             if col in df.columns:
-                df[col] = df[col].apply(check_date)
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+                df[col] = df[col].astype(str)
+                
+                # Validate dates based on length and range
+                mask = df[col].str.len().isin([4, 6, 8])
+                df.loc[~mask, col] = np.nan
+                
+                # Validate year range
+                year_mask = (df[col].str[:4].astype(float) >= min_year) & \
+                           (df[col].str[:4].astype(float) <= int(max_date[:4]))
+                df.loc[~year_mask, col] = np.nan
+                
+                # Validate month/day if present
+                month_mask = df[col].str.len() >= 6
+                df.loc[month_mask & (df[col].str[4:6].astype(float) > 12), col] = np.nan
+                
+                day_mask = df[col].str.len() == 8
+                df.loc[day_mask & (df[col].str[6:8].astype(float) > 31), col] = np.nan
         
         return df
     
