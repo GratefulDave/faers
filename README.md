@@ -1,59 +1,68 @@
-# DiAna
-Repository for FAERS cleaning and analysis
+# FAERS Data Processor
 
-# Download the ZIP with the FAERS dataset cleaned according to the scripts here documented: 
-https://osf.io/zqu89/files/osfstorage
+A Python package for downloading, processing, and analyzing FDA Adverse Event Reporting System (FAERS) data.
 
-To cite DiAna in publication use:
-Fusaroli M, Giunchi V. DiAna: Repository for FAERS cleaning and analysis.
-Published online May 10, 2023. doi:10.17605/OSF.IO/ZQU89
+## Features
 
+- Automated download of FAERS quarterly data files
+- Data cleaning and standardization
+- Multi-substance drug processing
+- Probabilistic record linkage for deduplication
+- Standardization of:
+  - Preferred Terms (PT)
+  - Occupation codes
+  - Country codes
+  - Age and weight units
+- Comprehensive data validation
 
+## Installation
 
-DiAna (Disproportionality Analyses) is a project to develop a shared procedure to clean and analyse the FDA Adverse Event Reporting System database for signal detection.
+```bash
+pip install -r requirements.txt
+```
 
-FDA makes available different downloadable dataframes (xml, ascii), that differ partly from each other and from the public dashboard. Furthermore, these databases have duplicates and are not entirely standardized. Authors are required to perform a cleaning procedure before conducting the analyses, and different choices in this step can result in even more different and less comparable dataframes, with the result that two studies on the same subject using the FAERS database may retrieve a different number of cases and may detect different signals. Many private platforms are keeping their cleaning procedure secret and make available, for a price, a support service for signal detection. Other databases have been made public and available to everyone but are not updated anymore, or their pre-processing is not transparent and it is proposed as made of objective choice. Further, many public dashboards allow some degree of descriptive and disproportionality analyses, but they are often non-flexible and don’t allow to design and implement specific strategies to correct for the many biases that affect pharmacovigilance. Also, some packages have been developed to increase the feasibility, but these are often poorly documented and offer the possibility to only delve the surface of signal detection.
+## Usage
 
-In this project, we discuss the different choices that have to be done when cleaning the FAERS database. We design a shared and transparent cleaning procedure using the R software. We share it together with the cleaned database, with the idea that an open source, clearly-described procedure may build the basis for a global common effort towards a shared cleaning procedure.
+Basic usage:
+```bash
+python -m src.faers_processor
+```
 
-The next step will be to build a connected package for standardized analyses on the cleaned database, with the idea that also this tool may be implemented with time through a common effort to allow everyone more and more complex and in-deep analyses of post-marketing drug safety. A common package could allow also to share innovative pharmacovigilance tools.
+With custom directories:
+```bash
+python -m src.faers_processor --raw-dir /path/to/raw/data --clean-dir /path/to/clean/data
+```
 
+## Project Structure
 
-Stages
+- `src/faers_processor/`
+  - `__main__.py`: Entry point and main processing logic
+  - `services/`
+    - `downloader.py`: FAERS data download functionality
+    - `processor.py`: Data processing and standardization
+  - `models/`
+    - `faers_data.py`: Data models for FAERS entities
+  - `utils/`
+    - `helpers.py`: Helper functions and utilities
 
-[X] Mapping of existing opportunities to access the FAERS
+## Data Processing Steps
 
-[X] DiAna dictionary for drug name standardization (continuous refinement)
+1. **Download**: Automatically downloads FAERS quarterly data files
+2. **Extract**: Unzips downloaded files
+3. **Clean**: 
+   - Standardizes field names
+   - Converts units (age to days, weight to kg)
+   - Normalizes country and occupation codes
+4. **Process**:
+   - Handles multi-substance drugs
+   - Validates record completeness
+   - Deduplicates records using probabilistic matching
+5. **Save**: Stores processed data in pickle format
 
-[X] DiAna access to a clean FAERS with all quarters collapsed together (continuous refinement). 
+## Contributing
 
-[ ] Probabilistic deduplication (work in progress)
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-[ ] Imputation of missing data
+## License
 
-[ ] DiAna R package for drug safety investigations
-
-[ ] Linkage with other ontologies
-
-
-System and Software
-The script was tested on the following operative systems:
-
-Michele’s Macbook
-
-- **Platform**: aarch64-apple-darwin20
-- **RAM**: 8 GB
-- **Processor**: Apple M1
-- **Language**: R version 4.3.1 (2023-06-16)
-- **Software**: RStudio Version 2023.09.0+463 "Desert Sunflower"
-
-Valentina’s Windows
-
-- **Platform**: Windows 11 Pro version 22H2
-- **RAM**: 16 GB
-- **Processor**: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz   1.69 GHz
-- **Language**: R version 4.3.1 (2023-06-16 ucrt) -- "Beagle Scouts"
-- **Software**: RStudio Version 2023.03.1 Build 446
-
-
-
+This project is licensed under the MIT License - see the LICENSE file for details.
