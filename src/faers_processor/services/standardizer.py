@@ -80,12 +80,13 @@ class DataStandardizer:
         return self._drug_dictionary
 
     def standardize_dates(self, data: pd.DataFrame, date_columns: List[str]) -> pd.DataFrame:
-        """Standardize date columns to datetime format.
-        
+        """
+        Standardize date columns in the DataFrame.
+
         Args:
             data: Input DataFrame
             date_columns: List of column names containing dates
-            
+
         Returns:
             DataFrame with standardized dates
         """
@@ -94,12 +95,10 @@ class DataStandardizer:
         with tqdm(total=len(date_columns), desc="Standardizing dates") as pbar:
             for col in date_columns:
                 if col in df.columns:
-                    # First try standard datetime conversion
                     try:
                         df[col] = pd.to_datetime(df[col], errors='coerce')
                     except Exception as e:
                         logging.warning(f"Error converting {col} to datetime: {str(e)}")
-
                         # Try custom date parsing for problematic formats
                         df[col] = df[col].apply(self._parse_custom_date)
                 pbar.update(1)
@@ -429,7 +428,8 @@ class DataStandardizer:
         return df
 
     def check_date_validity(self, date_str: str, min_year: int = 1985) -> bool:
-        """Check if a date string is valid.
+        """
+        Check if a date string is valid.
         
         Args:
             date_str: Date string to check
@@ -470,7 +470,8 @@ class DataStandardizer:
             return False
 
     def standardize_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """Standardize date columns in the dataframe.
+        """
+        Standardize date columns in the dataframe.
         
         Args:
             df: DataFrame with date columns
@@ -492,7 +493,8 @@ class DataStandardizer:
         return df
 
     def standardize_therapy_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """Standardize therapy dates and durations.
+        """
+        Standardize therapy dates and durations.
         
         Args:
             df: DataFrame with therapy dates and duration
@@ -1527,53 +1529,47 @@ class DataStandardizer:
                 (~self.diana_dict['Substance'].isna())
                 ][['drugname', 'Substance']]
 
-    def _clean_drugname(self, drugname: str) -> str:
+    def _clean_drugname(self, name: str) -> str:
         """
-        Clean and standardize drug name using DiAna rules.
-        
+        Clean and standardize drug names.
+
         Args:
-            drugname: Raw drug name string
-        
+            name: Drug name to clean
+
         Returns:
-            Cleaned drug name string
+            Cleaned drug name
         """
-        if pd.isna(drugname):
-            return drugname
+        if pd.isna(name):
+            return name
 
-        # Convert to lowercase and trim whitespace
-        name = drugname.lower().strip()
-
-        # Remove trailing periods
-        name = re.sub(r'\.$', '', name)
-
-        # Normalize whitespace
+        # Convert to string and clean
+        name = str(name).strip().lower()
+        
+        # Remove special characters and extra spaces
+        name = re.sub(r'[^\w\s-]', ' ', name)
         name = re.sub(r'\s+', ' ', name)
-
-        # Remove text after last closing parenthesis
-        name = re.sub(r'[^)[:^punct:]]+$', '', name, flags=re.PERL).strip()
-
-        # Remove text before first opening parenthesis
-        name = re.sub(r'^[^([:^punct:]]+', '', name, flags=re.PERL).strip()
-
-        # Repeat the above two steps to handle nested cases
-        name = re.sub(r'[^)[:^punct:]]+$', '', name, flags=re.PERL).strip()
-        name = re.sub(r'^[^([:^punct:]]+', '', name, flags=re.PERL).strip()
-
-        # Fix spacing around parentheses
-        name = name.replace('( ', '(').replace(' )', ')')
-
+        
+        # Remove common suffixes and prefixes
+        removals = [
+            r'\b(tab|caps|inj|sol|susp|cream|oint|patch)\b',
+            r'\b\d+\s*(mg|ml|g|mcg)\b',
+            r'\b(extended|immediate|delayed)\s*release\b'
+        ]
+        for pattern in removals:
+            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+        
         return name.strip()
 
-    def check_date_validity(self, date_str: str, min_year: int = 1985) -> bool:
+    def check_date_validity(self, date_str: str, min_year: int = 1900) -> bool:
         """
         Check if a date string is valid.
         
         Args:
             date_str: Date string to check
-            min_year: Minimum valid year
+            min_year: Minimum valid year (default: 1900)
             
         Returns:
-            True if date is valid, False otherwise
+            bool: True if date is valid, False otherwise
         """
         if pd.isna(date_str):
             return False
@@ -1605,6 +1601,3 @@ class DataStandardizer:
 
         except (ValueError, TypeError):
             return False
-
-
-{{...}}
