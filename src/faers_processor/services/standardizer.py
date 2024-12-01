@@ -80,18 +80,17 @@ class DataStandardizer:
         return self._drug_dictionary
 
     def standardize_dates(self, data: pd.DataFrame, date_columns: List[str]) -> pd.DataFrame:
-        """
-        Standardize date columns in the DataFrame.
-
+        """Standardize date columns to datetime format.
+        
         Args:
             data: Input DataFrame
             date_columns: List of column names containing dates
-
+        
         Returns:
             DataFrame with standardized dates
         """
         df = data.copy()
-
+        
         with tqdm(total=len(date_columns), desc="Standardizing dates") as pbar:
             for col in date_columns:
                 if col in df.columns:
@@ -102,7 +101,7 @@ class DataStandardizer:
                         # Try custom date parsing for problematic formats
                         df[col] = df[col].apply(self._parse_custom_date)
                 pbar.update(1)
-
+        
         return df
 
     def _parse_custom_date(self, date_str: str) -> Optional[pd.Timestamp]:
@@ -427,16 +426,15 @@ class DataStandardizer:
 
         return df
 
-    def check_date_validity(self, date_str: str, min_year: int = 1985) -> bool:
-        """
-        Check if a date string is valid.
+    def check_date_validity(self, date_str: str, min_year: int = 1900) -> bool:
+        """Check if a date string is valid.
         
         Args:
             date_str: Date string to check
-            min_year: Minimum valid year
+            min_year: Minimum valid year (default: 1900)
             
         Returns:
-            True if date is valid, False otherwise
+            bool: True if date is valid, False otherwise
         """
         if pd.isna(date_str):
             return False
@@ -470,8 +468,7 @@ class DataStandardizer:
             return False
 
     def standardize_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """
-        Standardize date columns in the dataframe.
+        """Standardize date columns in the dataframe.
         
         Args:
             df: DataFrame with date columns
@@ -493,8 +490,7 @@ class DataStandardizer:
         return df
 
     def standardize_therapy_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """
-        Standardize therapy dates and durations.
+        """Standardize therapy dates and durations.
         
         Args:
             df: DataFrame with therapy dates and duration
@@ -827,40 +823,33 @@ class DataStandardizer:
                 (~self.diana_dict['Substance'].isna())
                 ][['drugname', 'Substance']]
 
-    def _clean_drugname(self, drugname: str) -> str:
-        """
-        Clean and standardize drug name using DiAna rules.
+    def _clean_drugname(self, name: str) -> str:
+        """Clean and standardize drug names.
         
         Args:
-            drugname: Raw drug name string
+            name: Drug name to clean
         
         Returns:
-            Cleaned drug name string
+            Cleaned drug name
         """
-        if pd.isna(drugname):
-            return drugname
+        if pd.isna(name):
+            return name
 
-        # Convert to lowercase and trim whitespace
-        name = drugname.lower().strip()
+        # Convert to string and clean
+        name = str(name).strip().lower()
 
-        # Remove trailing periods
-        name = re.sub(r'\.$', '', name)
-
-        # Normalize whitespace
+        # Remove special characters and extra spaces
+        name = re.sub(r'[^\w\s-]', ' ', name)
         name = re.sub(r'\s+', ' ', name)
 
-        # Remove text after last closing parenthesis
-        name = re.sub(r'[^)[:^punct:]]+$', '', name, flags=re.PERL).strip()
-
-        # Remove text before first opening parenthesis
-        name = re.sub(r'^[^([:^punct:]]+', '', name, flags=re.PERL).strip()
-
-        # Repeat the above two steps to handle nested cases
-        name = re.sub(r'[^)[:^punct:]]+$', '', name, flags=re.PERL).strip()
-        name = re.sub(r'^[^([:^punct:]]+', '', name, flags=re.PERL).strip()
-
-        # Fix spacing around parentheses
-        name = name.replace('( ', '(').replace(' )', ')')
+        # Remove common suffixes and prefixes
+        removals = [
+            r'\b(tab|caps|inj|sol|susp|cream|oint|patch)\b',
+            r'\b\d+\s*(mg|ml|g|mcg)\b',
+            r'\b(extended|immediate|delayed)\s*release\b'
+        ]
+        for pattern in removals:
+            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
 
         return name.strip()
 
@@ -896,109 +885,6 @@ class DataStandardizer:
         result[invalid_dates] = pd.NA
 
         return result
-
-    def standardize_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """
-        Standardize date columns in the dataframe.
-        
-        Args:
-            df: DataFrame with date columns
-            max_date: Maximum allowed date (YYYYMMDD format)
-        
-        Returns:
-            DataFrame with standardized dates
-        """
-        df = df.copy()
-
-        # Date columns to process
-        date_columns = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
-
-        # Process each date column
-        for col in date_columns:
-            if col in df.columns:
-                df[col] = self.check_date(df[col], max_date)
-
-        return df
-
-    def standardize_therapy_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """
-        Standardize therapy dates and durations.
-        
-        Args:
-            df: DataFrame with therapy dates and duration
-            max_date: Maximum allowed date
-        
-        Returns:
-            DataFrame with standardized dates and durations
-        """
-        df = df.copy()
-
-        # Standardize start and end dates
-        for col in ['start_dt', 'end_dt']:
-            if col in df.columns:
-                df[col] = self.check_date(df[col], max_date)
-
-        # Duration conversion factors (to days)
-        dur_factors = {
-            'YR': 365,
-            'MON': 30.41667,
-            'WK': 7,
-            'DAY': 1,
-            'HR': 0.04166667,
-            'MIN': 0.0006944444,
-            'SEC': 1.157407e-05
-        }
-
-        # Convert duration to numeric
-        df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
-
-        # Create duration corrector
-        df['dur_corrector'] = df['dur_cod'].map(dur_factors)
-
-        # Calculate duration in days
-        df['dur_in_days'] = abs(df['dur']) * df['dur_corrector']
-
-        # Handle implausible durations (> 50 years)
-        df.loc[df['dur_in_days'] > 50 * 365, 'dur_in_days'] = pd.NA
-
-        # Calculate standardized duration from dates
-        df['dur_std'] = pd.NA
-        mask_8digit = (df['start_dt'].astype(str).str.len() == 8) & (df['end_dt'].astype(str).str.len() == 8)
-
-        if mask_8digit.any():
-            start_dates = pd.to_datetime(df.loc[mask_8digit, 'start_dt'].astype(str), format='%Y%m%d')
-            end_dates = pd.to_datetime(df.loc[mask_8digit, 'end_dt'].astype(str), format='%Y%m%d')
-            df.loc[mask_8digit, 'dur_std'] = (end_dates - start_dates).dt.days + 1
-
-        # Handle negative durations
-        df.loc[df['dur_std'] < 0, 'dur_std'] = pd.NA
-
-        # Use calculated duration if date-based duration is NA
-        df.loc[df['dur_std'].isna(), 'dur_std'] = df.loc[df['dur_std'].isna(), 'dur_in_days']
-
-        # Backfill missing dates using duration
-        def fill_dates(row):
-            if pd.isna(row['start_dt']) and not pd.isna(row['end_dt']) and not pd.isna(row['dur_std']):
-                end_date = pd.to_datetime(str(row['end_dt']), format='%Y%m%d')
-                start_date = end_date - pd.Timedelta(days=row['dur_std'] - 1)
-                return int(start_date.strftime('%Y%m%d'))
-            return row['start_dt']
-
-        def fill_end_dates(row):
-            if pd.isna(row['end_dt']) and not pd.isna(row['start_dt']) and not pd.isna(row['dur_std']):
-                start_date = pd.to_datetime(str(row['start_dt']), format='%Y%m%d')
-                end_date = start_date + pd.Timedelta(days=row['dur_std'] - 1)
-                return int(end_date.strftime('%Y%m%d'))
-            return row['end_dt']
-
-        df['start_dt'] = df.apply(fill_dates, axis=1)
-        df['end_dt'] = df.apply(fill_end_dates, axis=1)
-
-        # Final duration assignment and cleanup
-        df['dur_in_days'] = df['dur_std']
-        df = df.drop(columns=['dur_std', 'dur_corrector', 'dur', 'dur_cod'])
-
-        return df
 
     def standardize_drugs(self, df: pd.DataFrame, drugname_col: str = 'drugname',
                           update_dictionary: bool = False) -> pd.DataFrame:

@@ -76,7 +76,6 @@ from tqdm import tqdm
 
 from .services.deduplicator import Deduplicator
 from .services.downloader import FAERSDownloader
-from .services.standardizer import DataStandardizer
 from .services.processor import FAERSProcessor
 
 # Check if running on Apple Silicon
@@ -329,22 +328,25 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
 
 
 def save_optimized_parquet(df: pd.DataFrame, output_file: Path) -> None:
-    """Save DataFrame to parquet with optimized settings."""
-    # Create PyArrow table with optimized schema
-    table = pa.Table.from_pandas(df, preserve_index=False)
-
-    # Write with optimized settings
-    pq.write_table(
-        table,
-        output_file,
-        compression='snappy',
-        use_dictionary=True,
-        dictionary_pagesize_limit=1048576,  # 1MB
-        data_page_size=1048576,  # 1MB
-        write_statistics=True,
-        use_byte_stream_split=True,
-        use_threads=True
-    )
+    """Save DataFrame to parquet with optimized settings.
+    
+    Args:
+        df: DataFrame to save
+        output_file: Path to save file to
+    """
+    try:
+        # Create parent directory if it doesn't exist
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save with optimized settings
+        df.to_parquet(
+            output_file,
+            engine='pyarrow',
+            compression='snappy',
+            index=False
+        )
+    except Exception as e:
+        logging.error(f"Error saving parquet file: {str(e)}")
 
 
 def download_data(data_dir: Path, max_workers: int) -> None:
