@@ -8,6 +8,7 @@ class Demographics:
     """Represents demographic information from FAERS."""
     primary_id: str
     case_id: str
+    quarter: str
     case_version: Optional[str] = None
     i_f_code: Optional[str] = None
     sex: Optional[str] = None
@@ -19,7 +20,6 @@ class Demographics:
     occurrence_country: Optional[str] = None
     event_date: Optional[datetime] = None
     report_date: Optional[datetime] = None
-    quarter: str
 
 @dataclass
 class Drug:
