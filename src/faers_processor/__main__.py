@@ -201,31 +201,47 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
     use_dask = args.get('use_dask', False)
     chunk_size = args.get('chunk_size', 100000)
 
+    # Common read options
+    read_opts = {
+        'filepath_or_buffer': str(file_path),
+        'sep': '$',
+        'dtype': str,
+        'na_values': ['', 'NA', 'NULL'],
+        'keep_default_na': True
+    }
+
     try:
-        read_args = {
-            'filepath_or_buffer': file_path,
-            'sep': '$',
-            'dtype': str,
-            'na_values': ['', 'NA', 'NULL'],
-            'keep_default_na': True,
-            'on_bad_lines': 'skip'
-        }
-
+        # Read data with optimized settings
         if use_dask:
-            df = dd.read_csv(**read_args)
+            df = dd.read_csv(
+                **read_opts,
+                blocksize=chunk_size * 1024
+            )
         else:
-            df = pd.read_csv(**read_args)
+            chunks = pd.read_csv(
+                **read_opts,
+                chunksize=chunk_size
+            )
+            # Concatenate chunks into single DataFrame
+            df = pd.concat(chunks, ignore_index=True)
 
-        return process_chunk({
-            'chunk': df,
-            'data_type': data_type,
-            'standardizer': standardizer,
-            'use_dask': use_dask
-        })
+        # Process based on data type
+        if data_type == 'demographics':
+            result = standardizer.process_demographics(df)
+        elif data_type == 'drugs':
+            result = standardizer.process_drugs(df)
+        else:  # reactions
+            result = standardizer.process_reactions(df)
+
+        # Compute if using Dask
+        if use_dask:
+            result = result.compute()
+
+        return result
 
     except Exception as e:
-        logging.error(f"Error processing file {file_path}: {str(e)}")
-        return pd.DataFrame()
+        logging.error(f"Error processing {file_path}: {str(e)}")
+        raise
 
 
 def save_optimized_parquet(df: pd.DataFrame, output_file: Path) -> None:
