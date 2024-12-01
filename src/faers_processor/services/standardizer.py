@@ -26,6 +26,7 @@ import pandas as pd
 import seaborn as sns
 import vaex
 from matplotlib import pyplot as plt
+from tqdm import tqdm
 
 # Optimize NumPy for ARM64 if available
 try:
@@ -882,28 +883,28 @@ class DataStandardizer:
         """Standardize date fields."""
         df = df.copy()
         max_date = datetime.now().strftime("%Y%m%d")
-
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-                df[col] = df[col].astype(str)
-
-                # Validate dates based on length and range
-                mask = df[col].str.len().isin([4, 6, 8])
-                df.loc[~mask, col] = np.nan
-
-                # Validate year range
-                year_mask = (df[col].str[:4].astype(float) >= min_year) & \
-                            (df[col].str[:4].astype(float) <= int(max_date[:4]))
-                df.loc[~year_mask, col] = np.nan
-
-                # Validate month/day if present
-                month_mask = df[col].str.len() >= 6
-                df.loc[month_mask & (df[col].str[4:6].astype(float) > 12), col] = np.nan
-
-                day_mask = df[col].str.len() == 8
-                df.loc[day_mask & (df[col].str[6:8].astype(float) > 31), col] = np.nan
-
+        
+        with tqdm(total=len(date_cols), desc="Standardizing dates") as pbar:
+            for col in date_cols:
+                if col in df.columns:
+                    # Convert to string and pad with zeros
+                    df[col] = df[col].astype(str).str.zfill(8)
+                    
+                    # Check year range
+                    year_mask = (df[col].str[:4].astype(float) < min_year) | \
+                              (df[col].str[:4].astype(float) > int(max_date[:4]))
+                    df.loc[year_mask, col] = np.nan
+                    
+                    # Check month range
+                    month_mask = df[col].str[4:6].astype(float) > 12
+                    df.loc[month_mask, col] = np.nan
+                    
+                    # Check day range
+                    day_mask = df[col].str.len() == 8
+                    df.loc[day_mask & (df[col].str[6:8].astype(float) > 31), col] = np.nan
+                
+                pbar.update(1)
+        
         return df
 
     def calculate_time_to_onset(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -941,64 +942,25 @@ class DataStandardizer:
         """
         # Make a copy to avoid modifying the input
         df = df.copy()
-
-        # Clean drug names
-        df[drugname_col] = df[drugname_col].apply(self._clean_drugname)
-
-        if update_dictionary:
-            # Calculate frequencies
-            drug_freq = df[drugname_col].value_counts().reset_index()
-            drug_freq.columns = ['drugname', 'N']
-            drug_freq['freq'] = 100 * drug_freq['N'] / drug_freq['N'].sum()
-
-            # Merge with existing dictionary
-            merged_dict = pd.merge(
-                drug_freq,
-                self.diana_dict[['drugname', 'Substance']],
-                on='drugname',
-                how='left'
-            )
-
-            # Save updated dictionary
-            dict_path = self.external_dir / 'DiAna_dictionary' / 'drugnames_standardized.csv'
-            merged_dict.to_csv(dict_path, sep=';', index=False)
-
-            # Reload dictionary
-            self._load_diana_dictionary()
-
-        # Merge with dictionary to get standardized substances
-        df = pd.merge(df, self.diana_dict, on=drugname_col, how='left')
-
-        # Handle multi-substance entries
-        multi_mask = df['Substance'].str.contains(';', na=False)
-
-        # Split multi-substance entries
-        if multi_mask.any():
-            # Process multi-substance entries
-            multi_drugs = df[multi_mask].copy()
-            single_drugs = df[~multi_mask].copy()
-
-            # Split substances and create new rows
-            split_drugs = []
-            for _, row in multi_drugs.iterrows():
-                substances = row['Substance'].split(';')
-                for substance in substances:
-                    new_row = row.copy()
-                    new_row['Substance'] = substance
-                    split_drugs.append(new_row)
-
-            multi_drugs = pd.DataFrame(split_drugs)
-            df = pd.concat([single_drugs, multi_drugs], ignore_index=True)
-
-        # Handle trial markings
-        df['trial'] = df['Substance'].str.contains(', trial', na=False)
-        df['Substance'] = df['Substance'].str.replace(', trial', '')
-
-        # Convert columns to categorical
-        for col in [drugname_col, 'prod_ai', 'Substance']:
-            if col in df.columns:
-                df[col] = df[col].astype('category')
-
+        total_rows = len(df)
+        
+        with tqdm(total=total_rows, desc="Standardizing drug names") as pbar:
+            # Clean drug names
+            df[drugname_col] = df[drugname_col].apply(lambda x: self._clean_drugname(x))
+            pbar.update(total_rows // 3)
+            
+            # Apply drug dictionary
+            drug_dict = self.get_drug_dictionary()
+            df[drugname_col] = df[drugname_col].map(lambda x: drug_dict.get(x.lower(), x) if pd.notna(x) else x)
+            pbar.update(total_rows // 3)
+            
+            # Update categories
+            categorical_cols = ['role_cod', 'drugname', 'route', 'dose_form']
+            for col in categorical_cols:
+                if col in df.columns:
+                    df[col] = df[col].astype('category')
+            pbar.update(total_rows // 3)
+        
         return df
 
     def analyze_age_groups(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
@@ -1365,7 +1327,7 @@ class DataStandardizer:
             reac_df: Reactions DataFrame
         
         Returns:
-            Demographics DataFrame with incomplete cases removed
+            DataFrame with incomplete cases removed
         """
         demo_df = demo_df.copy()
         drug_df = drug_df.copy()

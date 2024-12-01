@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import pandas as pd
+from tqdm import tqdm
 
 from .standardizer import DataStandardizer
 
@@ -95,19 +96,24 @@ class FAERSProcessor:
 
     def process_file(self, file_path: Path, file_type: str) -> pd.DataFrame:
         """Process a single FAERS file based on type."""
+        logging.info(f"Processing {file_type} file: {file_path.name}")
         df = pd.read_csv(file_path, sep='$', dtype=str)
-
+        
         processors = {
             'DEMO': self.process_demographics,
             'DRUG': self.process_drugs,
             'REAC': self.process_reactions,
             'INDI': self.process_indications
         }
-
+        
         if file_type not in processors:
             raise ValueError(f"Unknown file type: {file_type}")
-
-        return processors[file_type](df)
+        
+        with tqdm(total=1, desc=f"Processing {file_type}") as pbar:
+            result = processors[file_type](df)
+            pbar.update(1)
+        
+        return result
 
     def validate_record(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
                         reac_df: pd.DataFrame) -> pd.DataFrame:
@@ -287,49 +293,51 @@ class FAERSProcessor:
             Unified DataFrame with standardized columns
         """
         unified_data = None
-
-        for file_path in files_list:
-            # Read the file
-            if file_path.endswith('.csv'):
-                df = pd.read_csv(file_path)
-            else:  # Assume text file with pipe delimiter
-                df = pd.read_csv(file_path, sep='$')
-
-            # Rename columns using name_key
-            df = df.rename(columns={v: k for k, v in name_key.items()})
-
-            if unified_data is None:
-                unified_data = df
-            else:
-                # Handle duplicate columns if specified
-                if duplicated_cols_x and duplicated_cols_y:
-                    # Remove spaces from column names in y
-                    df.columns = df.columns.str.strip()
-
-                    # Merge based on common columns excluding duplicates
-                    common_cols = list(set(unified_data.columns) & set(df.columns))
-                    common_cols = [col for col in common_cols
-                                   if col not in duplicated_cols_x
-                                   and col not in duplicated_cols_y]
-
-                    unified_data = pd.merge(unified_data, df, on=common_cols, how='outer')
-
-                    # Handle duplicate columns
-                    for x_col, y_col in zip(duplicated_cols_x, duplicated_cols_y):
-                        # Use coalesce logic: take value from x if not null, otherwise from y
-                        if x_col in unified_data and y_col in unified_data:
-                            unified_data[x_col] = unified_data[x_col].fillna(unified_data[y_col])
-                            unified_data = unified_data.drop(columns=[y_col])
+        
+        with tqdm(total=len(files_list), desc="Unifying files") as pbar:
+            for file_path in files_list:
+                # Read the file
+                if file_path.endswith('.csv'):
+                    df = pd.read_csv(file_path)
+                else:  # Assume text file with pipe delimiter
+                    df = pd.read_csv(file_path, sep='$')
+                
+                # Rename columns using name_key
+                df = df.rename(columns={v: k for k, v in name_key.items()})
+                
+                if unified_data is None:
+                    unified_data = df
                 else:
-                    # Simple outer merge on all common columns
-                    unified_data = pd.merge(unified_data, df, how='outer')
+                    # Handle duplicate columns if specified
+                    if duplicated_cols_x and duplicated_cols_y:
+                        # Remove spaces from column names in y
+                        df.columns = df.columns.str.strip()
 
+                        # Merge based on common columns excluding duplicates
+                        common_cols = list(set(unified_data.columns) & set(df.columns))
+                        common_cols = [col for col in common_cols
+                                    if col not in duplicated_cols_x
+                                    and col not in duplicated_cols_y]
+                        
+                        unified_data = pd.merge(unified_data, df, on=common_cols, how='outer')
+
+                        # Handle duplicate columns
+                        for x_col, y_col in zip(duplicated_cols_x, duplicated_cols_y):
+                            # Use coalesce logic: take value from x if not null, otherwise from y
+                            unified_data[x_col] = unified_data[x_col].combine_first(unified_data[y_col])
+                            unified_data = unified_data.drop(columns=[y_col])
+                    else:
+                        # Simple outer merge on all common columns
+                        unified_data = pd.merge(unified_data, df, how='outer')
+                
+                pbar.update(1)
+        
         # Subset columns if specified
         if column_subset:
             # Only keep columns that exist in the data
             valid_columns = [col for col in column_subset if col in unified_data.columns]
             unified_data = unified_data[valid_columns]
-
+        
         return unified_data
 
     def process_demo_files(self, faers_files: List[str], output_path: str):

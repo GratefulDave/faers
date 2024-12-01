@@ -9,8 +9,8 @@ from typing import List, Set
 
 import aiofiles
 import aiohttp
-import requests
 from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 
 class DataDownloader(ABC):
@@ -54,19 +54,30 @@ class FAERSDownloader(DataDownloader):
             return links
 
     async def download_file(self, url: str, destination: Path) -> None:
-        """Download a single FAERS file."""
+        """Download a single FAERS file with progress tracking."""
         async with self.session.get(url) as response:
             if response.status == 200:
-                async with aiofiles.open(destination, 'wb') as f:
-                    await f.write(await response.read())
+                file_size = int(response.headers.get('content-length', 0))
+                with tqdm(total=file_size, unit='iB', unit_scale=True, desc=destination.name) as pbar:
+                    async with aiofiles.open(destination, 'wb') as f:
+                        while True:
+                            chunk = await response.content.read(8192)
+                            if not chunk:
+                                break
+                            await f.write(chunk)
+                            pbar.update(len(chunk))
             else:
                 logging.error(f"Failed to download {url}: {response.status}")
 
     async def extract_file(self, zip_path: Path, extract_path: Path) -> None:
-        """Extract a downloaded zip file."""
+        """Extract a downloaded zip file with progress tracking."""
         extract_path.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_path)
+            files = [f for f in zip_ref.namelist() if f.endswith('.txt')]
+            with tqdm(total=len(files), desc=f"Extracting {zip_path.name}") as pbar:
+                for file in files:
+                    zip_ref.extract(file, extract_path)
+                    pbar.update(1)
         zip_path.unlink()  # Remove zip file after extraction
 
     async def download_all(self):
@@ -135,12 +146,20 @@ class FAERSDataDownloader:
 
         logging.info(f"Downloading FAERS data for {quarter}")
         response = requests.get(latest_zip, stream=True)
-        with open(zip_path, 'wb') as f:
-            shutil.copyfileobj(response.raw, f)
+        file_size = int(response.headers.get('content-length', 0))
+        with tqdm(total=file_size, unit='iB', unit_scale=True, desc=zip_path.name) as pbar:
+            with open(zip_path, 'wb') as f:
+                for chunk in response.iter_content(8192):
+                    f.write(chunk)
+                    pbar.update(len(chunk))
 
         # Extract files
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(extract_dir)
+            files = [f for f in zf.namelist() if f.endswith('.txt')]
+            with tqdm(total=len(files), desc=f"Extracting {zip_path.name}") as pbar:
+                for file in files:
+                    zf.extract(file, extract_dir)
+                    pbar.update(1)
 
         # Clean up zip file
         zip_path.unlink()

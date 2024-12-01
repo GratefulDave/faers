@@ -1,6 +1,6 @@
 """FAERS report deduplication utilities."""
 import pandas as pd
-
+from tqdm import tqdm
 
 class Deduplicator:
     """Handles deduplication of FAERS reports."""
@@ -124,11 +124,13 @@ class Deduplicator:
 
         # Find probabilistic duplicates
         duplicates = set()
-        for idx1, row1 in demo_df.iterrows():
-            for idx2, row2 in demo_df.iloc[idx1 + 1:].iterrows():
-                if calculate_similarity(row1, row2) >= threshold:
-                    duplicates.add(row1['primaryid'])
-                    break
+        with tqdm(total=len(demo_df), desc="Finding duplicates") as pbar:
+            for idx1, row1 in demo_df.iterrows():
+                for idx2, row2 in demo_df.iloc[idx1 + 1:].iterrows():
+                    if calculate_similarity(row1, row2) >= threshold:
+                        duplicates.add(row1['primaryid'])
+                        break
+                pbar.update(1)
 
         demo_df['probabilistic_duplicate'] = demo_df['primaryid'].isin(duplicates)
         return demo_df
