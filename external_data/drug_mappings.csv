@@ -1,0 +1,11 @@
+drug_name,standardized_name,common_variations
+acetaminophen,acetaminophen,"APAP,Tylenol,paracetamol"
+ibuprofen,ibuprofen,"Advil,Motrin,IBU"
+aspirin,aspirin,"ASA,acetylsalicylic acid"
+amoxicillin,amoxicillin,"Amox,AMOX,amoxycillin"
+omeprazole,omeprazole,"Prilosec,OMEP,omeprazol"
+metformin,metformin,"Glucophage,METF,metformine"
+lisinopril,lisinopril,"Zestril,Prinivil,LISP"
+simvastatin,simvastatin,"Zocor,SIMV,simvastatine"
+metoprolol,metoprolol,"Lopressor,Toprol,METO"
+sertraline,sertraline,"Zoloft,SERT,sertralin"

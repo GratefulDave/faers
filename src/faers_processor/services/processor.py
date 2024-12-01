@@ -60,7 +60,22 @@ class FAERSProcessor(DataProcessor):
                 self.occupation_map[row['code']] = row['code']
                 for var in row['variations'].split(','):
                     self.occupation_map[var.strip()] = row['code']
-        
+
+        # Load drug name mappings
+        drug_file = self.external_dir / 'drug_mappings.csv'
+        if drug_file.exists():
+            df = pd.read_csv(drug_file)
+            self.drug_map = {}
+            for _, row in df.iterrows():
+                standard_name = row['standardized_name'].lower()
+                self.drug_map[standard_name] = standard_name
+                self.drug_map[row['drug_name'].lower()] = standard_name
+                for var in row['common_variations'].split(','):
+                    self.drug_map[var.strip().lower()] = standard_name
+        else:
+            logging.warning("Drug mappings file not found. Drug name standardization will be skipped.")
+            self.drug_map = {}
+
     def process_file(self, file_path: Path) -> pd.DataFrame:
         """Process a single FAERS data file."""
         try:
@@ -268,6 +283,10 @@ class FAERSProcessor(DataProcessor):
     def process_drugs(self, file_path: Path) -> List[Drug]:
         """Process drug data file."""
         df = self.process_file(file_path)
+        
+        # Standardize drug names
+        df = self.standardize_drug_names(df)
+        
         return [
             Drug(
                 primary_id=row['primary_id'],
@@ -428,6 +447,17 @@ class FAERSProcessor(DataProcessor):
                 f.write(content)
         except IOError as e:
             logging.error(f"Error correcting file {file_path}: {str(e)}")
+
+    def standardize_drug_names(self, df: pd.DataFrame, drug_column: str = 'drug_name') -> pd.DataFrame:
+        """Standardize drug names using external reference data."""
+        if not self.drug_map:
+            return df
+
+        if drug_column in df.columns:
+            df[drug_column] = df[drug_column].str.lower()
+            df[drug_column] = df[drug_column].map(lambda x: self.drug_map.get(x, x))
+            
+        return df
 
     def process_drug_info(self, file_path: Path) -> List[DrugInfo]:
         """Process drug information data file."""
