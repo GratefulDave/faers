@@ -33,9 +33,96 @@ class FAERSDownloader(DataDownloader):
     FAERS_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
 
     def __init__(self, output_dir: Path):
+        """Initialize the FAERS downloader.
+        
+        Args:
+            output_dir: Base directory for downloaded files
+        """
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.session = None
+
+    def get_quarters(self) -> List[str]:
+        """Get list of available FAERS quarters.
+        
+        Returns:
+            List of quarter identifiers (e.g., ['2023Q1', '2023Q2'])
+        """
+        try:
+            response = requests.get(self.FAERS_URL)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = soup.find_all('a', href=re.compile(r'.*\.zip$'))
+            
+            quarters = set()
+            for link in links:
+                match = re.search(r'(\d{4}q[1-4])', link['href'].lower())
+                if match:
+                    quarters.add(match.group(1))
+            
+            return sorted(list(quarters))
+            
+        except Exception as e:
+            logging.error(f"Error getting quarters: {str(e)}")
+            return []
+
+    def download_quarter(self, quarter: str, output_dir: Path) -> bool:
+        """Download a specific FAERS quarter.
+        
+        Args:
+            quarter: Quarter identifier (e.g., '2023Q1')
+            output_dir: Directory to save downloaded files
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        try:
+            # Get download links for quarter
+            response = requests.get(self.FAERS_URL)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = soup.find_all('a', href=re.compile(f'.*{quarter.lower()}.*\.zip$'))
+            
+            if not links:
+                logging.warning(f"No download links found for quarter {quarter}")
+                return False
+            
+            # Create quarter directory
+            quarter_dir = output_dir / quarter
+            quarter_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Download and extract each file
+            for link in tqdm(links, desc=f"Downloading {quarter} files"):
+                url = link['href']
+                filename = url.split('/')[-1]
+                zip_path = quarter_dir / filename
+                
+                # Download file
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+                
+                total_size = int(response.headers.get('content-length', 0))
+                with tqdm(total=total_size, unit='iB', unit_scale=True) as pbar:
+                    with open(zip_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+                
+                # Extract file
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(quarter_dir)
+                
+                # Remove zip file after extraction
+                zip_path.unlink()
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error downloading quarter {quarter}: {str(e)}")
+            return False
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -54,31 +141,48 @@ class FAERSDownloader(DataDownloader):
             return links
 
     async def download_file(self, url: str, destination: Path) -> None:
-        """Download a single FAERS file with progress tracking."""
-        async with self.session.get(url) as response:
-            if response.status == 200:
-                file_size = int(response.headers.get('content-length', 0))
-                with tqdm(total=file_size, unit='iB', unit_scale=True, desc=destination.name) as pbar:
-                    async with aiofiles.open(destination, 'wb') as f:
-                        while True:
-                            chunk = await response.content.read(8192)
-                            if not chunk:
-                                break
+        """Download a single file asynchronously.
+        
+        Args:
+            url: URL to download from
+            destination: Path to save file to
+        """
+        try:
+            async with self.session.get(url) as response:
+                response.raise_for_status()
+                total_size = int(response.headers.get('content-length', 0))
+                
+                with tqdm(total=total_size, unit='iB', unit_scale=True) as pbar:
+                    async with aiofiles.open(destination, mode='wb') as f:
+                        async for chunk in response.content.iter_chunked(8192):
                             await f.write(chunk)
                             pbar.update(len(chunk))
-            else:
-                logging.error(f"Failed to download {url}: {response.status}")
+                            
+        except Exception as e:
+            logging.error(f"Error downloading {url}: {str(e)}")
+            raise
 
     async def extract_file(self, zip_path: Path, extract_path: Path) -> None:
-        """Extract a downloaded zip file with progress tracking."""
-        extract_path.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            files = [f for f in zip_ref.namelist() if f.endswith('.txt')]
-            with tqdm(total=len(files), desc=f"Extracting {zip_path.name}") as pbar:
-                for file in files:
-                    zip_ref.extract(file, extract_path)
-                    pbar.update(1)
-        zip_path.unlink()  # Remove zip file after extraction
+        """Extract a downloaded zip file.
+        
+        Args:
+            zip_path: Path to zip file
+            extract_path: Directory to extract to
+        """
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                total_size = sum(info.file_size for info in zip_ref.filelist)
+                extracted_size = 0
+                
+                with tqdm(total=total_size, unit='iB', unit_scale=True) as pbar:
+                    for info in zip_ref.filelist:
+                        zip_ref.extract(info, extract_path)
+                        extracted_size += info.file_size
+                        pbar.update(info.file_size)
+                        
+        except Exception as e:
+            logging.error(f"Error extracting {zip_path}: {str(e)}")
+            raise
 
     async def download_all(self):
         """Download and extract all FAERS data."""

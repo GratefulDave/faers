@@ -76,6 +76,8 @@ from tqdm import tqdm
 
 from .services.deduplicator import Deduplicator
 from .services.downloader import FAERSDownloader
+from .services.standardizer import DataStandardizer
+from .services.processor import FAERSProcessor
 
 # Check if running on Apple Silicon
 IS_APPLE_SILICON = platform.processor() == 'arm'
@@ -449,42 +451,80 @@ def deduplicate_data(data_dir: Path) -> None:
         raise
 
 
+def process_data(
+    data_dir: Path,
+    external_dir: Path,
+    chunk_size: int,
+    use_dask: bool = False,
+    use_vaex: bool = False
+) -> None:
+    """Process downloaded FAERS data with optimized parallel processing.
+    
+    Args:
+        data_dir: Base directory for data storage
+        external_dir: Directory containing external reference data
+        chunk_size: Size of data chunks for processing
+        use_dask: Whether to use Dask for out-of-core processing
+        use_vaex: Whether to use Vaex for memory-efficient processing
+    """
+    logging.info("Starting FAERS data processing")
+    
+    try:
+        # Initialize processor
+        processor = FAERSProcessor(data_dir, external_dir)
+        
+        # Process each quarter
+        raw_dir = data_dir / "raw"
+        quarters = [d.name for d in raw_dir.iterdir() if d.is_dir()]
+        
+        with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
+            for quarter in quarters:
+                try:
+                    # Process quarter
+                    df = processor.process_quarter(quarter)
+                    if df is not None and not df.empty:
+                        # Save processed data
+                        output_file = data_dir / "clean" / f"{quarter}_processed.parquet"
+                        output_file.parent.mkdir(parents=True, exist_ok=True)
+                        save_optimized_parquet(df, output_file)
+                        logging.info(f"Successfully processed quarter {quarter}")
+                except Exception as e:
+                    logging.error(f"Error processing quarter {quarter}: {str(e)}")
+                finally:
+                    pbar.update(1)
+        
+        logging.info("FAERS data processing completed")
+        
+    except Exception as e:
+        logging.error(f"Error in data processing: {str(e)}")
+
+
 def main() -> None:
     """Main entry point for FAERS data processing pipeline."""
     args = parse_args()
     setup_logging(args.log_level)
 
-    data_dir = Path(args.data_dir)
-    external_dir = Path(args.external_dir)
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "raw").mkdir(exist_ok=True)
-    (data_dir / "clean").mkdir(exist_ok=True)
-
     try:
-        with tqdm(
-                total=sum([args.download, args.process, args.deduplicate]),
-                desc="Overall progress"
-        ) as pbar:
-            if args.download:
-                download_data(data_dir, args.max_workers)
-                pbar.update(1)
+        # Download data if requested
+        if args.download:
+            download_data(args.data_dir, args.max_workers)
 
-            if args.process:
-                process_data(
-                    data_dir,
-                    external_dir,
-                    args.chunk_size,
-                    args.use_dask,
-                    args.use_vaex
-                )
-                pbar.update(1)
+        # Process data if requested
+        if args.process:
+            process_data(
+                data_dir=args.data_dir,
+                external_dir=args.external_dir,
+                chunk_size=args.chunk_size,
+                use_dask=args.use_dask,
+                use_vaex=args.use_vaex
+            )
 
-            if args.deduplicate:
-                deduplicate_data(data_dir)
-                pbar.update(1)
+        # Deduplicate data if requested
+        if args.deduplicate:
+            deduplicate_data(args.data_dir)
 
-        logging.info("Pipeline completed successfully")
+        logging.info("FAERS data processing pipeline completed successfully")
+
     except Exception as e:
         logging.error(f"Pipeline failed: {str(e)}")
         sys.exit(1)
