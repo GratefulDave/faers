@@ -71,7 +71,6 @@ import dask.dataframe as dd
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-import vaex
 from tqdm import tqdm
 
 from .services.deduplicator import Deduplicator
@@ -167,12 +166,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        '--use-vaex',
-        action='store_true',
-        help='Use Vaex for memory-efficient processing'
-    )
-
-    parser.add_argument(
         '--log-level',
         type=str,
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
@@ -230,7 +223,6 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
             - data_type: Type of data ('demographics', 'drugs', 'reactions')
             - standardizer: DataStandardizer instance
             - use_dask: Whether to use Dask for processing
-            - use_vaex: Whether to use Vaex for processing
     
     Returns:
         Processed DataFrame chunk
@@ -239,21 +231,9 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
     data_type = args['data_type']
     standardizer = args['standardizer']
     use_dask = args.get('use_dask', False)
-    use_vaex = args.get('use_vaex', False)
 
     try:
-        if use_vaex:
-            # Convert to Vaex DataFrame for memory-efficient processing
-            chunk = standardizer._to_vaex_df(chunk)
-            if data_type == 'demographics':
-                result = standardizer.process_demographics_vaex(chunk)
-            elif data_type == 'drugs':
-                result = standardizer.process_drugs_vaex(chunk)
-            else:  # reactions
-                result = standardizer.process_reactions_vaex(chunk)
-            return result.to_pandas_df()
-
-        elif use_dask:
+        if use_dask:
             # Convert to Dask DataFrame for parallel processing
             chunk = standardizer._to_dask_df(chunk)
             if data_type == 'demographics':
@@ -292,7 +272,6 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
     data_type = args['data_type']
     standardizer = args['standardizer']
     use_dask = args.get('use_dask', False)
-    use_vaex = args.get('use_vaex', False)
     chunk_size = args.get('chunk_size', 100000)
 
     try:
@@ -309,8 +288,6 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
 
         if use_dask:
             df = dd.read_csv(**read_args)
-        elif use_vaex:
-            df = vaex.read_csv(file_path, sep='$', chunk_size=chunk_size)
         else:
             df = pd.read_csv(**read_args)
 
@@ -457,8 +434,7 @@ def process_data(
     data_dir: Path,
     external_dir: Path,
     chunk_size: int,
-    use_dask: bool = False,
-    use_vaex: bool = False
+    use_dask: bool = False
 ) -> None:
     """Process downloaded FAERS data with optimized parallel processing.
     
@@ -467,7 +443,6 @@ def process_data(
         external_dir: Directory containing external reference data
         chunk_size: Size of data chunks for processing
         use_dask: Whether to use Dask for out-of-core processing
-        use_vaex: Whether to use Vaex for memory-efficient processing
     """
     logging.info("Starting FAERS data processing")
     
@@ -517,8 +492,7 @@ def main() -> None:
                 data_dir=args.data_dir,
                 external_dir=args.external_dir,
                 chunk_size=args.chunk_size,
-                use_dask=args.use_dask,
-                use_vaex=args.use_vaex
+                use_dask=args.use_dask
             )
 
         # Deduplicate data if requested
