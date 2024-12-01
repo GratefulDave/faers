@@ -76,6 +76,34 @@ class FAERSProcessor(DataProcessor):
             logging.warning("Drug mappings file not found. Drug name standardization will be skipped.")
             self.drug_map = {}
 
+        # Load MedDRA standardization data
+        self.meddra_dir = self.external_dir / 'meddra'
+        if self.meddra_dir.exists():
+            # Load main MedDRA dictionary if available
+            meddra_file = self.meddra_dir / 'meddra.csv'
+            if meddra_file.exists():
+                self.meddra_df = pd.read_csv(meddra_file, sep=';')
+                self.pt_list = self.meddra_df['pt'].str.lower().unique()
+            else:
+                self.pt_list = set()
+                logging.warning("MedDRA dictionary not found. Using only pt_fixed.csv for standardization.")
+
+            # Load manual PT fixes
+            pt_fixed_file = self.meddra_dir / 'pt_fixed.csv'
+            if pt_fixed_file.exists():
+                self.pt_fixed_df = pd.read_csv(pt_fixed_file)
+                self.pt_fixed_map = dict(zip(
+                    self.pt_fixed_df['pt'].str.lower(),
+                    self.pt_fixed_df['standard_pt'].str.lower()
+                ))
+            else:
+                self.pt_fixed_map = {}
+                logging.warning("pt_fixed.csv not found. PT standardization will be limited.")
+        else:
+            logging.warning("MedDRA directory not found. PT standardization will be skipped.")
+            self.pt_list = set()
+            self.pt_fixed_map = {}
+
     def process_file(self, file_path: Path) -> pd.DataFrame:
         """Process a single FAERS data file."""
         try:
@@ -107,16 +135,54 @@ class FAERSProcessor(DataProcessor):
         return df
         
     def standardize_pt(self, df: pd.DataFrame, pt_column: str = 'pt') -> pd.DataFrame:
-        """Standardize Preferred Terms (PT)."""
+        """
+        Standardize Preferred Terms (PT) using MedDRA dictionary and manual fixes.
+        
+        Args:
+            df: DataFrame containing PT column
+            pt_column: Name of the PT column to standardize
+            
+        Returns:
+            DataFrame with standardized PT column
+        """
         if pt_column not in df.columns:
             return df
             
-        # Convert to lowercase and strip whitespace
+        # Make a copy to avoid modifying the original
+        df = df.copy()
+        
+        # Convert to lowercase and trim whitespace
         df[pt_column] = df[pt_column].str.lower().str.strip()
         
-        # Remove special characters and standardize spacing
-        df[pt_column] = df[pt_column].str.replace(r'[^\w\s]', ' ', regex=True)
-        df[pt_column] = df[pt_column].str.replace(r'\s+', ' ', regex=True)
+        # Calculate initial standardization stats
+        total_pts = df[pt_column].notna().sum()
+        initial_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
+        initial_pct = round(initial_standard * 100 / total_pts, 3) if total_pts > 0 else 0
+        
+        logging.info(f"Initial PT standardization: {initial_pct}% ({initial_standard}/{total_pts})")
+        
+        # Try to standardize using pt_fixed mappings
+        df[pt_column] = df[pt_column].map(lambda x: self.pt_fixed_map.get(x, x) if pd.notna(x) else x)
+        
+        # Try to find matches through LLTs if MedDRA dictionary is available
+        if hasattr(self, 'meddra_df'):
+            llt_map = dict(zip(
+                self.meddra_df['llt'].str.lower(),
+                self.meddra_df['pt'].str.lower()
+            ))
+            df[pt_column] = df[pt_column].map(lambda x: llt_map.get(x, x) if pd.notna(x) else x)
+        
+        # Calculate final standardization stats
+        final_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
+        final_pct = round(final_standard * 100 / total_pts, 3) if total_pts > 0 else 0
+        
+        logging.info(f"Final PT standardization: {final_pct}% ({final_standard}/{total_pts})")
+        
+        # Log unstandardized terms for manual review
+        if final_pct < 100:
+            unstandardized = df[~df[pt_column].isin(self.pt_list)][pt_column].unique()
+            logging.warning(f"Unstandardized PTs found: {', '.join(unstandardized)}")
+            logging.warning("Consider updating pt_fixed.csv with mappings for these terms")
         
         return df
         
@@ -302,7 +368,11 @@ class FAERSProcessor(DataProcessor):
     def process_reactions(self, file_path: Path) -> List[Reaction]:
         """Process reaction data file."""
         df = self.process_file(file_path)
-        df = self.standardize_pt(df)
+        
+        # Standardize both PT and drug_rec_act
+        df = self.standardize_pt(df, 'pt')
+        df = self.standardize_pt(df, 'drug_rec_act')
+        
         return [
             Reaction(
                 primary_id=row['primary_id'],
@@ -496,10 +566,9 @@ class FAERSProcessor(DataProcessor):
     def process_indications(self, file_path: Path) -> List[Indication]:
         """Process drug indications data file."""
         df = self.process_file(file_path)
-        df = self.standardize_pt(df, 'indi_pt')
         
-        # Remove rows with missing PT
-        df = df[df['indi_pt'].notna()]
+        # Standardize indication PT
+        df = self.standardize_pt(df, 'indi_pt')
         
         return [
             Indication(
