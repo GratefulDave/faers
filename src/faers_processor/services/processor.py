@@ -234,60 +234,41 @@ class FAERSProcessor:
         except IOError as e:
             logging.error(f"Error correcting file {file_path}: {str(e)}")
 
-    def standardize_drug_names(self, df: pd.DataFrame, drug_column: str = 'drug_name') -> pd.DataFrame:
-        """Standardize drug names using external reference data."""
-        if not self.standardizer.drug_map:
-            return df
-
+    def standardize_drug_names(self, df: pd.DataFrame, drug_column: str) -> pd.DataFrame:
+        """Standardize drug names using the standardizer's drug dictionary."""
         if drug_column in df.columns:
             df[drug_column] = df[drug_column].str.lower()
-            df[drug_column] = df[drug_column].map(lambda x: self.standardizer.drug_map.get(x, x))
-
+            # Get drug dictionary from standardizer
+            drug_dict = self.standardizer.get_drug_dictionary()
+            df[drug_column] = df[drug_column].map(lambda x: drug_dict.get(x, x))
+            
         return df
 
-    def process_drug_info(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Process drug information data file."""
+    def process_drug_info(self, file_path: Path) -> pd.DataFrame:
+        """Process drug information from FAERS file."""
         df = self.process_file(file_path, 'DRUG')
-
+        
         # Convert date fields
         date_cols = ['exp_dt']
         for col in date_cols:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
-
+        
         # Standardize dechal and rechal values
         for col in ['dechal', 'rechal']:
             if col in df.columns:
-                df[col] = df[col].map({'Y': 'Y', 'N': 'N', 'D': 'D'})
+                df[col] = df[col].str.lower()
+        
+        return df
 
-        return df.to_dict(orient='records')
-
-    def process_indications(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Process drug indications data file."""
+    def process_indication_info(self, file_path: Path) -> pd.DataFrame:
+        """Process indication information from FAERS file."""
         df = self.process_file(file_path, 'INDI')
-
+        
         # Standardize indication PT
         df = self.standardizer.standardize_pt(df, 'indi_pt')
-
-        return df.to_dict(orient='records')
-
-    def process_report_sources(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Process report sources data file."""
-        df = self.process_file(file_path, 'RPSR')
-
-        return df.to_dict(orient='records')
-
-    def process_therapy(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Process drug therapy data file."""
-        df = self.process_file(file_path, 'THER')
-
-        # Convert date fields
-        date_cols = ['start_dt', 'end_dt']
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-
-        return df.to_dict(orient='records')
+        
+        return df
 
     def unify_data(self, files_list: List[str], name_key: Dict[str, str],
                    column_subset: List[str], duplicated_cols_x: List[str] = None,

@@ -19,22 +19,23 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Optional, Union, Any
 
-import dask.dataframe as dd
+import numpy as np
 import pandas as pd
-import sns
+import seaborn as sns
 import vaex
 from matplotlib import pyplot as plt
 
 # Optimize NumPy for ARM64 if available
 try:
-    import numpy as np
-
-    np.__config__.show()  # Check if NumPy is using accelerated libraries
-except:
-    logging.warning("Unable to verify NumPy optimization status")
-
+    import platform
+    if platform.machine() == 'arm64':
+        import numpy.__config__
+        if 'openblas' in numpy.__config__.get_info('openblas_lapack_info'):
+            logging.info("Using optimized OpenBLAS for ARM64")
+except ImportError:
+    logging.warning("Could not check for ARM64 optimizations")
 
 class DataStandardizer:
     """
@@ -48,55 +49,117 @@ class DataStandardizer:
     - Optimized for Apple Silicon when available
     """
 
-    def __init__(self, external_dir: Path, n_workers: Optional[int] = None):
-        """
-        Initialize standardizer with performance optimizations.
+    def __init__(self, external_dir: Path):
+        """Initialize standardizer with external reference data directory.
         
         Args:
-            external_dir: Path to external data directory
-            n_workers: Number of worker processes (defaults to CPU count - 1)
+            external_dir: Path to external reference data directory
         """
         self.external_dir = external_dir
-        self.n_workers = n_workers or max(1, multiprocessing.cpu_count() - 1)
-        self._load_reference_data()
-        self._load_meddra_data()
-        self._load_diana_dictionary()
+        self._drug_dictionary = None
+        self._init_logging()
 
-        # Initialize thread pool for parallel operations
-        self.thread_pool = ThreadPoolExecutor(max_workers=self.n_workers)
+    def _init_logging(self):
+        """Initialize logging configuration."""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
 
-        # Log system information
-        self._log_system_info()
+    def get_drug_dictionary(self) -> Dict[str, str]:
+        """Get or load drug standardization dictionary."""
+        if self._drug_dictionary is None:
+            dict_path = self.external_dir / 'drug_dictionary.csv'
+            if dict_path.exists():
+                df = pd.read_csv(dict_path)
+                self._drug_dictionary = dict(zip(df['original'], df['standard']))
+            else:
+                logging.warning(f"Drug dictionary not found at {dict_path}")
+                self._drug_dictionary = {}
+        return self._drug_dictionary
 
-    def _log_system_info(self):
-        """Log system information and optimization status."""
-        import platform
+    def standardize_dates(self, df: pd.DataFrame, date_columns: List[str]) -> pd.DataFrame:
+        """Standardize date columns to datetime format.
+        
+        Args:
+            df: Input DataFrame
+            date_columns: List of column names containing dates
+            
+        Returns:
+            DataFrame with standardized dates
+        """
+        df = df.copy()
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        return df
 
-        logging.info("System Information:")
-        logging.info(f"Platform: {platform.platform()}")
-        logging.info(f"Processor: {platform.processor()}")
-        logging.info(f"Python version: {platform.python_version()}")
-        logging.info(f"Number of CPUs: {multiprocessing.cpu_count()}")
-        logging.info(f"Using {self.n_workers} worker processes")
+    def plot_age_distribution(self, data: pd.DataFrame, save_path: Optional[Path] = None) -> Tuple[pd.DataFrame, plt.Figure]:
+        """Plot age distribution of FAERS data.
+        
+        Args:
+            data: Input DataFrame with age data
+            save_path: Optional path to save plot
+            
+        Returns:
+            Tuple of (DataFrame, Figure)
+        """
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.kdeplot(data=data, x='age_in_years', ax=ax)
+        ax.set_title('Age Distribution in FAERS Data')
+        ax.set_xlabel('Age (years)')
+        ax.set_ylabel('Density')
+        
+        if save_path:
+            plt.savefig(save_path)
+            
+        return data, fig
 
-        # Check if running on Apple Silicon
-        if platform.system() == "Darwin" and platform.machine() == "arm64":
-            logging.info("Running on Apple Silicon - using optimized libraries")
+    def standardize_column_name(self, old_name: str, column_map: Dict[str, str]) -> str:
+        """Standardize a column name using mapping.
+        
+        Args:
+            old_name: Original column name
+            column_map: Dictionary mapping old names to new names
+            
+        Returns:
+            Standardized column name
+        """
+        return column_map.get(old_name, old_name)
 
-        # Log Dask configuration
-        logging.info(f"Dask workers: {self.n_workers}")
+    def remove_special_chars(self, text: str) -> str:
+        """Remove special characters from text.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Cleaned text
+        """
+        if pd.isna(text):
+            return text
+        return re.sub(r'[^\w\s-]', '', str(text))
 
-    def _to_dask_df(self, df: Union[pd.DataFrame, dd.DataFrame]) -> dd.DataFrame:
-        """Convert pandas DataFrame to Dask DataFrame for parallel processing."""
-        if isinstance(df, dd.DataFrame):
-            return df
-        return dd.from_pandas(df, npartitions=self.n_workers)
-
-    def _to_vaex_df(self, df: Union[pd.DataFrame, vaex.DataFrame]) -> vaex.DataFrame:
-        """Convert pandas DataFrame to Vaex DataFrame for memory-efficient processing."""
-        if isinstance(df, vaex.DataFrame):
-            return df
-        return vaex.from_pandas(df)
+    def standardize_boolean(self, value: Any) -> Optional[bool]:
+        """Standardize boolean values.
+        
+        Args:
+            value: Input value
+            
+        Returns:
+            Standardized boolean or None
+        """
+        if pd.isna(value):
+            return None
+        value = str(value).lower().strip()
+        true_values = {'y', 'yes', 'true', '1', 't'}
+        false_values = {'n', 'no', 'false', '0', 'f'}
+        
+        if value in true_values:
+            return True
+        if value in false_values:
+            return False
+        return None
 
     def handle_manufacturer_records(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -118,7 +181,7 @@ class DataStandardizer:
             >>> standardizer = DataStandardizer()
             >>> processed_df = standardizer.handle_manufacturer_records(demo_df)
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Sort by FDA date
         df = df.sort_values('fda_dt')
@@ -147,7 +210,7 @@ class DataStandardizer:
         logging.info(f"Records with missing mfr_sndr: {len(missing_mfr_sndr)}")
         logging.info(f"Unique manufacturer combinations: {len(last_mfr_records)}")
 
-        return df.compute()
+        return df
 
     def identify_special_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -168,7 +231,7 @@ class DataStandardizer:
             >>> standardizer = DataStandardizer()
             >>> demo_df = standardizer.identify_special_cases(demo_df, drug_df)
         """
-        demo_df = self._to_vaex_df(demo_df)
+        demo_df = demo_df.copy()
 
         # Identify pre-marketing cases (those with trial drugs)
         trial_cases = set(drug_df[drug_df['trial'] == True]['primaryid'].unique())
@@ -186,7 +249,7 @@ class DataStandardizer:
         logging.info(f"Pre-marketing cases: {premarketing_count} ({premarketing_count / total_cases * 100:.2f}%)")
         logging.info(f"Literature cases: {literature_count} ({literature_count / total_cases * 100:.2f}%)")
 
-        return demo_df.to_pandas_df()
+        return demo_df
 
     def identify_duplicates(self, demo_df: pd.DataFrame, reac_df: pd.DataFrame, drug_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -234,11 +297,11 @@ class DataStandardizer:
             return pd.concat([singlets, dup_pids])
 
         # Prepare base dataframe
-        temp = self._to_dask_df(demo_df)
+        temp = demo_df.copy()
 
         # Add reactions
         temp = temp.merge(
-            self._to_dask_df(reac_df).sort_values('pt')
+            reac_df.sort_values('pt')
             .groupby('primaryid')['pt']
             .agg('; '.join)
             .reset_index(),
@@ -249,7 +312,7 @@ class DataStandardizer:
         for role, codes in [('PS', ['PS']), ('SS', ['SS']),
                             ('IC', ['I', 'C']), ('suspected', ['PS', 'SS'])]:
             temp = temp.merge(
-                _get_drug_groups(self._to_dask_df(drug_df), codes).rename(columns={'substance': role}),
+                _get_drug_groups(drug_df, codes).rename(columns={'substance': role}),
                 on='primaryid',
                 how='left'
             )
@@ -418,7 +481,7 @@ class DataStandardizer:
         Returns:
             DataFrame with deleted cases removed
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Read FAERS file list
         faers_list = pd.read_csv(faers_list_path, sep=';')['x'].tolist()
@@ -428,7 +491,7 @@ class DataStandardizer:
 
         if not deleted_files:
             logging.info("No deleted files found")
-            return df.compute()
+            return df
 
         # Read and combine all deleted case IDs
         all_deleted_cases = []
@@ -449,7 +512,7 @@ class DataStandardizer:
 
         if not all_deleted_cases:
             logging.warning("No deleted cases found in files")
-            return df.compute()
+            return df
 
         # Combine all deleted cases and remove duplicates
         deleted_cases = pd.concat(all_deleted_cases, ignore_index=True).drop_duplicates()
@@ -462,7 +525,7 @@ class DataStandardizer:
         logging.info(f"Removed {removed_count} deleted cases")
         logging.info(f"Remaining cases: {len(df)}")
 
-        return df.compute()
+        return df
 
     def remove_duplicate_primaryids(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -474,11 +537,11 @@ class DataStandardizer:
         Returns:
             DataFrame with duplicates removed, keeping most recent quarter
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Log initial state
         initial_count = len(df)
-        initial_unique_ids = df['primaryid'].nunique().compute()
+        initial_unique_ids = df['primaryid'].nunique()
         logging.info(f"Initial records: {initial_count}")
         logging.info(f"Initial unique primary IDs: {initial_unique_ids}")
 
@@ -491,7 +554,7 @@ class DataStandardizer:
         logging.info(f"Removed {removed_count} duplicate records")
         logging.info(f"Remaining records: {final_count}")
 
-        return df.compute()
+        return df
 
     def finalize_demo_processing(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -503,7 +566,7 @@ class DataStandardizer:
         Returns:
             DataFrame with latest case versions and categorical columns
         """
-        df = self._to_vaex_df(df)
+        df = df.copy()
 
         # Keep only the last record for each caseid (matches R's Demo[,.I%in%c(Demo[,.I[.N],by="caseid"]$V1)])
         df = df.groupby('caseid').tail(1)
@@ -530,7 +593,7 @@ class DataStandardizer:
         logging.info(f"\nFinal record count: {len(df)}")
         logging.info(f"Unique cases: {df['caseid'].nunique()}")
 
-        return df.to_pandas_df()
+        return df
 
     def standardize_pt(self, term: str) -> str:
         """
@@ -545,53 +608,29 @@ class DataStandardizer:
         if pd.isna(term) or not term:
             return term
 
-        self.standardization_stats['total_terms'] += 1
-        term_lower = term.lower().strip()
-
         # Direct PT match
         if hasattr(self, 'pt_data'):
-            pt_match = self.pt_data[self.pt_data['pt_name'].str.lower() == term_lower]
+            pt_match = self.pt_data[self.pt_data['pt_name'].str.lower() == term.lower()]
             if not pt_match.empty:
-                self.standardization_stats['direct_pt_matches'] += 1
                 return pt_match.iloc[0]['pt_name']
 
         # LLT to PT translation
-        if term_lower in self.pt_to_llt_map:
-            self.standardization_stats['llt_translations'] += 1
-            return self.pt_to_llt_map[term_lower]
+        if term.lower() in self.pt_to_llt_map:
+            return self.pt_to_llt_map[term.lower()]
 
         # Manual fix
-        if term_lower in self.manual_pt_fixes:
-            self.standardization_stats['manual_fixes'] += 1
-            return self.manual_pt_fixes[term_lower]
+        if term.lower() in self.manual_pt_fixes:
+            return self.manual_pt_fixes[term.lower()]
 
         # Log unstandardized term
-        self.standardization_stats['unstandardized'] += 1
-        self._log_unstandardized_term(term)
+        logging.info(f"Unstandardized term: {term}")
         return term
-
-    def _log_unstandardized_term(self, term: str):
-        """Log unstandardized terms for future manual review."""
-        unstandardized_file = self.external_dir / 'manual_fix' / 'unstandardized_pts.csv'
-
-        # Create or append to unstandardized terms file
-        mode = 'a' if unstandardized_file.exists() else 'w'
-        header = not unstandardized_file.exists()
-
-        with open(unstandardized_file, mode, encoding='utf-8') as f:
-            if header:
-                f.write('term,frequency\n')
-            f.write(f'{term},1\n')
-
-    def get_standardization_stats(self) -> Dict[str, int]:
-        """Get statistics about term standardization."""
-        return self.standardization_stats
 
     def standardize_sex(self, df: pd.DataFrame, col: str = 'sex') -> pd.DataFrame:
         """Standardize sex values to F/M."""
-        df = self._to_vaex_df(df)
+        df = df.copy()
         df.loc[~df[col].isin(['F', 'M']), col] = np.nan
-        return df.to_pandas_df()
+        return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -603,7 +642,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized age columns
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Define age unit conversion factors
         age_conversion = {
@@ -655,12 +694,12 @@ class DataStandardizer:
 
         # Log summary statistics
         logging.info("Age in years summary statistics:")
-        logging.info(f"Mean: {df['age_in_years'].mean().compute():.2f}")
-        logging.info(f"Median: {df['age_in_years'].median().compute():.2f}")
-        logging.info(f"Min: {df['age_in_years'].min().compute():.2f}")
-        logging.info(f"Max: {df['age_in_years'].max().compute():.2f}")
+        logging.info(f"Mean: {df['age_in_years'].mean():.2f}")
+        logging.info(f"Median: {df['age_in_years'].median():.2f}")
+        logging.info(f"Min: {df['age_in_years'].min():.2f}")
+        logging.info(f"Max: {df['age_in_years'].max():.2f}")
 
-        return df.compute()
+        return df
 
     def standardize_weight(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
         """
@@ -672,7 +711,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized weight in kilograms and a matplotlib figure
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Initialize weight corrector with NA
         df['wt_corrector'] = np.nan
@@ -715,15 +754,15 @@ class DataStandardizer:
 
         # Log weight distribution statistics
         logging.info("Weight distribution summary:")
-        logging.info(f"Mean weight: {df['wt_in_kgs'].mean().compute():.2f} kg")
-        logging.info(f"Median weight: {df['wt_in_kgs'].median().compute():.2f} kg")
-        logging.info(f"Min weight: {df['wt_in_kgs'].min().compute():.2f} kg")
-        logging.info(f"Max weight: {df['wt_in_kgs'].max().compute():.2f} kg")
+        logging.info(f"Mean weight: {df['wt_in_kgs'].mean():.2f} kg")
+        logging.info(f"Median weight: {df['wt_in_kgs'].median():.2f} kg")
+        logging.info(f"Min weight: {df['wt_in_kgs'].min():.2f} kg")
+        logging.info(f"Max weight: {df['wt_in_kgs'].max():.2f} kg")
 
         # Drop intermediate columns
         df = df.drop(columns=['wt_corrector', 'wt', 'wt_cod'])
 
-        return df.compute(), fig
+        return df, fig
 
     def standardize_country(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -735,7 +774,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized country names
         """
-        df = self._to_vaex_df(df)
+        df = df.copy()
 
         # Read country mapping file
         countries = pd.read_csv(
@@ -773,7 +812,7 @@ class DataStandardizer:
         logging.info(f"Unique occurrence countries: {len(df['occr_country'].unique())}")
         logging.info(f"Unique reporter countries: {len(df['reporter_country'].unique())}")
 
-        return df.to_pandas_df()
+        return df
 
     def standardize_occupation(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -794,7 +833,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized occupation codes
         """
-        df = self._to_vaex_df(df)
+        df = df.copy()
 
         # List of valid occupation codes
         valid_codes = ['MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN']
@@ -817,31 +856,31 @@ class DataStandardizer:
         for code, count in final_dist.items():
             logging.info(f"{code}: {count}")
 
-        return df.to_pandas_df()
+        return df
 
     def standardize_route(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize administration routes."""
-        df = self._to_vaex_df(df)
+        df = df.copy()
         df['route'] = df['route'].str.lower().str.strip()
         df['route'] = df['route'].map(self.route_map)
-        return df.to_pandas_df()
+        return df
 
     def standardize_dose_form(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize dose forms."""
-        df = self._to_vaex_df(df)
+        df = df.copy()
         df['dose_form'] = df['dose_form'].str.lower().str.strip()
         df['dose_form'] = df['dose_form'].map(self.dose_form_map)
-        return df.to_pandas_df()
+        return df
 
     def standardize_dose_freq(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize dose frequencies."""
-        df = self._to_vaex_df(df)
+        df = df.copy()
         df['dose_freq'] = df['dose_freq'].map(self.dose_freq_map)
-        return df.to_pandas_df()
+        return df
 
     def standardize_dates(self, df: pd.DataFrame, date_cols: List[str], min_year: int = 1985) -> pd.DataFrame:
         """Standardize date fields."""
-        df = self._to_dask_df(df)
+        df = df.copy()
         max_date = datetime.now().strftime("%Y%m%d")
 
         for col in date_cols:
@@ -865,11 +904,11 @@ class DataStandardizer:
                 day_mask = df[col].str.len() == 8
                 df.loc[day_mask & (df[col].str[6:8].astype(float) > 31), col] = np.nan
 
-        return df.compute()
+        return df
 
     def calculate_time_to_onset(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate time to onset from start date to event date."""
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         def to_date(dt):
             if pd.isna(dt) or len(str(dt)) != 8:
@@ -885,7 +924,7 @@ class DataStandardizer:
         df.loc[(df['time_to_onset'] <= 0) & (df['event_dt'] <= 20121231), 'time_to_onset'] = None
 
         df = df.drop(['start_date', 'event_date'], axis=1)
-        return df.compute()
+        return df
 
     def standardize_drugs(self, df: pd.DataFrame, drugname_col: str = 'drugname',
                           update_dictionary: bool = False) -> pd.DataFrame:
@@ -901,7 +940,7 @@ class DataStandardizer:
             DataFrame with standardized drug names and substances
         """
         # Make a copy to avoid modifying the input
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Clean drug names
         df[drugname_col] = df[drugname_col].apply(self._clean_drugname)
@@ -960,7 +999,7 @@ class DataStandardizer:
             if col in df.columns:
                 df[col] = df[col].astype('category')
 
-        return df.compute()
+        return df
 
     def analyze_age_groups(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
         """
@@ -1034,7 +1073,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized age groups
         """
-        df = self._to_vaex_df(df)
+        df = df.copy()
 
         # Initialize age_grp_st column with NA
         df['age_grp_st'] = pd.NA
@@ -1062,7 +1101,7 @@ class DataStandardizer:
             df = df.drop(columns=['age_grp'])
         df = df.rename(columns={'age_grp_st': 'age_grp'})
 
-        return df.to_pandas_df()
+        return df
 
     def check_date(self, date_series: pd.Series, max_date: int = 20230331) -> pd.Series:
         """
@@ -1108,7 +1147,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized dates
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Date columns to process
         date_columns = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
@@ -1118,7 +1157,7 @@ class DataStandardizer:
             if col in df.columns:
                 df[col] = self.check_date(df[col], max_date)
 
-        return df.compute()
+        return df
 
     def standardize_therapy_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
         """
@@ -1131,7 +1170,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized dates and durations
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # Standardize start and end dates
         for col in ['start_dt', 'end_dt']:
@@ -1198,7 +1237,7 @@ class DataStandardizer:
         df['dur_in_days'] = df['dur_std']
         df = df.drop(columns=['dur_std', 'dur_corrector', 'dur', 'dur_cod'])
 
-        return df.compute()
+        return df
 
     def standardize_drug_info(self, df: pd.DataFrame, max_date: int = 20500101) -> pd.DataFrame:
         """
@@ -1211,7 +1250,7 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized drug information
         """
-        df = self._to_dask_df(df)
+        df = df.copy()
 
         # 1. Route standardization
         if 'route' in df.columns:
@@ -1313,7 +1352,7 @@ class DataStandardizer:
         if 'exp_dt' in df.columns:
             df['exp_dt'] = self.check_date(df['exp_dt'], max_date)
 
-        return df.compute()
+        return df
 
     def remove_incomplete_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
                                 reac_df: pd.DataFrame) -> pd.DataFrame:
@@ -1328,9 +1367,9 @@ class DataStandardizer:
         Returns:
             Demographics DataFrame with incomplete cases removed
         """
-        demo_df = self._to_dask_df(demo_df)
-        drug_df = self._to_dask_df(drug_df)
-        reac_df = self._to_dask_df(reac_df)
+        demo_df = demo_df.copy()
+        drug_df = drug_df.copy()
+        reac_df = reac_df.copy()
 
         initial_cases = len(demo_df)
 
@@ -1361,14 +1400,7 @@ class DataStandardizer:
         logging.info(f"Total incomplete cases removed: {len(incomplete_cases)}")
         logging.info(f"Remaining cases: {len(demo_df)}")
 
-        return demo_df.compute()
-
-    def __init__(self, external_dir: Path):
-        """Initialize standardizer with external data directory."""
-        self.external_dir = external_dir
-        self._load_reference_data()
-        self._load_meddra_data()
-        self._load_diana_dictionary()
+        return demo_df
 
     def _load_reference_data(self):
         """Load reference data for standardization."""
