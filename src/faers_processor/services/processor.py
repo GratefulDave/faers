@@ -3,7 +3,9 @@ from pathlib import Path
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from abc import ABC, abstractmethod
-from ..models.faers_data import Demographics, Drug, Reaction, Outcome
+from ..models.faers_data import Demographics, Drug, Reaction, Outcome, DrugInfo, Indication, ReportSource, Therapy
+import re
+import datetime
 
 class DataProcessor(ABC):
     """Abstract base class for data processing."""
@@ -33,6 +35,30 @@ class FAERSProcessor(DataProcessor):
     
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
+        self.external_dir = Path('external_data')
+        self._load_external_data()
+        
+    def _load_external_data(self):
+        """Load external reference data for standardization."""
+        # Load country codes
+        country_file = self.external_dir / 'country_codes.csv'
+        if country_file.exists():
+            df = pd.read_csv(country_file)
+            self.country_map = {}
+            for _, row in df.iterrows():
+                self.country_map[row['code']] = row['code']
+                for var in row['common_variations'].split(','):
+                    self.country_map[var.strip()] = row['code']
+        
+        # Load occupation codes
+        occupation_file = self.external_dir / 'occupation_codes.csv'
+        if occupation_file.exists():
+            df = pd.read_csv(occupation_file)
+            self.occupation_map = {}
+            for _, row in df.iterrows():
+                self.occupation_map[row['code']] = row['code']
+                for var in row['variations'].split(','):
+                    self.occupation_map[var.strip()] = row['code']
         
     def process_file(self, file_path: Path) -> pd.DataFrame:
         """Process a single FAERS data file."""
@@ -70,45 +96,134 @@ class FAERSProcessor(DataProcessor):
         return df
         
     def standardize_occupation(self, df: pd.DataFrame, occp_column: str = 'occp_cod') -> pd.DataFrame:
-        """Standardize occupation codes."""
-        if occp_column not in df.columns:
+        """Standardize occupation codes using external reference data."""
+        if occp_column not in df.columns or not hasattr(self, 'occupation_map'):
             return df
             
-        # Define occupation mappings based on R script
-        occupation_map = {
-            'MD': 'MD',
-            'PH': 'PH',
-            'OT': 'OT',
-            'CN': 'CN',
-            'LW': 'OT',  # Lawyer mapped to Other
-            'CO': 'CN'   # Consumer mapped to Consumer
-        }
-        
-        # Apply mapping and set unknown values to None
-        df[occp_column] = df[occp_column].map(occupation_map)
+        # Apply mapping from external file
+        df[occp_column] = df[occp_column].map(self.occupation_map)
         return df
         
     def standardize_country(self, df: pd.DataFrame, country_column: str = 'reporter_country') -> pd.DataFrame:
-        """Standardize country codes."""
-        if country_column not in df.columns:
+        """Standardize country codes using external reference data."""
+        if country_column not in df.columns or not hasattr(self, 'country_map'):
             return df
             
         # Remove special characters and standardize spacing
         df[country_column] = df[country_column].str.upper().str.strip()
         
-        # Map common variations (add more as needed)
-        country_map = {
-            'USA': 'US',
-            'UNITED STATES': 'US',
-            'UNITED STATES OF AMERICA': 'US',
-            'UK': 'GB',
-            'UNITED KINGDOM': 'GB',
-            'GREAT BRITAIN': 'GB'
-        }
-        
-        df[country_column] = df[country_column].map(country_map).fillna(df[country_column])
+        # Apply mapping from external file
+        df[country_column] = df[country_column].map(self.country_map).fillna(df[country_column])
         return df
 
+    def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize weight to kilograms."""
+        if 'wt' not in df.columns or 'wt_cod' not in df.columns:
+            return df
+            
+        # Define weight conversion factors
+        weight_map = {
+            'LBS': 0.453592,  # Pounds to kg
+            'IB': 0.453592,   # Pounds to kg
+            'KG': 1.0,        # Already in kg
+            'KGS': 1.0,       # Already in kg
+            'GMS': 0.001,     # Grams to kg
+            'MG': 1e-6        # Milligrams to kg
+        }
+        
+        # Convert weight to numeric, handling invalid values
+        df['wt'] = pd.to_numeric(df['wt'], errors='coerce')
+        
+        # Apply conversion factors
+        df['wt_corrector'] = df['wt_cod'].map(weight_map).fillna(1.0)
+        df['wt_in_kgs'] = abs(df['wt'] * df['wt_corrector']).round()
+        
+        # Remove implausible weights (>635 kg)
+        df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = None
+        
+        # Clean up temporary columns
+        df = df.drop(['wt_corrector', 'wt', 'wt_cod'], axis=1)
+        return df
+        
+    def standardize_sex(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize sex values."""
+        if 'sex' not in df.columns:
+            return df
+            
+        # Only keep valid sex codes
+        df.loc[~df['sex'].isin(['F', 'M']), 'sex'] = None
+        return df
+        
+    def standardize_dates(self, df: pd.DataFrame, date_cols: List[str]) -> pd.DataFrame:
+        """Standardize date fields."""
+        max_date = self._get_max_date()
+        
+        def check_date(dt):
+            if pd.isna(dt):
+                return dt
+                
+            dt_str = str(dt)
+            n = len(dt_str)
+            
+            # Validate based on length
+            if n == 4:  # Year only
+                year = int(dt_str)
+                if year < 1985 or year > int(str(max_date)[:4]):
+                    return None
+            elif n == 6:  # Year and month
+                year = int(dt_str[:4])
+                month = int(dt_str[4:6])
+                if year < 1985 or year > int(str(max_date)[:4]) or month < 1 or month > 12:
+                    return None
+            elif n == 8:  # Full date
+                year = int(dt_str[:4])
+                month = int(dt_str[4:6])
+                day = int(dt_str[6:8])
+                if year < 1985 or int(dt_str) > max_date:
+                    return None
+                try:
+                    datetime.datetime(year, month, day)
+                except ValueError:
+                    return None
+            else:
+                return None
+                
+            return dt
+            
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = df[col].apply(check_date)
+                
+        return df
+        
+    def _get_max_date(self) -> int:
+        """Get maximum valid date based on latest quarter."""
+        # Find the latest quarter file
+        latest_file = None
+        latest_quarter = None
+        
+        for file in self.data_dir.rglob("*.[Tt][Xx][Tt]"):
+            if "DELETE" in file.name.upper():
+                quarter_match = re.search(r'(\d{2})[Qq](\d)', file.name)
+                if quarter_match:
+                    year, quarter = quarter_match.groups()
+                    if not latest_quarter or (year, quarter) > latest_quarter:
+                        latest_quarter = (year, quarter)
+                        latest_file = file
+                        
+        if not latest_quarter:
+            return 20500101  # Default if no quarter found
+            
+        year = f"20{latest_quarter[0]}"
+        quarter_month = {
+            '1': '0331',  # Q1 ends March 31
+            '2': '0630',  # Q2 ends June 30
+            '3': '0930',  # Q3 ends September 30
+            '4': '1231'   # Q4 ends December 31
+        }
+        
+        return int(f"{year}{quarter_month[latest_quarter[1]]}")
+        
     def process_demographics(self, file_path: Path) -> List[Demographics]:
         """Process demographics data file with standardization."""
         df = self.process_file(file_path)
@@ -116,15 +231,14 @@ class FAERSProcessor(DataProcessor):
         # Apply standardizations
         df = self.standardize_occupation(df)
         df = self.standardize_country(df)
+        df = self.standardize_sex(df)
+        df = self.standardize_weight(df)
         
-        # Convert age to days and weight to kg
+        # Convert age to days 
         df['age_in_days'] = pd.to_numeric(df['age'], errors='coerce')
         df.loc[df['age_cod'] == 'YR', 'age_in_days'] *= 365.25
         df.loc[df['age_cod'] == 'MON', 'age_in_days'] *= 30.44
         df.loc[df['age_cod'] == 'WK', 'age_in_days'] *= 7
-        
-        df['wt_in_kgs'] = pd.to_numeric(df['wt'], errors='coerce')
-        df.loc[df['wt_cod'] == 'LBS', 'wt_in_kgs'] *= 0.45359237
         
         return [
             Demographics(
@@ -232,42 +346,157 @@ class FAERSProcessor(DataProcessor):
         return score
 
     def deduplicate_records(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame, 
-                          reac_df: pd.DataFrame, threshold: float = 0.8) -> pd.DataFrame:
-        """Deduplicate records using probabilistic record linkage."""
-        # Merge data for comparison
-        merged_df = demo_df.merge(
-            drug_df.groupby('primary_id')['drug_name'].agg(';'.join).reset_index(),
-            on='primary_id', how='left'
-        ).merge(
-            reac_df.groupby('primary_id')['pt'].agg(';'.join).reset_index(),
-            on='primary_id', how='left'
-        )
+                          reac_df: pd.DataFrame) -> pd.DataFrame:
+        """Deduplicate records using rule-based and probabilistic methods."""
+        # First pass: Rule-based deduplication
+        complete_duplicates = ['event_dt', 'sex', 'reporter_country', 'age_in_days', 
+                             'wt_in_kgs', 'pt', 'substance']
+                             
+        # Merge drug and reaction data
+        merged_df = demo_df.merge(drug_df[['primary_id', 'substance']], 
+                                on='primary_id', how='left')
+        merged_df = merged_df.merge(reac_df[['primary_id', 'pt']], 
+                                  on='primary_id', how='left')
+                                  
+        # Group by all duplicate fields
+        grouped = merged_df.groupby(complete_duplicates)
         
-        # Find potential duplicates
-        duplicates = []
-        for i, row1 in merged_df.iterrows():
-            for j, row2 in merged_df.iloc[i+1:].iterrows():
-                score = self.calculate_similarity_score(row1, row2)
-                if score >= threshold:
-                    duplicates.append((row1['primary_id'], row2['primary_id']))
-                    
-        # Keep only one record from each duplicate group
-        duplicate_ids = set([id2 for _, id2 in duplicates])
-        return demo_df[~demo_df['primary_id'].isin(duplicate_ids)]
-
+        # Keep only the latest record from each group
+        unique_records = grouped.apply(lambda x: x.sort_values('fda_dt').iloc[-1])
+        
+        # Mark duplicates
+        demo_df['RB_duplicates'] = ~demo_df['primary_id'].isin(unique_records['primary_id'])
+        
+        # Second pass: Consider only suspect drugs
+        suspect_drugs = drug_df[drug_df['role_cod'].isin(['PS', 'SS'])]
+        merged_df = demo_df.merge(suspect_drugs[['primary_id', 'substance']], 
+                                on='primary_id', how='left')
+        
+        grouped = merged_df.groupby(complete_duplicates)
+        unique_records = grouped.apply(lambda x: x.sort_values('fda_dt').iloc[-1])
+        
+        # Mark duplicates considering only suspect drugs
+        demo_df['RB_duplicates_only_susp'] = ~demo_df['primary_id'].isin(unique_records['primary_id'])
+        
+        return demo_df
+        
     def process_multi_substance_drugs(self, drug_df: pd.DataFrame) -> pd.DataFrame:
         """Process drugs with multiple substances."""
+        if 'substance' not in drug_df.columns:
+            return drug_df
+            
         # Split multi-substance drugs
-        drug_df['substance_list'] = drug_df['substance'].str.split(';')
+        multi_mask = drug_df['substance'].str.contains(';', na=False)
         
-        # Explode the dataframe to create separate rows for each substance
-        expanded_df = drug_df.explode('substance_list')
+        # Process single substance drugs
+        single_drugs = drug_df[~multi_mask].copy()
         
-        # Clean up substance names
-        expanded_df['substance_list'] = expanded_df['substance_list'].str.strip()
+        # Process multi substance drugs
+        multi_drugs = drug_df[multi_mask].copy()
+        if not multi_drugs.empty:
+            # Split substances and create new rows
+            expanded = multi_drugs.assign(
+                substance=multi_drugs['substance'].str.split(';')
+            ).explode('substance')
+            
+            # Combine single and multi substance results
+            drug_df = pd.concat([single_drugs, expanded], ignore_index=True)
+            
+        return drug_df
         
-        # Remove empty substances
-        expanded_df = expanded_df[expanded_df['substance_list'].notna() & 
-                                (expanded_df['substance_list'] != '')]
+    def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
+        """Correct files with missing newlines."""
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
         
-        return expanded_df.rename(columns={'substance_list': 'substance'})
+        # Replace problematic line with corrected version
+        new_line = old_line.replace('$', '$\n')
+        content = ''.join(lines).replace(old_line, new_line)
+        
+        with open(file_path, 'w') as f:
+            f.write(content)
+
+    def process_drug_info(self, file_path: Path) -> List[DrugInfo]:
+        """Process drug information data file."""
+        df = self.process_file(file_path)
+        
+        # Convert date fields
+        date_cols = ['exp_dt']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        # Standardize dechal and rechal values
+        for col in ['dechal', 'rechal']:
+            if col in df.columns:
+                df[col] = df[col].map({'Y': 'Y', 'N': 'N', 'D': 'D'})
+        
+        return [
+            DrugInfo(
+                primary_id=row['primary_id'],
+                drug_seq=row['drug_seq'],
+                val_vbm=row.get('val_vbm'),
+                nda_num=row.get('nda_num'),
+                lot_num=row.get('lot_num'),
+                route=row.get('route'),
+                dose_form=row.get('dose_form'),
+                dose_freq=row.get('dose_freq'),
+                exp_dt=row.get('exp_dt'),
+                dose_amt=float(row['dose_amt']) if pd.notna(row.get('dose_amt')) else None,
+                dose_unit=row.get('dose_unit'),
+                dechal=row.get('dechal'),
+                rechal=row.get('rechal')
+            )
+            for _, row in df.iterrows()
+        ]
+
+    def process_indications(self, file_path: Path) -> List[Indication]:
+        """Process drug indications data file."""
+        df = self.process_file(file_path)
+        df = self.standardize_pt(df, 'indi_pt')
+        
+        # Remove rows with missing PT
+        df = df[df['indi_pt'].notna()]
+        
+        return [
+            Indication(
+                primary_id=row['primary_id'],
+                drug_seq=row['drug_seq'],
+                indi_pt=row['indi_pt']
+            )
+            for _, row in df.iterrows()
+        ]
+
+    def process_report_sources(self, file_path: Path) -> List[ReportSource]:
+        """Process report sources data file."""
+        df = self.process_file(file_path)
+        
+        return [
+            ReportSource(
+                primary_id=row['primary_id'],
+                rpsr_cod=row['rpsr_cod']
+            )
+            for _, row in df.iterrows()
+        ]
+
+    def process_therapy(self, file_path: Path) -> List[Therapy]:
+        """Process drug therapy data file."""
+        df = self.process_file(file_path)
+        
+        # Convert date fields
+        date_cols = ['start_dt', 'end_dt']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        return [
+            Therapy(
+                primary_id=row['primary_id'],
+                drug_seq=row['drug_seq'],
+                start_dt=row.get('start_dt'),
+                end_dt=row.get('end_dt'),
+                dur=float(row['dur']) if pd.notna(row.get('dur')) else None,
+                dur_cod=row.get('dur_cod')
+            )
+            for _, row in df.iterrows()
+        ]
