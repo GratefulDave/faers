@@ -193,29 +193,8 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def process_chunk_dask(args: Dict[str, Any]) -> dd.DataFrame:
-    """Process a chunk of FAERS data using Dask."""
-    chunk = args['chunk']
-    data_type = args['data_type']
-    standardizer = args['standardizer']
-
-    try:
-        if data_type == 'demographics':
-            result = standardizer.process_demographics(chunk)
-        elif data_type == 'drugs':
-            result = standardizer.process_drugs(chunk)
-        else:  # reactions
-            result = standardizer.process_reactions(chunk)
-
-        # Convert to Dask DataFrame
-        return dd.from_pandas(result, npartitions=1)
-    except Exception as e:
-        logging.error(f"Error processing chunk: {str(e)}")
-        return dd.from_pandas(pd.DataFrame(), npartitions=1)
-
-
 def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
-    """Process a chunk of FAERS data with optimizations.
+    """Process a chunk of FAERS data.
     
     Args:
         args: Dictionary containing:
@@ -227,7 +206,6 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
     Returns:
         Processed DataFrame chunk
     """
-    chunk = args['chunk']
     data_type = args['data_type']
     standardizer = args['standardizer']
     use_dask = args.get('use_dask', False)
@@ -237,15 +215,14 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
             # Convert to Dask DataFrame for parallel processing
             chunk = standardizer._to_dask_df(chunk)
             if data_type == 'demographics':
-                result = standardizer.process_demographics_dask(chunk)
+                result = standardizer.process_demographics(chunk)
             elif data_type == 'drugs':
-                result = standardizer.process_drugs_dask(chunk)
+                result = standardizer.process_drugs(chunk)
             else:  # reactions
-                result = standardizer.process_reactions_dask(chunk)
-            return result.compute()
-
+                result = standardizer.process_reactions(chunk)
+            return optimize_dtypes(result)
         else:
-            # Standard processing with optimized dtypes
+            # Process with standard pandas
             if data_type == 'demographics':
                 result = standardizer.process_demographics(chunk)
             elif data_type == 'drugs':
@@ -254,13 +231,17 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
                 result = standardizer.process_reactions(chunk)
             return optimize_dtypes(result)
 
+    except Exception as e:
+        logging.error(f"Error processing {data_type} chunk: {str(e)}")
+        return pd.DataFrame()
+
 
 def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
     """Process a single FAERS file with optimized methods.
-
+    
     Args:
         args: Dictionary containing processing parameters
-
+    
     Returns:
         Processed DataFrame
     """
@@ -271,14 +252,12 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
     chunk_size = args.get('chunk_size', 100000)
 
     try:
-        # Read data with optimized settings
         read_args = {
             'filepath_or_buffer': file_path,
             'sep': '$',
-            'dtype': 'str',  # Start with strings to avoid mixed type issues
-            'encoding': 'utf-8',
-            'engine': 'c',
-            'low_memory': False,
+            'dtype': str,
+            'na_values': ['', 'NA', 'NULL'],
+            'keep_default_na': True,
             'on_bad_lines': 'skip'
         }
 
@@ -287,16 +266,15 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
         else:
             df = pd.read_csv(**read_args)
 
-        # Process the data
-        if use_dask:
-            df = process_chunk_dask({'chunk': df, 'data_type': data_type, 'standardizer': standardizer})
-        else:
-            df = process_chunk({'chunk': df, 'data_type': data_type, 'standardizer': standardizer})
-
-        return df
+        return process_chunk({
+            'chunk': df,
+            'data_type': data_type,
+            'standardizer': standardizer,
+            'use_dask': use_dask
+        })
 
     except Exception as e:
-        logging.error(f"Error processing {file_path}: {str(e)}")
+        logging.error(f"Error processing file {file_path}: {str(e)}")
         return pd.DataFrame()
 
 
