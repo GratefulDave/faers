@@ -1544,11 +1544,11 @@ class DataStandardizer:
 
         # Convert to string and clean
         name = str(name).strip().lower()
-        
+
         # Remove special characters and extra spaces
         name = re.sub(r'[^\w\s-]', ' ', name)
         name = re.sub(r'\s+', ' ', name)
-        
+
         # Remove common suffixes and prefixes
         removals = [
             r'\b(tab|caps|inj|sol|susp|cream|oint|patch)\b',
@@ -1557,7 +1557,7 @@ class DataStandardizer:
         ]
         for pattern in removals:
             name = re.sub(pattern, '', name, flags=re.IGNORECASE)
-        
+
         return name.strip()
 
     def check_date_validity(self, date_str: str, min_year: int = 1900) -> bool:

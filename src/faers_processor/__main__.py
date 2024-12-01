@@ -65,7 +65,7 @@ import multiprocessing
 import platform
 import sys
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 import dask.dataframe as dd
 import pandas as pd
@@ -76,7 +76,6 @@ from tqdm import tqdm
 
 from .services.deduplicator import Deduplicator
 from .services.downloader import FAERSDownloader
-from .services.standardizer import DataStandardizer
 
 # Check if running on Apple Silicon
 IS_APPLE_SILICON = platform.processor() == 'arm'
@@ -355,7 +354,7 @@ def download_data(data_dir: Path, max_workers: int) -> None:
     """
     try:
         downloader = FAERSDownloader(data_dir)
-        
+
         # Get available quarters
         quarters = downloader.get_quarters()
         if not quarters:
@@ -363,7 +362,7 @@ def download_data(data_dir: Path, max_workers: int) -> None:
             return
 
         logging.info(f"Found {len(quarters)} quarters available for download")
-        
+
         # Create download directory
         download_dir = data_dir / 'raw'
         download_dir.mkdir(parents=True, exist_ok=True)
