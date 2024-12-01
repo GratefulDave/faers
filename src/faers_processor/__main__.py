@@ -254,6 +254,48 @@ def save_optimized_parquet(df: pd.DataFrame, output_file: Path) -> None:
         use_threads=True
     )
 
+def download_data(data_dir: Path, max_workers: int) -> None:
+    """Download FAERS quarterly data files."""
+    logging.info("Starting FAERS data download")
+    downloader = FAERSDownloader()
+    
+    try:
+        # Get list of quarters to download
+        quarters = downloader.get_available_quarters()
+        logging.info(f"Found {len(quarters)} quarters available for download")
+        
+        # Create download directory if it doesn't exist
+        download_dir = data_dir / "raw"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Download files in parallel with progress tracking
+        with tqdm(total=len(quarters), desc="Downloading quarters") as pbar:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit download tasks
+                future_to_quarter = {
+                    executor.submit(
+                        downloader.download_quarter,
+                        quarter,
+                        download_dir
+                    ): quarter for quarter in quarters
+                }
+                
+                # Process completed downloads
+                for future in concurrent.futures.as_completed(future_to_quarter):
+                    quarter = future_to_quarter[future]
+                    try:
+                        future.result()
+                        logging.info(f"Successfully downloaded quarter {quarter}")
+                    except Exception as e:
+                        logging.error(f"Failed to download quarter {quarter}: {str(e)}")
+                    finally:
+                        pbar.update(1)
+        
+        logging.info("FAERS data download completed")
+    except Exception as e:
+        logging.error(f"Error downloading FAERS data: {str(e)}")
+        raise
+
 def process_data(
     data_dir: Path,
     external_dir: Path,
