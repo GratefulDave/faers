@@ -13,12 +13,30 @@ from .standardizer import DataStandardizer
 class FAERSProcessor:
     """Processes FAERS data files."""
 
-    def __init__(self, data_dir: Path, output_dir: Path):
-        """Initialize processor with data and output directories."""
-        self.data_dir = data_dir
-        self.output_dir = output_dir
-        self.standardizer = DataStandardizer()
-
+    def __init__(
+        self,
+        data_dir: Path,
+        external_dir: Path,
+        chunk_size: int = 100000,
+        use_dask: bool = False
+    ):
+        """Initialize processor with configuration.
+        
+        Args:
+            data_dir: Base directory containing raw data
+            external_dir: Directory containing external reference data
+            chunk_size: Size of data chunks for processing
+            use_dask: Whether to use Dask for out-of-core processing
+        """
+        self.data_dir = data_dir / 'raw'
+        self.output_dir = data_dir / 'clean'
+        self.external_dir = external_dir
+        self.chunk_size = chunk_size
+        self.use_dask = use_dask
+        
+        # Initialize standardizer with external data
+        self.standardizer = DataStandardizer(external_dir)
+        
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -111,20 +111,20 @@ def setup_logging(log_level: str = "INFO") -> None:
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='FAERS Data Processing Pipeline')
+    parser = argparse.ArgumentParser(description='Process FAERS data with optimizations for Apple Silicon')
 
     parser.add_argument(
         '--data-dir',
-        type=str,
+        type=Path,
         required=True,
         help='Base directory for data storage'
     )
 
     parser.add_argument(
         '--external-dir',
-        type=str,
+        type=Path,
         required=True,
-        help='Directory containing external reference data'
+        help='Directory for external reference data'
     )
 
     parser.add_argument(
@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--process',
         action='store_true',
-        help='Process downloaded FAERS data'
+        help='Process downloaded data'
     )
 
     parser.add_argument(
@@ -254,10 +254,6 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
                 result = standardizer.process_reactions(chunk)
             return optimize_dtypes(result)
 
-    except Exception as e:
-        logging.error(f"Error processing {data_type} chunk: {str(e)}")
-        return pd.DataFrame()
-
 
 def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
     """Process a single FAERS file with optimized methods.
@@ -327,106 +323,16 @@ def save_optimized_parquet(df: pd.DataFrame, output_file: Path) -> None:
 
 
 def download_data(data_dir: Path, max_workers: int) -> None:
-    """Download FAERS quarterly data files.
-
-    Args:
-        data_dir: Base directory for data storage
-        max_workers: Maximum number of parallel workers
-    """
+    """Download FAERS quarterly data files."""
     try:
-        downloader = FAERSDownloader(data_dir)
-
-        # Get available quarters
-        quarters = downloader.get_quarters()
-        if not quarters:
-            logging.error("No quarters available for download")
-            return
-
-        logging.info(f"Found {len(quarters)} quarters available for download")
-
-        # Create download directory
-        download_dir = data_dir / 'raw'
-        download_dir.mkdir(parents=True, exist_ok=True)
-
-        # Download quarters in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for quarter in quarters:
-                future = executor.submit(
-                    downloader.download_quarter,
-                    quarter=quarter,
-                    output_dir=download_dir
-                )
-                futures.append(future)
-
-            # Monitor progress
-            with tqdm(total=len(futures), desc="Downloading quarters") as pbar:
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        logging.error(f"Error downloading quarter: {str(e)}")
-                    pbar.update(1)
-
+        # Create data directories if they don't exist
+        raw_dir = data_dir / 'raw'
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        
+        downloader = FAERSDownloader(raw_dir)
+        downloader.download_all_quarters(max_workers=max_workers)
     except Exception as e:
         logging.error(f"Error in download process: {str(e)}")
-
-
-def deduplicate_data(data_dir: Path) -> None:
-    """Perform deduplication on processed data."""
-    logging.info("Starting data deduplication")
-    deduplicator = Deduplicator()
-
-    try:
-        # Load processed data with progress bars and optimized settings
-        with tqdm(total=3, desc="Loading data for deduplication") as pbar:
-            demo_df = pd.read_parquet(
-                data_dir / "clean" / "demographics.parquet",
-                engine='pyarrow',
-                use_threads=True,
-                memory_map=True
-            )
-            demo_df = optimize_dtypes(demo_df)
-            pbar.update(1)
-
-            drug_df = pd.read_parquet(
-                data_dir / "clean" / "drugs.parquet",
-                engine='pyarrow',
-                use_threads=True,
-                memory_map=True
-            )
-            drug_df = optimize_dtypes(drug_df)
-            pbar.update(1)
-
-            reac_df = pd.read_parquet(
-                data_dir / "clean" / "reactions.parquet",
-                engine='pyarrow',
-                use_threads=True,
-                memory_map=True
-            )
-            reac_df = optimize_dtypes(reac_df)
-            pbar.update(1)
-
-        # Perform rule-based deduplication with progress
-        logging.info("Performing rule-based deduplication")
-        total_cases = len(demo_df)
-
-        with tqdm(total=total_cases, desc="Deduplicating cases") as pbar:
-            demo_df = deduplicator.rule_based_deduplication(
-                demo_df=demo_df,
-                drug_df=drug_df,
-                reac_df=reac_df,
-                progress_callback=lambda x: pbar.update(x)
-            )
-
-        # Save deduplicated data with optimized settings
-        save_optimized_parquet(
-            optimize_dtypes(demo_df),
-            data_dir / "clean" / "demographics_dedup.parquet"
-        )
-        logging.info("Deduplication completed successfully")
-    except Exception as e:
-        logging.error(f"Error during deduplication: {str(e)}")
         raise
 
 
@@ -436,44 +342,33 @@ def process_data(
     chunk_size: int,
     use_dask: bool = False
 ) -> None:
-    """Process downloaded FAERS data with optimized parallel processing.
-    
-    Args:
-        data_dir: Base directory for data storage
-        external_dir: Directory containing external reference data
-        chunk_size: Size of data chunks for processing
-        use_dask: Whether to use Dask for out-of-core processing
-    """
-    logging.info("Starting FAERS data processing")
-    
+    """Process downloaded FAERS data with optimized parallel processing."""
     try:
-        # Initialize processor
-        processor = FAERSProcessor(data_dir, external_dir)
+        # Create clean data directory if it doesn't exist
+        clean_dir = data_dir / 'clean'
+        clean_dir.mkdir(parents=True, exist_ok=True)
         
-        # Process each quarter
-        raw_dir = data_dir / "raw"
-        quarters = [d.name for d in raw_dir.iterdir() if d.is_dir()]
-        
-        with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
-            for quarter in quarters:
-                try:
-                    # Process quarter
-                    df = processor.process_quarter(quarter)
-                    if df is not None and not df.empty:
-                        # Save processed data
-                        output_file = data_dir / "clean" / f"{quarter}_processed.parquet"
-                        output_file.parent.mkdir(parents=True, exist_ok=True)
-                        save_optimized_parquet(df, output_file)
-                        logging.info(f"Successfully processed quarter {quarter}")
-                except Exception as e:
-                    logging.error(f"Error processing quarter {quarter}: {str(e)}")
-                finally:
-                    pbar.update(1)
-        
-        logging.info("FAERS data processing completed")
-        
+        processor = FAERSProcessor(
+            data_dir=data_dir,
+            external_dir=external_dir,
+            chunk_size=chunk_size,
+            use_dask=use_dask
+        )
+        processor.process_all()
     except Exception as e:
         logging.error(f"Error in data processing: {str(e)}")
+        raise
+
+
+def deduplicate_data(data_dir: Path) -> None:
+    """Perform deduplication on processed data."""
+    try:
+        clean_dir = data_dir / 'clean'
+        deduplicator = Deduplicator(clean_dir)
+        deduplicator.deduplicate_all()
+    except Exception as e:
+        logging.error(f"Error during deduplication: {str(e)}")
+        raise
 
 
 def main() -> None:
@@ -482,11 +377,12 @@ def main() -> None:
     setup_logging(args.log_level)
 
     try:
-        # Download data if requested
         if args.download:
-            download_data(args.data_dir, args.max_workers)
+            download_data(
+                data_dir=args.data_dir,
+                max_workers=args.max_workers
+            )
 
-        # Process data if requested
         if args.process:
             process_data(
                 data_dir=args.data_dir,
@@ -495,11 +391,8 @@ def main() -> None:
                 use_dask=args.use_dask
             )
 
-        # Deduplicate data if requested
         if args.deduplicate:
             deduplicate_data(args.data_dir)
-
-        logging.info("FAERS data processing pipeline completed successfully")
 
     except Exception as e:
         logging.error(f"Pipeline failed: {str(e)}")
