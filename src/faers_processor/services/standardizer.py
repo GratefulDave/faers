@@ -28,12 +28,16 @@ from tqdm import tqdm
 # Optimize NumPy for ARM64 if available
 try:
     import platform
+    import numpy as np
 
     if platform.machine() == 'arm64':
-        import numpy.__config__
-
-        if 'openblas' in numpy.__config__.get_info('openblas_lapack_info'):
+        # Check if OpenBLAS is being used
+        import numpy
+        config_info = numpy.show_config()
+        if hasattr(config_info, 'blas_opt_info') and 'openblas' in str(config_info.blas_opt_info):
             logging.info("Using optimized OpenBLAS for ARM64")
+        else:
+            logging.info("OpenBLAS optimization not detected for ARM64")
 except ImportError:
     logging.warning("Could not check for ARM64 optimizations")
 
@@ -720,12 +724,12 @@ class DataStandardizer:
         # Remove incomplete cases from demographics
         demo_df = demo_df[~demo_df['primaryid'].isin(incomplete_cases)]
 
-        # Log results
+        # Calculate and log results
         removed_cases = initial_cases - len(demo_df)
         logging.info(f"Initial cases: {initial_cases}")
         logging.info(f"Cases without valid drugs: {len(cases_without_drugs)}")
         logging.info(f"Cases without valid reactions: {len(cases_without_reactions)}")
-        logging.info(f"Total incomplete cases removed: {len(incomplete_cases)}")
+        logging.info(f"Total incomplete cases removed: {removed_cases}")
         logging.info(f"Remaining cases: {len(demo_df)}")
 
         return demo_df
@@ -886,40 +890,36 @@ class DataStandardizer:
 
         return result
 
-    def standardize_drugs(self, df: pd.DataFrame, drugname_col: str = 'drugname',
-                          update_dictionary: bool = False) -> pd.DataFrame:
+    def standardize_drugs(self, df: pd.DataFrame, drugname_col: str = 'drugname') -> pd.DataFrame:
         """
         Standardize drug names using DiAna dictionary and rules.
         
         Args:
             df: DataFrame containing drug data
             drugname_col: Name of the column containing drug names
-            update_dictionary: Whether to update the DiAna dictionary with new frequencies
         
         Returns:
             DataFrame with standardized drug names and substances
         """
-        # Make a copy to avoid modifying the input
         df = df.copy()
-        total_rows = len(df)
-
-        with tqdm(total=total_rows, desc="Standardizing drug names") as pbar:
-            # Clean drug names
-            df[drugname_col] = df[drugname_col].apply(lambda x: self._clean_drugname(x))
-            pbar.update(total_rows // 3)
-
-            # Apply drug dictionary
-            drug_dict = self.get_drug_dictionary()
-            df[drugname_col] = df[drugname_col].map(lambda x: drug_dict.get(x.lower(), x) if pd.notna(x) else x)
-            pbar.update(total_rows // 3)
-
-            # Update categories
-            categorical_cols = ['role_cod', 'drugname', 'route', 'dose_form']
-            for col in categorical_cols:
-                if col in df.columns:
-                    df[col] = df[col].astype('category')
-            pbar.update(total_rows // 3)
-
+        
+        # Clean drug names
+        df[drugname_col] = df[drugname_col].apply(self._clean_drugname)
+        
+        # Load DiAna dictionary if not already loaded
+        if not hasattr(self, 'diana_dict'):
+            self._load_diana_dictionary()
+            
+        # Apply standardization
+        df['standard_name'] = df[drugname_col].map(self.diana_dict)
+        
+        # Log statistics
+        total_drugs = len(df)
+        standardized_drugs = df['standard_name'].notna().sum()
+        logging.info(f"Total drugs: {total_drugs}")
+        logging.info(f"Standardized drugs: {standardized_drugs}")
+        logging.info(f"Standardization rate: {standardized_drugs/total_drugs*100:.1f}%")
+        
         return df
 
     def analyze_age_groups(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
@@ -1312,12 +1312,12 @@ class DataStandardizer:
         # Remove incomplete cases from demographics
         demo_df = demo_df[~demo_df['primaryid'].isin(incomplete_cases)]
 
-        # Log results
+        # Calculate and log results
         removed_cases = initial_cases - len(demo_df)
         logging.info(f"Initial cases: {initial_cases}")
         logging.info(f"Cases without valid drugs: {len(cases_without_drugs)}")
         logging.info(f"Cases without valid reactions: {len(cases_without_reactions)}")
-        logging.info(f"Total incomplete cases removed: {len(incomplete_cases)}")
+        logging.info(f"Total incomplete cases removed: {removed_cases}")
         logging.info(f"Remaining cases: {len(demo_df)}")
 
         return demo_df
@@ -1487,3 +1487,94 @@ class DataStandardizer:
 
         except (ValueError, TypeError):
             return False
+
+    def process_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process demographics data.
+        
+        Args:
+            df: Raw demographics DataFrame
+            
+        Returns:
+            Processed demographics DataFrame
+        """
+        df = df.copy()
+        
+        # Standardize dates
+        date_cols = ['init_fda_dt', 'fda_dt', 'event_dt', 'mfr_dt']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = self.standardize_dates(df[col])
+        
+        # Standardize sex
+        if 'sex' in df.columns:
+            df['sex'] = self.standardize_sex(df['sex'])
+            
+        # Standardize age
+        if 'age' in df.columns and 'age_cod' in df.columns:
+            df['age'] = self.standardize_age(df['age'], df['age_cod'])
+            
+        # Standardize weight
+        if 'wt' in df.columns and 'wt_cod' in df.columns:
+            df['weight'] = self.standardize_weight(df['wt'], df['wt_cod'])
+            
+        # Standardize country codes
+        if 'reporter_country' in df.columns:
+            df['reporter_country'] = self.standardize_country(df['reporter_country'])
+            
+        # Standardize occupations
+        if 'occp_cod' in df.columns:
+            df['occupation'] = self.standardize_occupation(df['occp_cod'])
+            
+        # Remove incomplete cases
+        df = self.remove_incomplete_cases(df)
+        
+        return df
+        
+    def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process drug data.
+        
+        Args:
+            df: Raw drug DataFrame
+            
+        Returns:
+            Processed drug DataFrame
+        """
+        df = df.copy()
+        
+        # Standardize drug names and substances
+        df = self.standardize_drugs(df)
+        
+        # Standardize routes
+        if 'route' in df.columns:
+            df['route'] = self.standardize_route(df['route'])
+            
+        # Standardize dose forms
+        if 'dose_form' in df.columns:
+            df['dose_form'] = self.standardize_dose_form(df['dose_form'])
+            
+        # Convert dosages to standard units
+        if all(col in df.columns for col in ['dose_amt', 'dose_unit']):
+            df['dose_std'] = self.standardize_dose(df['dose_amt'], df['dose_unit'])
+            
+        return df
+        
+    def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process reaction data.
+        
+        Args:
+            df: Raw reaction DataFrame
+            
+        Returns:
+            Processed reaction DataFrame
+        """
+        df = df.copy()
+        
+        # Standardize reaction terms using MedDRA
+        if 'pt' in df.columns:
+            df['reaction_term'] = self.standardize_reaction(df['pt'])
+            
+        # Add reaction severity if available
+        if 'outc_cod' in df.columns:
+            df['severity'] = self.standardize_outcome(df['outc_cod'])
+            
+        return df

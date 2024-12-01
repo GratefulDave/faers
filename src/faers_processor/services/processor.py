@@ -29,7 +29,7 @@ class FAERSProcessor:
             chunk_size: Size of data chunks for processing
             use_dask: Whether to use Dask for out-of-core processing
         """
-        self.data_dir = data_dir / 'raw'
+        self.data_dir = data_dir
         self.output_dir = data_dir / 'clean'
         self.external_dir = external_dir
         self.chunk_size = chunk_size
