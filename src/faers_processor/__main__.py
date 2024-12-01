@@ -1,4 +1,63 @@
-"""Main entry point for FAERS data processing pipeline."""
+"""Main entry point for FAERS data processing pipeline.
+
+This module provides a command-line interface for downloading, processing, and
+deduplicating FDA Adverse Event Reporting System (FAERS) data.
+
+Usage:
+    Basic download and process:
+        python -m faers_processor \
+            --data-dir /path/to/data \
+            --external-dir /path/to/external \
+            --download \
+            --process
+
+    Full pipeline with optimizations:
+        python -m faers_processor \
+            --data-dir /path/to/data \
+            --external-dir /path/to/external \
+            --download \
+            --process \
+            --deduplicate \
+            --use-dask \
+            --max-workers 8 \
+            --chunk-size 200000
+
+    Process existing data with Vaex:
+        python -m faers_processor \
+            --data-dir /path/to/data \
+            --external-dir /path/to/external \
+            --process \
+            --use-vaex
+
+Options:
+    --data-dir       Base directory for data storage (required)
+    --external-dir   Directory for external reference data (required)
+    --download       Download latest FAERS quarterly data
+    --process        Process downloaded data
+    --deduplicate    Remove duplicate entries
+    --max-workers    Number of parallel workers (default: CPU count)
+    --chunk-size     Size of data chunks for processing (default: 100000)
+    --use-dask       Enable Dask for out-of-core processing
+    --use-vaex       Enable Vaex for memory-efficient processing
+    --log-level      Set logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+
+Directory Structure:
+    data/
+        raw/            # Downloaded FAERS quarterly files
+        clean/          # Processed and standardized data
+            demographics.parquet
+            drugs.parquet
+            reactions.parquet
+            demographics_dedup.parquet  # After deduplication
+    external/          # External reference data (e.g., drug mappings)
+
+Performance Tips:
+    1. Use --use-dask for processing large datasets that don't fit in memory
+    2. Use --use-vaex for memory-efficient processing of medium-sized datasets
+    3. Adjust --chunk-size based on available RAM
+    4. Set --max-workers to match your CPU core count
+    5. For Apple Silicon Macs, optimizations are automatically applied
+"""
 import argparse
 import concurrent.futures
 import logging
