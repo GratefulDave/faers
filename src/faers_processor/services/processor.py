@@ -1,8 +1,9 @@
 """Service for processing FAERS data files."""
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, List, Optional, Tuple, Union
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
@@ -615,3 +616,80 @@ class FAERSProcessor:
         ther_data.to_pickle(output_path)
 
         return ther_data
+
+    def process_quarter(self, quarter: str) -> Tuple[pd.DataFrame, Optional[plt.Figure]]:
+        """Process all FAERS files for a quarter.
+        
+        Args:
+            quarter: Quarter identifier (e.g., '23Q1')
+            
+        Returns:
+            Tuple of processed DataFrame and optional summary plot
+        """
+        try:
+            # Process individual files
+            processed_data = self.process_files(quarter)
+            if not processed_data:
+                return pd.DataFrame(), None
+
+            # Unify files
+            unified_data = self.unify_files(processed_data)
+            if unified_data.empty:
+                return pd.DataFrame(), None
+
+            # Generate summary
+            summary_df, summary_plot = self.generate_summary(unified_data)
+            
+            # Save outputs
+            output_path = self.output_dir / f"faers_{quarter}_processed.parquet"
+            unified_data.to_parquet(output_path)
+            
+            if summary_plot:
+                plot_path = self.output_dir / f"faers_{quarter}_summary.png"
+                summary_plot.savefig(plot_path)
+                plt.close(summary_plot)
+
+            return unified_data, summary_plot
+
+        except Exception as e:
+            logging.error(f"Error processing quarter {quarter}: {str(e)}")
+            return pd.DataFrame(), None
+
+    def validate_data(self, data: pd.DataFrame) -> bool:
+        """Validate processed data.
+        
+        Args:
+            data: DataFrame to validate
+            
+        Returns:
+            True if validation passes, False otherwise
+        """
+        try:
+            # Check required columns
+            required_cols = ['primaryid', 'caseid', 'fda_dt']
+            if not all(col in data.columns for col in required_cols):
+                logging.error("Missing required columns")
+                return False
+
+            # Check for empty DataFrame
+            if data.empty:
+                logging.error("Empty DataFrame")
+                return False
+
+            # Check for missing values in key columns
+            missing_key_vals = data[required_cols].isna().sum()
+            if missing_key_vals.any():
+                logging.warning(f"Missing values in key columns:\n{missing_key_vals}")
+
+            # Check date format
+            try:
+                pd.to_datetime(data['fda_dt'])
+            except Exception as e:
+                logging.error(f"Invalid date format in fda_dt: {str(e)}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating data: {str(e)}")
+            return False

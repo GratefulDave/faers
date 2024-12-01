@@ -79,17 +79,17 @@ class DataStandardizer:
                 self._drug_dictionary = {}
         return self._drug_dictionary
 
-    def standardize_dates(self, df: pd.DataFrame, date_columns: List[str]) -> pd.DataFrame:
+    def standardize_dates(self, data: pd.DataFrame, date_columns: List[str]) -> pd.DataFrame:
         """Standardize date columns to datetime format.
         
         Args:
-            df: Input DataFrame
+            data: Input DataFrame
             date_columns: List of column names containing dates
             
         Returns:
             DataFrame with standardized dates
         """
-        df = df.copy()
+        df = data.copy()
         for col in date_columns:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
@@ -139,7 +139,8 @@ class DataStandardizer:
         """
         if pd.isna(text):
             return text
-        return re.sub(r'[^\w\s-]', '', str(text))
+        # Use word characters, whitespace, and hyphen only
+        return re.sub(r'[^\w\s-]', '', str(text), flags=re.UNICODE)
 
     def standardize_boolean(self, value: Any) -> Optional[bool]:
         """Standardize boolean values.
@@ -162,52 +163,32 @@ class DataStandardizer:
             return False
         return None
 
-    def handle_manufacturer_records(self, df: pd.DataFrame) -> pd.DataFrame:
+    def handle_manufacturer_records(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Process manufacturer records by sorting by FDA date and handling manufacturer numbers.
-        
-        This method implements the logic from the original R code:
-        Demo <- Demo[order(fda_dt)]
-        Demo <- Demo[Demo[,.I%in%c(Demo[,.I[.N],by=c("mfr_num","mfr_sndr")]$V1,
-                               Demo[,which(is.na(mfr_num))],
-                               Demo[,which(is.na(mfr_sndr))])]]
+        Process manufacturer records in demographics data.
         
         Args:
-            df: DataFrame with manufacturer information including fda_dt, mfr_num, mfr_sndr
-        
-        Returns:
-            DataFrame with processed manufacturer records
+            data: Input demographics DataFrame
             
-        Example:
-            >>> standardizer = DataStandardizer()
-            >>> processed_df = standardizer.handle_manufacturer_records(demo_df)
+        Returns:
+            Processed DataFrame
         """
-        df = df.copy()
+        df = data.copy()
 
         # Sort by FDA date
         df = df.sort_values('fda_dt')
 
-        # Get indices for records to keep:
-        # 1. Last record for each manufacturer number/sender combination
-        # 2. Records with missing manufacturer number
-        # 3. Records with missing manufacturer sender
+        # Group by case ID and get last record for each manufacturer
+        last_mfr_records = df.groupby(['caseid', 'mfr_sndr']).tail(1)
 
-        # Get last records for each mfr_num/mfr_sndr combination
-        last_mfr_records = df.groupby(['mfr_num', 'mfr_sndr']).tail(1).index
+        # Count records with missing manufacturer
+        missing_mfr_sndr = df[df['mfr_sndr'].isna()]
 
-        # Get records with missing manufacturer info
-        missing_mfr_num = df[df['mfr_num'].isna()].index
-        missing_mfr_sndr = df[df['mfr_sndr'].isna()].index
-
-        # Combine all indices to keep
-        indices_to_keep = last_mfr_records.union(missing_mfr_num).union(missing_mfr_sndr)
-
-        # Keep only the selected records
-        df = df.loc[indices_to_keep]
-
-        # Log processing results
-        logging.info(f"Records after manufacturer processing: {len(df)}")
-        logging.info(f"Records with missing mfr_num: {len(missing_mfr_num)}")
+        # Log statistics
+        total_cases = len(df)
+        unique_cases = df['caseid'].nunique()
+        logging.info(f"Total records: {total_cases}")
+        logging.info(f"Unique cases: {unique_cases}")
         logging.info(f"Records with missing mfr_sndr: {len(missing_mfr_sndr)}")
         logging.info(f"Unique manufacturer combinations: {len(last_mfr_records)}")
 
@@ -1493,3 +1474,45 @@ class DataStandardizer:
         name = name.replace('( ', '(').replace(' )', ')')
 
         return name.strip()
+
+    def check_date_validity(self, date_str: str, min_year: int = 1985) -> bool:
+        """
+        Check if a date string is valid.
+        
+        Args:
+            date_str: Date string to check
+            min_year: Minimum valid year
+            
+        Returns:
+            True if date is valid, False otherwise
+        """
+        if pd.isna(date_str):
+            return False
+            
+        try:
+            date_str = str(date_str).zfill(8)
+            year = int(date_str[:4])
+            month = int(date_str[4:6])
+            day = int(date_str[6:8])
+            
+            # Check basic ranges
+            if not (min_year <= year <= datetime.now().year):
+                return False
+            if not (1 <= month <= 12):
+                return False
+            if not (1 <= day <= 31):
+                return False
+                
+            # Check month-specific day ranges
+            days_in_month = {
+                2: 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                4: 30, 6: 30, 9: 30, 11: 30
+            }
+            max_days = days_in_month.get(month, 31)
+            if day > max_days:
+                return False
+                
+            return True
+            
+        except (ValueError, TypeError):
+            return False
