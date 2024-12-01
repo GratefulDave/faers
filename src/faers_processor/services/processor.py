@@ -2,26 +2,10 @@
 from pathlib import Path
 import pandas as pd
 from typing import List, Dict, Any, Optional
-from abc import ABC, abstractmethod
-from ..models.faers_data import Demographics, Drug, Reaction, Outcome, DrugInfo, Indication, ReportSource, Therapy
-import re
-import datetime
 import logging
+from .standardizer import DataStandardizer
 
-class DataProcessor(ABC):
-    """Abstract base class for data processing."""
-    
-    @abstractmethod
-    def process_file(self, file_path: Path) -> pd.DataFrame:
-        """Process a single data file."""
-        pass
-    
-    @abstractmethod
-    def standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize column names and formats."""
-        pass
-
-class FAERSProcessor(DataProcessor):
+class FAERSProcessor:
     """FAERS specific data processor implementation."""
     
     COLUMN_MAPPINGS = {
@@ -34,434 +18,93 @@ class FAERSProcessor(DataProcessor):
         'OUTC_COD': 'outcome_code'
     }
     
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, external_dir: Path):
+        """Initialize processor with data and external directories."""
         self.data_dir = data_dir
-        self.external_dir = Path('external_data')
-        self._load_external_data()
-        
-    def _load_external_data(self):
-        """Load external reference data for standardization."""
-        # Load country codes
-        country_file = self.external_dir / 'country_codes.csv'
-        if country_file.exists():
-            df = pd.read_csv(country_file)
-            self.country_map = {}
-            for _, row in df.iterrows():
-                self.country_map[row['code']] = row['code']
-                for var in row['common_variations'].split(','):
-                    self.country_map[var.strip()] = row['code']
-        
-        # Load occupation codes
-        occupation_file = self.external_dir / 'occupation_codes.csv'
-        if occupation_file.exists():
-            df = pd.read_csv(occupation_file)
-            self.occupation_map = {}
-            for _, row in df.iterrows():
-                self.occupation_map[row['code']] = row['code']
-                for var in row['variations'].split(','):
-                    self.occupation_map[var.strip()] = row['code']
-
-        # Load drug name mappings
-        drug_file = self.external_dir / 'drug_mappings.csv'
-        if drug_file.exists():
-            df = pd.read_csv(drug_file)
-            self.drug_map = {}
-            for _, row in df.iterrows():
-                standard_name = row['standardized_name'].lower()
-                self.drug_map[standard_name] = standard_name
-                self.drug_map[row['drug_name'].lower()] = standard_name
-                for var in row['common_variations'].split(','):
-                    self.drug_map[var.strip().lower()] = standard_name
-        else:
-            logging.warning("Drug mappings file not found. Drug name standardization will be skipped.")
-            self.drug_map = {}
-
-        # Load MedDRA standardization data
-        self.meddra_dir = self.external_dir / 'meddra'
-        if self.meddra_dir.exists():
-            try:
-                # Load MedDRA hierarchy files
-                self.meddra = {
-                    'soc': pd.read_csv(self.meddra_dir / 'soc.asc', sep='$'),
-                    'hlgt': pd.read_csv(self.meddra_dir / 'hlgt.asc', sep='$'),
-                    'hlt': pd.read_csv(self.meddra_dir / 'hlt.asc', sep='$'),
-                    'pt': pd.read_csv(self.meddra_dir / 'pt.asc', sep='$'),
-                    'llt': pd.read_csv(self.meddra_dir / 'llt.asc', sep='$'),
-                    'soc_hlgt': pd.read_csv(self.meddra_dir / 'soc_hlgt.asc', sep='$'),
-                    'hlgt_hlt': pd.read_csv(self.meddra_dir / 'hlgt_hlt.asc', sep='$'),
-                    'hlt_pt': pd.read_csv(self.meddra_dir / 'hlt_pt.asc', sep='$')
-                }
-                
-                # Create standardization mappings
-                self._create_meddra_mappings()
-                logging.info("Successfully loaded MedDRA dictionary files")
-            except Exception as e:
-                logging.error(f"Error loading MedDRA files: {str(e)}")
-                self.meddra = None
-                self.pt_list = set()
-                self.pt_fixed_map = {}
-                return
-
-            # Load manual PT fixes
-            pt_fixed_file = self.meddra_dir / 'pt_fixed.csv'
-            if pt_fixed_file.exists():
-                self.pt_fixed_df = pd.read_csv(pt_fixed_file)
-                self.pt_fixed_map = dict(zip(
-                    self.pt_fixed_df['pt'].str.lower(),
-                    self.pt_fixed_df['standard_pt'].str.lower()
-                ))
-            else:
-                self.pt_fixed_map = {}
-                logging.warning("pt_fixed.csv not found. PT standardization will be limited.")
-        else:
-            logging.warning("MedDRA directory not found. PT standardization will be skipped.")
-            self.meddra = None
-            self.pt_list = set()
-            self.pt_fixed_map = {}
-
-    def _create_meddra_mappings(self):
-        """Create mappings for MedDRA standardization."""
-        if not self.meddra:
-            return
-            
-        # Create PT list
-        self.pt_list = set(self.meddra['pt']['pt_name'].str.lower())
-        
-        # Create LLT to PT mapping
-        self.llt_pt_map = {}
-        llt_pt_pairs = self.meddra['llt'].merge(
-            self.meddra['pt'][['pt_code', 'pt_name']],
-            on='pt_code'
-        )
-        for _, row in llt_pt_pairs.iterrows():
-            if row['llt_currency'] == 'Y':  # Only use current terms
-                self.llt_pt_map[row['llt_name'].lower()] = row['pt_name'].lower()
-        
-        # Create PT to HLT mapping
-        self.pt_hlt_map = {}
-        pt_hlt_pairs = self.meddra['hlt_pt'].merge(
-            self.meddra['hlt'][['hlt_code', 'hlt_name']],
-            on='hlt_code'
-        ).merge(
-            self.meddra['pt'][['pt_code', 'pt_name']],
-            on='pt_code'
-        )
-        for _, row in pt_hlt_pairs.iterrows():
-            self.pt_hlt_map[row['pt_name'].lower()] = row['hlt_name'].lower()
-        
-        # Create HLT to HLGT mapping
-        self.hlt_hlgt_map = {}
-        hlt_hlgt_pairs = self.meddra['hlgt_hlt'].merge(
-            self.meddra['hlgt'][['hlgt_code', 'hlgt_name']],
-            on='hlgt_code'
-        ).merge(
-            self.meddra['hlt'][['hlt_code', 'hlt_name']],
-            on='hlt_code'
-        )
-        for _, row in hlt_hlgt_pairs.iterrows():
-            self.hlt_hlgt_map[row['hlt_name'].lower()] = row['hlgt_name'].lower()
-        
-        # Create HLGT to SOC mapping
-        self.hlgt_soc_map = {}
-        hlgt_soc_pairs = self.meddra['soc_hlgt'].merge(
-            self.meddra['soc'][['soc_code', 'soc_name']],
-            on='soc_code'
-        ).merge(
-            self.meddra['hlgt'][['hlgt_code', 'hlgt_name']],
-            on='hlgt_code'
-        )
-        for _, row in hlgt_soc_pairs.iterrows():
-            self.hlgt_soc_map[row['hlgt_name'].lower()] = row['soc_name'].lower()
-
-    def process_file(self, file_path: Path) -> pd.DataFrame:
-        """Process a single FAERS data file."""
-        try:
-            # Read the header to get column names
-            with open(file_path, 'r', encoding='utf-8') as f:
-                header = f.readline().strip().split('$')
-            
-            # Read the data with the correct delimiter
-            df = pd.read_csv(file_path, sep='$', names=header, skiprows=1,
-                           dtype=str, na_values=[''], keep_default_na=False,
-                           on_bad_lines='warn', encoding='utf-8')
-            
-            if df.empty:
-                raise ValueError(f"Empty dataframe from file: {file_path}")
-                
-            return self.standardize_columns(df)
-        except (IOError, pd.errors.EmptyDataError) as e:
-            logging.error(f"Error processing file {file_path}: {str(e)}")
-            return pd.DataFrame()
-        
-    def standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize column names and formats."""
-        # Rename columns according to mapping
-        df = df.rename(columns=self.COLUMN_MAPPINGS)
-        
-        # Convert empty strings to None
-        df = df.replace('', None)
-        
-        return df
-        
-    def standardize_pt(self, df: pd.DataFrame, pt_column: str = 'pt') -> pd.DataFrame:
-        """
-        Standardize Preferred Terms (PT) using MedDRA dictionary and manual fixes.
-        
-        Args:
-            df: DataFrame containing PT column
-            pt_column: Name of the PT column to standardize
-            
-        Returns:
-            DataFrame with standardized PT column and additional MedDRA hierarchy columns
-        """
-        if pt_column not in df.columns:
-            return df
-            
-        # Make a copy to avoid modifying the original
+        self.standardizer = DataStandardizer(external_dir)
+    
+    def process_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process demographics data."""
         df = df.copy()
         
-        # Convert to lowercase and trim whitespace
-        df[pt_column] = df[pt_column].str.lower().str.strip()
-        
-        # Calculate initial standardization stats
-        total_pts = df[pt_column].notna().sum()
-        initial_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
-        initial_pct = round(initial_standard * 100 / total_pts, 3) if total_pts > 0 else 0
-        
-        logging.info(f"Initial PT standardization: {initial_pct}% ({initial_standard}/{total_pts})")
-        
-        # Try to standardize using pt_fixed mappings
-        df[pt_column] = df[pt_column].map(lambda x: self.pt_fixed_map.get(x, x) if pd.notna(x) else x)
-        
-        # Try to find matches through LLTs if MedDRA dictionary is available
-        if self.meddra:
-            df[pt_column] = df[pt_column].map(lambda x: self.llt_pt_map.get(x, x) if pd.notna(x) else x)
-            
-            # Add MedDRA hierarchy columns
-            df[f'{pt_column}_hlt'] = df[pt_column].map(lambda x: self.pt_hlt_map.get(x, None) if pd.notna(x) else None)
-            df[f'{pt_column}_hlgt'] = df[f'{pt_column}_hlt'].map(lambda x: self.hlt_hlgt_map.get(x, None) if pd.notna(x) else None)
-            df[f'{pt_column}_soc'] = df[f'{pt_column}_hlgt'].map(lambda x: self.hlgt_soc_map.get(x, None) if pd.notna(x) else None)
-        
-        # Calculate final standardization stats
-        final_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
-        final_pct = round(final_standard * 100 / total_pts, 3) if total_pts > 0 else 0
-        
-        logging.info(f"Final PT standardization: {final_pct}% ({final_standard}/{total_pts})")
-        
-        # Log unstandardized terms for manual review
-        if final_pct < 100:
-            unstandardized = df[~df[pt_column].isin(self.pt_list)][pt_column].unique()
-            logging.warning(f"Unstandardized PTs found: {', '.join(unstandardized)}")
-            logging.warning("Consider updating pt_fixed.csv with mappings for these terms")
-        
-        return df
-        
-    def standardize_occupation(self, df: pd.DataFrame, occp_column: str = 'occp_cod') -> pd.DataFrame:
-        """Standardize occupation codes using external reference data."""
-        if occp_column not in df.columns or not hasattr(self, 'occupation_map'):
-            return df
-            
-        # Apply mapping from external file
-        df[occp_column] = df[occp_column].map(self.occupation_map)
-        return df
-        
-    def standardize_country(self, df: pd.DataFrame, country_column: str = 'reporter_country') -> pd.DataFrame:
-        """Standardize country codes using external reference data."""
-        if country_column not in df.columns or not hasattr(self, 'country_map'):
-            return df
-            
-        # Remove special characters and standardize spacing
-        df[country_column] = df[country_column].str.upper().str.strip()
-        
-        # Apply mapping from external file
-        df[country_column] = df[country_column].map(self.country_map).fillna(df[country_column])
-        return df
-
-    def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize weight to kilograms."""
-        if 'wt' not in df.columns or 'wt_cod' not in df.columns:
-            return df
-            
-        # Define weight conversion factors
-        weight_map = {
-            'LBS': 0.453592,  # Pounds to kg
-            'IB': 0.453592,   # Pounds to kg
-            'KG': 1.0,        # Already in kg
-            'KGS': 1.0,       # Already in kg
-            'GMS': 0.001,     # Grams to kg
-            'MG': 1e-6        # Milligrams to kg
-        }
-        
-        # Convert weight to numeric, handling invalid values
-        df['wt'] = pd.to_numeric(df['wt'], errors='coerce')
-        
-        # Apply conversion factors
-        df['wt_corrector'] = df['wt_cod'].map(weight_map).fillna(1.0)
-        df['wt_in_kgs'] = abs(df['wt'] * df['wt_corrector']).round()
-        
-        # Remove implausible weights (>635 kg)
-        df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = None
-        
-        # Clean up temporary columns
-        df = df.drop(['wt_corrector', 'wt', 'wt_cod'], axis=1)
-        return df
-        
-    def standardize_sex(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize sex values."""
-        if 'sex' not in df.columns:
-            return df
-            
-        # Only keep valid sex codes
-        df.loc[~df['sex'].isin(['F', 'M']), 'sex'] = None
-        return df
-        
-    def standardize_dates(self, df: pd.DataFrame, date_cols: List[str]) -> pd.DataFrame:
-        """Standardize date fields."""
-        max_date = self._get_max_date()
-        
-        def check_date(dt):
-            if pd.isna(dt):
-                return dt
-                
-            dt_str = str(dt)
-            n = len(dt_str)
-            
-            # Validate based on length
-            if n == 4:  # Year only
-                year = int(dt_str)
-                if year < 1985 or year > int(str(max_date)[:4]):
-                    return None
-            elif n == 6:  # Year and month
-                year = int(dt_str[:4])
-                month = int(dt_str[4:6])
-                if year < 1985 or year > int(str(max_date)[:4]) or month < 1 or month > 12:
-                    return None
-            elif n == 8:  # Full date
-                year = int(dt_str[:4])
-                month = int(dt_str[4:6])
-                day = int(dt_str[6:8])
-                if year < 1985 or int(dt_str) > max_date:
-                    return None
-                try:
-                    datetime.datetime(year, month, day)
-                except ValueError:
-                    return None
-            else:
-                return None
-                
-            return dt
-            
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = df[col].apply(check_date)
-                
-        return df
-        
-    def _get_max_date(self) -> int:
-        """Get maximum valid date based on latest quarter."""
-        # Find the latest quarter file
-        latest_file = None
-        latest_quarter = None
-        
-        for file in self.data_dir.rglob("*.[Tt][Xx][Tt]"):
-            if "DELETE" in file.name.upper():
-                quarter_match = re.search(r'(\d{2})[Qq](\d)', file.name)
-                if quarter_match:
-                    year, quarter = quarter_match.groups()
-                    if not latest_quarter or (year, quarter) > latest_quarter:
-                        latest_quarter = (year, quarter)
-                        latest_file = file
-                        
-        if not latest_quarter:
-            return 20500101  # Default if no quarter found
-            
-        year = f"20{latest_quarter[0]}"
-        quarter_month = {
-            '1': '0331',  # Q1 ends March 31
-            '2': '0630',  # Q2 ends June 30
-            '3': '0930',  # Q3 ends September 30
-            '4': '1231'   # Q4 ends December 31
-        }
-        
-        return int(f"{year}{quarter_month[latest_quarter[1]]}")
-        
-    def process_demographics(self, file_path: Path) -> List[Demographics]:
-        """Process demographics data file with standardization."""
-        df = self.process_file(file_path)
+        # Standardize column names
+        df = self.standardize_columns(df)
         
         # Apply standardizations
-        df = self.standardize_occupation(df)
-        df = self.standardize_country(df)
-        df = self.standardize_sex(df)
-        df = self.standardize_weight(df)
+        df = self.standardizer.standardize_sex(df)
+        df = self.standardizer.standardize_age(df)
+        df = self.standardizer.standardize_weight(df)
+        df = self.standardizer.standardize_country(df)
+        df = self.standardizer.standardize_occupation(df)
+        df = self.standardizer.standardize_dates(df, ['init_fda_dt', 'event_dt', 'rept_dt'])
         
-        # Convert age to days 
-        df['age_in_days'] = pd.to_numeric(df['age'], errors='coerce')
-        df.loc[df['age_cod'] == 'YR', 'age_in_days'] *= 365.25
-        df.loc[df['age_cod'] == 'MON', 'age_in_days'] *= 30.44
-        df.loc[df['age_cod'] == 'WK', 'age_in_days'] *= 7
+        return df
+    
+    def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process drug data."""
+        df = df.copy()
         
-        return [
-            Demographics(
-                primary_id=row['primary_id'],
-                case_id=row['case_id'],
-                case_version=row.get('case_version'),
-                sex=row.get('sex'),
-                age=row.get('age_in_days'),
-                weight=row.get('wt_in_kgs'),
-                reporter_country=row.get('reporter_country'),
-                occupation=row.get('occp_cod'),
-                quarter=row.get('quarter')
-            )
-            for _, row in df.iterrows()
-        ]
+        # Standardize column names
+        df = self.standardize_columns(df)
         
-    def process_drugs(self, file_path: Path) -> List[Drug]:
-        """Process drug data file."""
-        df = self.process_file(file_path)
+        # Apply standardizations
+        df = self.standardizer.standardize_route(df)
+        df = self.standardizer.standardize_dose_form(df)
+        df = self.standardizer.standardize_dose_freq(df)
         
-        # Standardize drug names
-        df = self.standardize_drug_names(df)
+        # MedDRA standardization for drug reactions
+        if 'drug_rec_act' in df.columns:
+            df = self.standardizer.standardize_pt(df, 'drug_rec_act')
         
-        return [
-            Drug(
-                primary_id=row['primary_id'],
-                drug_seq=row['drug_seq'],
-                role_code=row['role_code'],
-                drug_name=row['drug_name'],
-                substance=row.get('substance'),
-                prod_ai=row.get('prod_ai')
-            )
-            for _, row in df.iterrows()
-        ]
+        return df
+    
+    def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process reaction data."""
+        df = df.copy()
         
-    def process_reactions(self, file_path: Path) -> List[Reaction]:
-        """Process reaction data file."""
-        df = self.process_file(file_path)
+        # Standardize column names
+        df = self.standardize_columns(df)
         
-        # Standardize both PT and drug_rec_act
-        df = self.standardize_pt(df, 'pt')
-        df = self.standardize_pt(df, 'drug_rec_act')
+        # MedDRA standardization for reactions
+        if 'pt' in df.columns:
+            df = self.standardizer.standardize_pt(df, 'pt')
         
-        return [
-            Reaction(
-                primary_id=row['primary_id'],
-                pt=row['pt'],
-                drug_rec_act=row.get('drug_rec_act')
-            )
-            for _, row in df.iterrows()
-        ]
+        return df
+    
+    def process_indications(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process indication data."""
+        df = df.copy()
         
-    def process_outcomes(self, file_path: Path) -> List[Outcome]:
-        """Process outcome data file."""
-        df = self.process_file(file_path)
-        return [
-            Outcome(
-                primary_id=row['primary_id'],
-                outcome_code=row['outcome_code']
-            )
-            for _, row in df.iterrows()
-        ]
+        # Standardize column names
+        df = self.standardize_columns(df)
+        
+        # MedDRA standardization for indications
+        if 'indi_pt' in df.columns:
+            df = self.standardizer.standardize_pt(df, 'indi_pt')
+        
+        return df
+    
+    def standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize column names using COLUMN_MAPPINGS."""
+        df = df.copy()
+        df.columns = df.columns.str.upper()
+        return df.rename(columns=self.COLUMN_MAPPINGS)
+    
+    def process_file(self, file_path: Path, file_type: str) -> pd.DataFrame:
+        """Process a single FAERS file based on type."""
+        df = pd.read_csv(file_path, sep='$', dtype=str)
+        
+        processors = {
+            'DEMO': self.process_demographics,
+            'DRUG': self.process_drugs,
+            'REAC': self.process_reactions,
+            'INDI': self.process_indications
+        }
+        
+        if file_type not in processors:
+            raise ValueError(f"Unknown file type: {file_type}")
+        
+        return processors[file_type](df)
 
     def validate_record(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame, 
                        reac_df: pd.DataFrame) -> pd.DataFrame:
@@ -590,18 +233,18 @@ class FAERSProcessor(DataProcessor):
 
     def standardize_drug_names(self, df: pd.DataFrame, drug_column: str = 'drug_name') -> pd.DataFrame:
         """Standardize drug names using external reference data."""
-        if not self.drug_map:
+        if not self.standardizer.drug_map:
             return df
 
         if drug_column in df.columns:
             df[drug_column] = df[drug_column].str.lower()
-            df[drug_column] = df[drug_column].map(lambda x: self.drug_map.get(x, x))
+            df[drug_column] = df[drug_column].map(lambda x: self.standardizer.drug_map.get(x, x))
             
         return df
 
-    def process_drug_info(self, file_path: Path) -> List[DrugInfo]:
+    def process_drug_info(self, file_path: Path) -> List[Dict[str, Any]]:
         """Process drug information data file."""
-        df = self.process_file(file_path)
+        df = self.process_file(file_path, 'DRUG')
         
         # Convert date fields
         date_cols = ['exp_dt']
@@ -614,56 +257,26 @@ class FAERSProcessor(DataProcessor):
             if col in df.columns:
                 df[col] = df[col].map({'Y': 'Y', 'N': 'N', 'D': 'D'})
         
-        return [
-            DrugInfo(
-                primary_id=row['primary_id'],
-                drug_seq=row['drug_seq'],
-                val_vbm=row.get('val_vbm'),
-                nda_num=row.get('nda_num'),
-                lot_num=row.get('lot_num'),
-                route=row.get('route'),
-                dose_form=row.get('dose_form'),
-                dose_freq=row.get('dose_freq'),
-                exp_dt=row.get('exp_dt'),
-                dose_amt=float(row['dose_amt']) if pd.notna(row.get('dose_amt')) else None,
-                dose_unit=row.get('dose_unit'),
-                dechal=row.get('dechal'),
-                rechal=row.get('rechal')
-            )
-            for _, row in df.iterrows()
-        ]
+        return df.to_dict(orient='records')
 
-    def process_indications(self, file_path: Path) -> List[Indication]:
+    def process_indications(self, file_path: Path) -> List[Dict[str, Any]]:
         """Process drug indications data file."""
-        df = self.process_file(file_path)
+        df = self.process_file(file_path, 'INDI')
         
         # Standardize indication PT
-        df = self.standardize_pt(df, 'indi_pt')
+        df = self.standardizer.standardize_pt(df, 'indi_pt')
         
-        return [
-            Indication(
-                primary_id=row['primary_id'],
-                drug_seq=row['drug_seq'],
-                indi_pt=row['indi_pt']
-            )
-            for _, row in df.iterrows()
-        ]
+        return df.to_dict(orient='records')
 
-    def process_report_sources(self, file_path: Path) -> List[ReportSource]:
+    def process_report_sources(self, file_path: Path) -> List[Dict[str, Any]]:
         """Process report sources data file."""
-        df = self.process_file(file_path)
+        df = self.process_file(file_path, 'RPSR')
         
-        return [
-            ReportSource(
-                primary_id=row['primary_id'],
-                rpsr_cod=row['rpsr_cod']
-            )
-            for _, row in df.iterrows()
-        ]
+        return df.to_dict(orient='records')
 
-    def process_therapy(self, file_path: Path) -> List[Therapy]:
+    def process_therapy(self, file_path: Path) -> List[Dict[str, Any]]:
         """Process drug therapy data file."""
-        df = self.process_file(file_path)
+        df = self.process_file(file_path, 'THER')
         
         # Convert date fields
         date_cols = ['start_dt', 'end_dt']
@@ -671,14 +284,342 @@ class FAERSProcessor(DataProcessor):
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
         
-        return [
-            Therapy(
-                primary_id=row['primary_id'],
-                drug_seq=row['drug_seq'],
-                start_dt=row.get('start_dt'),
-                end_dt=row.get('end_dt'),
-                dur=float(row['dur']) if pd.notna(row.get('dur')) else None,
-                dur_cod=row.get('dur_cod')
-            )
-            for _, row in df.iterrows()
+        return df.to_dict(orient='records')
+
+    def unify_data(self, files_list: List[str], name_key: Dict[str, str], 
+                   column_subset: List[str], duplicated_cols_x: List[str] = None,
+                   duplicated_cols_y: List[str] = None) -> pd.DataFrame:
+        """
+        Unify data from multiple FAERS files with standardized column names and handling duplicates.
+        
+        Args:
+            files_list: List of file paths to process
+            name_key: Dictionary mapping original column names to standardized names
+            column_subset: List of columns to keep in final dataset
+            duplicated_cols_x: List of duplicate columns from first file
+            duplicated_cols_y: List of duplicate columns from second file
+        
+        Returns:
+            Unified DataFrame with standardized columns
+        """
+        unified_data = None
+        
+        for file_path in files_list:
+            # Read the file
+            if file_path.endswith('.csv'):
+                df = pd.read_csv(file_path)
+            else:  # Assume text file with pipe delimiter
+                df = pd.read_csv(file_path, sep='$')
+            
+            # Rename columns using name_key
+            df = df.rename(columns={v: k for k, v in name_key.items()})
+            
+            if unified_data is None:
+                unified_data = df
+            else:
+                # Handle duplicate columns if specified
+                if duplicated_cols_x and duplicated_cols_y:
+                    # Remove spaces from column names in y
+                    df.columns = df.columns.str.strip()
+                    
+                    # Merge based on common columns excluding duplicates
+                    common_cols = list(set(unified_data.columns) & set(df.columns))
+                    common_cols = [col for col in common_cols 
+                                 if col not in duplicated_cols_x 
+                                 and col not in duplicated_cols_y]
+                    
+                    unified_data = pd.merge(unified_data, df, on=common_cols, how='outer')
+                    
+                    # Handle duplicate columns
+                    for x_col, y_col in zip(duplicated_cols_x, duplicated_cols_y):
+                        # Use coalesce logic: take value from x if not null, otherwise from y
+                        if x_col in unified_data and y_col in unified_data:
+                            unified_data[x_col] = unified_data[x_col].fillna(unified_data[y_col])
+                            unified_data = unified_data.drop(columns=[y_col])
+                else:
+                    # Simple outer merge on all common columns
+                    unified_data = pd.merge(unified_data, df, how='outer')
+        
+        # Subset columns if specified
+        if column_subset:
+            # Only keep columns that exist in the data
+            valid_columns = [col for col in column_subset if col in unified_data.columns]
+            unified_data = unified_data[valid_columns]
+        
+        return unified_data
+
+    def process_demo_files(self, faers_files: List[str], output_path: str):
+        """
+        Process and unify DEMO files from FAERS data.
+        
+        Args:
+            faers_files: List of all FAERS files
+            output_path: Path to save the processed DEMO data
+        """
+        # Filter for DEMO files
+        demo_files = [f for f in faers_files if 'demo' in f.lower()]
+        
+        # Define column mappings
+        name_key = {
+            "ISR": "primaryid",
+            "CASE": "caseid",
+            "FOLL_SEQ": "caseversion",
+            "I_F_COD": "i_f_cod",
+            "EVENT_DT": "event_dt",
+            "MFR_DT": "mfr_dt",
+            "FDA_DT": "fda_dt",
+            "REPT_COD": "rept_cod",
+            "MFR_NUM": "mfr_num",
+            "MFR_SNDR": "mfr_sndr",
+            "AGE": "age",
+            "AGE_COD": "age_cod",
+            "GNDR_COD": "sex",
+            "E_SUB": "e_sub",
+            "WT": "wt",
+            "WT_COD": "wt_cod",
+            "REPT_DT": "rept_dt",
+            "OCCP_COD": "occp_cod",
+            "TO_MFR": "to_mfr",
+            "REPORTER_COUNTRY": "reporter_country",
+            "quarter": "quarter",
+            "i_f_code": "i_f_cod"
+        }
+        
+        # Define columns to keep
+        column_subset = [
+            "primaryid", "caseid", "caseversion", "i_f_cod", "sex", "age",
+            "age_cod", "age_grp", "wt", "wt_cod", "reporter_country",
+            "occr_country", "event_dt", "rept_dt", "mfr_dt", "init_fda_dt",
+            "fda_dt", "rept_cod", "occp_cod", "mfr_num", "mfr_sndr", "to_mfr",
+            "e_sub", "quarter", "auth_num", "lit_ref"
         ]
+        
+        # Define duplicate columns
+        duplicated_cols_x = ["rept_dt", "sex"]
+        duplicated_cols_y = [" rept_dt", "gndr_cod"]
+        
+        # Process the data
+        demo_data = self.unify_data(
+            files_list=demo_files,
+            name_key=name_key,
+            column_subset=column_subset,
+            duplicated_cols_x=duplicated_cols_x,
+            duplicated_cols_y=duplicated_cols_y
+        )
+        
+        # Save the processed data
+        demo_data.to_pickle(output_path)
+        
+        return demo_data
+
+    def process_indi_files(self, faers_files: List[str], output_path: str) -> pd.DataFrame:
+        """
+        Process and unify INDI (Indications) files from FAERS data.
+        
+        Args:
+            faers_files: List of all FAERS files
+            output_path: Path to save the processed INDI data
+        
+        Returns:
+            DataFrame containing processed indication data
+        """
+        # Filter for INDI files
+        indi_files = [f for f in faers_files if 'indi' in f.lower()]
+        
+        # Define column mappings
+        name_key = {
+            "ISR": "primaryid",
+            "DRUG_SEQ": "drug_seq",
+            "indi_drug_seq": "drug_seq",
+            "INDI_PT": "indi_pt"
+        }
+        
+        # Define columns to keep
+        column_subset = ["primaryid", "drug_seq", "indi_pt"]
+        
+        # Process the data
+        indi_data = self.unify_data(
+            files_list=indi_files,
+            name_key=name_key,
+            column_subset=column_subset,
+            duplicated_cols_x=None,  # No duplicate columns to handle
+            duplicated_cols_y=None
+        )
+        
+        # Remove rows with missing indication terms
+        indi_data = indi_data.dropna(subset=['indi_pt'])
+        
+        # Save the processed data
+        indi_data.to_pickle(output_path)
+        
+        return indi_data
+
+    def process_outc_files(self, faers_files: List[str], output_path: str) -> pd.DataFrame:
+        """
+        Process and unify OUTC (Outcomes) files from FAERS data.
+        
+        Args:
+            faers_files: List of all FAERS files
+            output_path: Path to save the processed OUTC data
+        
+        Returns:
+            DataFrame containing processed outcome data
+        """
+        # Filter for OUTC files
+        outc_files = [f for f in faers_files if 'outc' in f.lower()]
+        
+        # Define column mappings
+        name_key = {
+            "ISR": "primaryid",
+            "OUTC_COD": "outc_cod"
+        }
+        
+        # Define columns to keep
+        column_subset = ["primaryid", "outc_cod"]
+        
+        # Define duplicate columns (handling outc_cod and outc_code)
+        duplicated_cols_x = ["outc_cod"]
+        duplicated_cols_y = ["outc_code"]
+        
+        # Process the data
+        outc_data = self.unify_data(
+            files_list=outc_files,
+            name_key=name_key,
+            column_subset=column_subset,
+            duplicated_cols_x=duplicated_cols_x,
+            duplicated_cols_y=duplicated_cols_y
+        )
+        
+        # Remove rows with missing outcome codes
+        outc_data = outc_data.dropna(subset=['outc_cod'])
+        
+        # Save the processed data
+        outc_data.to_pickle(output_path)
+        
+        return outc_data
+
+    def process_reac_files(self, faers_files: List[str], output_path: str) -> pd.DataFrame:
+        """
+        Process and unify REAC (Reactions) files from FAERS data.
+        
+        Args:
+            faers_files: List of all FAERS files
+            output_path: Path to save the processed REAC data
+        
+        Returns:
+            DataFrame containing processed reaction data
+        """
+        # Filter for REAC files
+        reac_files = [f for f in faers_files if 'reac' in f.lower()]
+        
+        # Define column mappings
+        name_key = {
+            "ISR": "primaryid",
+            "PT": "pt"
+        }
+        
+        # Define columns to keep
+        column_subset = ["primaryid", "pt", "drug_rec_act"]
+        
+        # Process the data
+        reac_data = self.unify_data(
+            files_list=reac_files,
+            name_key=name_key,
+            column_subset=column_subset,
+            duplicated_cols_x=None,  # No duplicate columns to handle
+            duplicated_cols_y=None
+        )
+        
+        # Remove rows with missing reaction terms
+        reac_data = reac_data.dropna(subset=['pt'])
+        
+        # Save the processed data
+        reac_data.to_pickle(output_path)
+        
+        return reac_data
+
+    def process_rpsr_files(self, faers_files: List[str], output_path: str) -> pd.DataFrame:
+        """
+        Process and unify RPSR (Report Source) files from FAERS data.
+        
+        Args:
+            faers_files: List of all FAERS files
+            output_path: Path to save the processed RPSR data
+        
+        Returns:
+            DataFrame containing processed report source data
+        """
+        # Filter for RPSR files
+        rpsr_files = [f for f in faers_files if 'rpsr' in f.lower()]
+        
+        # Define column mappings
+        name_key = {
+            "ISR": "primaryid",
+            "RPSR_COD": "rpsr_cod"
+        }
+        
+        # Define columns to keep
+        column_subset = ["primaryid", "rpsr_cod"]
+        
+        # Process the data
+        rpsr_data = self.unify_data(
+            files_list=rpsr_files,
+            name_key=name_key,
+            column_subset=column_subset,
+            duplicated_cols_x=None,  # No duplicate columns to handle
+            duplicated_cols_y=None
+        )
+        
+        # Save the processed data
+        rpsr_data.to_pickle(output_path)
+        
+        return rpsr_data
+
+    def process_ther_files(self, faers_files: List[str], output_path: str) -> pd.DataFrame:
+        """
+        Process and unify THER (Therapy) files from FAERS data.
+        
+        Args:
+            faers_files: List of all FAERS files
+            output_path: Path to save the processed THER data
+        
+        Returns:
+            DataFrame containing processed therapy data
+        """
+        # Filter for THER files
+        ther_files = [f for f in faers_files if 'ther' in f.lower()]
+        
+        # Define column mappings
+        name_key = {
+            "ISR": "primaryid",
+            "dsg_drug_seq": "drug_seq",
+            "DRUG_SEQ": "drug_seq",
+            "START_DT": "start_dt",
+            "END_DT": "end_dt",
+            "DUR": "dur",
+            "DUR_COD": "dur_cod"
+        }
+        
+        # Define columns to keep
+        column_subset = [
+            "primaryid",
+            "drug_seq",
+            "start_dt",
+            "end_dt",
+            "dur",
+            "dur_cod"
+        ]
+        
+        # Process the data
+        ther_data = self.unify_data(
+            files_list=ther_files,
+            name_key=name_key,
+            column_subset=column_subset,
+            duplicated_cols_x=None,  # No duplicate columns to handle
+            duplicated_cols_y=None
+        )
+        
+        # Save the processed data
+        ther_data.to_pickle(output_path)
+        
+        return ther_data
