@@ -128,3 +128,6 @@ class Deduplicator:
                         logging.error(f"Error processing {file_path}: {str(e)}")
                     finally:
                         pbar.update(1)
+        except Exception as e:
+            logging.error(f"Error in deduplicate_all: {str(e)}")
+            raise
