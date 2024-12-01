@@ -1,63 +1,5 @@
-"""Main entry point for FAERS data processing pipeline.
+"""Main entry point for FAERS data processing pipeline."""
 
-This module provides a command-line interface for downloading, processing, and
-deduplicating FDA Adverse Event Reporting System (FAERS) data.
-
-Usage:
-    Basic download and process:
-        python -m faers_processor \
-            --data-dir /path/to/data \
-            --external-dir /path/to/external \
-            --download \
-            --process
-
-    Full pipeline with optimizations:
-        python -m faers_processor \
-            --data-dir /path/to/data \
-            --external-dir /path/to/external \
-            --download \
-            --process \
-            --deduplicate \
-            --use-dask \
-            --max-workers 8 \
-            --chunk-size 200000
-
-    Process existing data with Vaex:
-        python -m faers_processor \
-            --data-dir /path/to/data \
-            --external-dir /path/to/external \
-            --process \
-            --use-vaex
-
-Options:
-    --data-dir       Base directory for data storage (required)
-    --external-dir   Directory for external reference data (required)
-    --download       Download latest FAERS quarterly data
-    --process        Process downloaded data
-    --deduplicate    Remove duplicate entries
-    --max-workers    Number of parallel workers (default: CPU count)
-    --chunk-size     Size of data chunks for processing (default: 100000)
-    --use-dask       Enable Dask for out-of-core processing
-    --use-vaex       Enable Vaex for memory-efficient processing
-    --log-level      Set logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL)
-
-Directory Structure:
-    data/
-        raw/            # Downloaded FAERS quarterly files
-        clean/          # Processed and standardized data
-            demographics.parquet
-            drugs.parquet
-            reactions.parquet
-            demographics_dedup.parquet  # After deduplication
-    external/          # External reference data (e.g., drug mappings)
-
-Performance Tips:
-    1. Use --use-dask for processing large datasets that don't fit in memory
-    2. Use --use-vaex for memory-efficient processing of medium-sized datasets
-    3. Adjust --chunk-size based on available RAM
-    4. Set --max-workers to match your CPU core count
-    5. For Apple Silicon Macs, optimizations are automatically applied
-"""
 import argparse
 import concurrent.futures
 import logging
@@ -82,15 +24,9 @@ IS_APPLE_SILICON = platform.processor() == 'arm'
 if IS_APPLE_SILICON:
     # Enable Apple Silicon optimizations
     import os
-
     os.environ['OPENBLAS_NUM_THREADS'] = str(multiprocessing.cpu_count())
     os.environ['MKL_NUM_THREADS'] = str(multiprocessing.cpu_count())
     os.environ['VECLIB_MAXIMUM_THREADS'] = str(multiprocessing.cpu_count())
-    os.environ['NUMEXPR_MAX_THREADS'] = str(multiprocessing.cpu_count())
-    os.environ['NUMEXPR_NUM_THREADS'] = str(multiprocessing.cpu_count())
-
-    # Enable memory-mapped temp files for better memory management
-    os.environ['TMPDIR'] = '/tmp'
 
 # Configure pandas for better performance
 pd.set_option('compute.use_numexpr', True)
@@ -98,20 +34,22 @@ pd.set_option('mode.chained_assignment', None)
 
 
 def setup_logging(log_level: str = "INFO") -> None:
-    """Set up logging configuration."""
+    """Configure logging with specified level."""
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {log_level}')
+    
     logging.basicConfig(
-        level=getattr(logging, log_level),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('faers_processor.log')
-        ]
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Process FAERS data with optimizations for Apple Silicon')
+    parser = argparse.ArgumentParser(
+        description='Process FAERS data with optimizations for Apple Silicon'
+    )
 
     parser.add_argument(
         '--data-dir',
@@ -130,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--download',
         action='store_true',
-        help='Download latest FAERS quarterly data'
+        help='Download latest FAERS data'
     )
 
     parser.add_argument(
@@ -142,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--deduplicate',
         action='store_true',
-        help='Perform deduplication on processed data'
+        help='Remove duplicate entries'
     )
 
     parser.add_argument(
@@ -156,7 +94,7 @@ def parse_args() -> argparse.Namespace:
         '--chunk-size',
         type=int,
         default=100000,
-        help='Chunk size for parallel processing'
+        help='Size of data chunks for processing'
     )
 
     parser.add_argument(
@@ -178,18 +116,29 @@ def parse_args() -> argparse.Namespace:
 
 def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """Optimize DataFrame memory usage by choosing appropriate dtypes."""
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            # Convert string columns to categorical if they have low cardinality
-            num_unique = df[col].nunique()
-            if num_unique / len(df) < 0.5:  # If less than 50% unique values
-                df[col] = df[col].astype('category')
-        elif df[col].dtype == 'float64':
-            # Downcast float64 to float32 if possible
-            df[col] = pd.to_numeric(df[col], downcast='float')
-        elif df[col].dtype == 'int64':
-            # Downcast int64 to smallest possible integer type
-            df[col] = pd.to_numeric(df[col], downcast='integer')
+    if df.empty:
+        return df
+        
+    df = df.copy()
+    
+    # Optimize numeric columns
+    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+        col_min = df[col].min()
+        col_max = df[col].max()
+        
+        if pd.api.types.is_integer_dtype(df[col]):
+            if col_min >= -128 and col_max <= 127:
+                df[col] = df[col].astype('int8')
+            elif col_min >= -32768 and col_max <= 32767:
+                df[col] = df[col].astype('int16')
+            elif col_min >= -2147483648 and col_max <= 2147483647:
+                df[col] = df[col].astype('int32')
+    
+    # Optimize string columns
+    for col in df.select_dtypes(include=['object']).columns:
+        if df[col].nunique() / len(df) < 0.5:  # If column has low cardinality
+            df[col] = df[col].astype('category')
+    
     return df
 
 
@@ -206,6 +155,7 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
     Returns:
         Processed DataFrame chunk
     """
+    chunk = args['chunk']
     data_type = args['data_type']
     standardizer = args['standardizer']
     use_dask = args.get('use_dask', False)
@@ -213,14 +163,14 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
     try:
         if use_dask:
             # Convert to Dask DataFrame for parallel processing
-            chunk = standardizer._to_dask_df(chunk)
+            chunk = dd.from_pandas(chunk, npartitions=multiprocessing.cpu_count())
             if data_type == 'demographics':
                 result = standardizer.process_demographics(chunk)
             elif data_type == 'drugs':
                 result = standardizer.process_drugs(chunk)
             else:  # reactions
                 result = standardizer.process_reactions(chunk)
-            return optimize_dtypes(result)
+            return optimize_dtypes(result.compute())
         else:
             # Process with standard pandas
             if data_type == 'demographics':
