@@ -11,335 +11,248 @@ from .standardizer import DataStandardizer
 
 
 class FAERSProcessor:
-    """FAERS specific data processor implementation."""
+    """Processes FAERS data files."""
 
-    COLUMN_MAPPINGS = {
-        'ISR': 'primary_id',
-        'CASE': 'case_id',
-        'DRUG_SEQ': 'drug_seq',
-        'ROLE_COD': 'role_code',
-        'DRUGNAME': 'drug_name',
-        'PT': 'pt',
-        'OUTC_COD': 'outcome_code'
-    }
-
-    def __init__(self, data_dir: Path, external_dir: Path):
-        """Initialize processor with data and external directories."""
+    def __init__(self, data_dir: Path, output_dir: Path):
+        """Initialize processor with data and output directories."""
         self.data_dir = data_dir
-        self.standardizer = DataStandardizer(external_dir)
-
-    def process_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process demographics data."""
-        df = df.copy()
-
-        # Standardize column names
-        df = self.standardize_columns(df)
-
-        # Apply standardizations
-        df = self.standardizer.standardize_sex(df)
-        df = self.standardizer.standardize_age(df)
-        df = self.standardizer.standardize_weight(df)
-        df = self.standardizer.standardize_country(df)
-        df = self.standardizer.standardize_occupation(df)
-        df = self.standardizer.standardize_dates(df, ['init_fda_dt', 'event_dt', 'rept_dt'])
-
-        return df
-
-    def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process drug data."""
-        df = df.copy()
-
-        # Standardize column names
-        df = self.standardize_columns(df)
-
-        # Apply standardizations
-        df = self.standardizer.standardize_route(df)
-        df = self.standardizer.standardize_dose_form(df)
-        df = self.standardizer.standardize_dose_freq(df)
-
-        # MedDRA standardization for drug reactions
-        if 'drug_rec_act' in df.columns:
-            df = self.standardizer.standardize_pt(df, 'drug_rec_act')
-
-        return df
-
-    def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process reaction data."""
-        df = df.copy()
-
-        # Standardize column names
-        df = self.standardize_columns(df)
-
-        # MedDRA standardization for reactions
-        if 'pt' in df.columns:
-            df = self.standardizer.standardize_pt(df, 'pt')
-
-        return df
-
-    def process_indications(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process indication data."""
-        df = df.copy()
-
-        # Standardize column names
-        df = self.standardize_columns(df)
-
-        # MedDRA standardization for indications
-        if 'indi_pt' in df.columns:
-            df = self.standardizer.standardize_pt(df, 'indi_pt')
-
-        return df
-
-    def standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize column names using COLUMN_MAPPINGS."""
-        df = df.copy()
-        df.columns = df.columns.str.upper()
-        return df.rename(columns=self.COLUMN_MAPPINGS)
-
-    def process_file(self, file_path: Path, file_type: str) -> pd.DataFrame:
-        """Process a single FAERS file based on type."""
-        logging.info(f"Processing {file_type} file: {file_path.name}")
-        df = pd.read_csv(file_path, sep='$', dtype=str)
+        self.output_dir = output_dir
+        self.standardizer = DataStandardizer()
         
-        processors = {
-            'DEMO': self.process_demographics,
-            'DRUG': self.process_drugs,
-            'REAC': self.process_reactions,
-            'INDI': self.process_indications
-        }
-        
-        if file_type not in processors:
-            raise ValueError(f"Unknown file type: {file_type}")
-        
-        with tqdm(total=1, desc=f"Processing {file_type}") as pbar:
-            result = processors[file_type](df)
-            pbar.update(1)
-        
-        return result
+        # Create output directory if it doesn't exist
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def validate_record(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
-                        reac_df: pd.DataFrame) -> pd.DataFrame:
-        """Validate records for completeness."""
-        # Check for presence of both drugs and reactions
-        valid_ids = set(demo_df['primary_id']) & set(drug_df['primary_id']) & set(reac_df['primary_id'])
-        return demo_df[demo_df['primary_id'].isin(valid_ids)]
-
-    def calculate_similarity_score(self, row1: pd.Series, row2: pd.Series) -> float:
-        """Calculate similarity score between two records."""
-        score = 0.0
-        weights = {
-            'sex': 0.1,
-            'age_in_days': 0.2,
-            'wt_in_kgs': 0.1,
-            'reporter_country': 0.1,
-            'pt': 0.3,
-            'drug_name': 0.2
-        }
-
-        # Compare demographic fields
-        if row1['sex'] == row2['sex'] and pd.notna(row1['sex']):
-            score += weights['sex']
-
-        # Compare age with tolerance
-        if (pd.notna(row1['age_in_days']) and pd.notna(row2['age_in_days']) and
-                abs(row1['age_in_days'] - row2['age_in_days']) < 30):  # 30 days tolerance
-            score += weights['age_in_days']
-
-        # Compare weight with tolerance
-        if (pd.notna(row1['wt_in_kgs']) and pd.notna(row2['wt_in_kgs']) and
-                abs(row1['wt_in_kgs'] - row2['wt_in_kgs']) < 2):  # 2 kg tolerance
-            score += weights['wt_in_kgs']
-
-        # Compare country
-        if row1['reporter_country'] == row2['reporter_country'] and pd.notna(row1['reporter_country']):
-            score += weights['reporter_country']
-
-        # Compare reactions (PT)
-        pt1 = set(str(row1['pt']).split(';'))
-        pt2 = set(str(row2['pt']).split(';'))
-        if pt1.intersection(pt2):
-            score += weights['pt'] * len(pt1.intersection(pt2)) / max(len(pt1), len(pt2))
-
-        # Compare drugs
-        drug1 = set(str(row1['drug_name']).split(';'))
-        drug2 = set(str(row2['drug_name']).split(';'))
-        if drug1.intersection(drug2):
-            score += weights['drug_name'] * len(drug1.intersection(drug2)) / max(len(drug1), len(drug2))
-
-        return score
-
-    def deduplicate_records(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
-                            reac_df: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate records using rule-based and probabilistic methods."""
-        # First pass: Rule-based deduplication
-        complete_duplicates = ['event_dt', 'sex', 'reporter_country', 'age_in_days',
-                               'wt_in_kgs', 'pt', 'substance']
-
-        # Merge drug and reaction data
-        merged_df = demo_df.merge(drug_df[['primary_id', 'substance']],
-                                  on='primary_id', how='left')
-        merged_df = merged_df.merge(reac_df[['primary_id', 'pt']],
-                                    on='primary_id', how='left')
-
-        # Group by all duplicate fields
-        grouped = merged_df.groupby(complete_duplicates)
-
-        # Keep only the latest record from each group
-        unique_records = grouped.apply(lambda x: x.sort_values('fda_dt').iloc[-1])
-
-        # Mark duplicates
-        demo_df['RB_duplicates'] = ~demo_df['primary_id'].isin(unique_records['primary_id'])
-
-        # Second pass: Consider only suspect drugs
-        suspect_drugs = drug_df[drug_df['role_cod'].isin(['PS', 'SS'])]
-        merged_df = demo_df.merge(suspect_drugs[['primary_id', 'substance']],
-                                  on='primary_id', how='left')
-
-        grouped = merged_df.groupby(complete_duplicates)
-        unique_records = grouped.apply(lambda x: x.sort_values('fda_dt').iloc[-1])
-
-        # Mark duplicates considering only suspect drugs
-        demo_df['RB_duplicates_only_susp'] = ~demo_df['primary_id'].isin(unique_records['primary_id'])
-
-        return demo_df
-
-    def process_multi_substance_drugs(self, drug_df: pd.DataFrame) -> pd.DataFrame:
-        """Process drugs with multiple substances."""
-        if 'substance' not in drug_df.columns:
-            return drug_df
-
-        # Split multi-substance drugs
-        multi_mask = drug_df['substance'].str.contains(';', na=False)
-
-        # Process single substance drugs
-        single_drugs = drug_df[~multi_mask].copy()
-
-        # Process multi substance drugs
-        multi_drugs = drug_df[multi_mask].copy()
-        if not multi_drugs.empty:
-            # Split substances and create new rows
-            expanded = multi_drugs.assign(
-                substance=multi_drugs['substance'].str.split(';')
-            ).explode('substance')
-
-            # Combine single and multi substance results
-            drug_df = pd.concat([single_drugs, expanded], ignore_index=True)
-
-        return drug_df
-
-    def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
-        """Correct files with missing newlines."""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-
-            # Replace problematic line with corrected version
-            new_line = old_line.replace('$', '$\n')
-            content = ''.join(lines).replace(old_line, new_line)
-
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-        except IOError as e:
-            logging.error(f"Error correcting file {file_path}: {str(e)}")
-
-    def standardize_drug_names(self, df: pd.DataFrame, drug_column: str) -> pd.DataFrame:
-        """Standardize drug names using the standardizer's drug dictionary."""
-        if drug_column in df.columns:
-            df[drug_column] = df[drug_column].str.lower()
-            # Get drug dictionary from standardizer
-            drug_dict = self.standardizer.get_drug_dictionary()
-            df[drug_column] = df[drug_column].map(lambda x: drug_dict.get(x, x))
-            
-        return df
-
-    def process_drug_info(self, file_path: Path) -> pd.DataFrame:
-        """Process drug information from FAERS file."""
-        df = self.process_file(file_path, 'DRUG')
-        
-        # Convert date fields
-        date_cols = ['exp_dt']
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-        
-        # Standardize dechal and rechal values
-        for col in ['dechal', 'rechal']:
-            if col in df.columns:
-                df[col] = df[col].str.lower()
-        
-        return df
-
-    def process_indication_info(self, file_path: Path) -> pd.DataFrame:
-        """Process indication information from FAERS file."""
-        df = self.process_file(file_path, 'INDI')
-        
-        # Standardize indication PT
-        df = self.standardizer.standardize_pt(df, 'indi_pt')
-        
-        return df
-
-    def unify_data(self, files_list: List[str], name_key: Dict[str, str],
-                   column_subset: List[str], duplicated_cols_x: List[str] = None,
-                   duplicated_cols_y: List[str] = None) -> pd.DataFrame:
-        """
-        Unify data from multiple FAERS files with standardized column names and handling duplicates.
+    def process_files(self, quarter: str) -> Dict[str, pd.DataFrame]:
+        """Process all FAERS files for a given quarter.
         
         Args:
-            files_list: List of file paths to process
-            name_key: Dictionary mapping original column names to standardized names
-            column_subset: List of columns to keep in final dataset
-            duplicated_cols_x: List of duplicate columns from first file
-            duplicated_cols_y: List of duplicate columns from second file
-        
+            quarter: Quarter identifier (e.g., '23Q1')
+            
         Returns:
-            Unified DataFrame with standardized columns
+            Dictionary mapping file types to processed DataFrames
         """
-        unified_data = None
+        processed_data = {}
         
-        with tqdm(total=len(files_list), desc="Unifying files") as pbar:
-            for file_path in files_list:
-                # Read the file
-                if file_path.endswith('.csv'):
-                    df = pd.read_csv(file_path)
-                else:  # Assume text file with pipe delimiter
-                    df = pd.read_csv(file_path, sep='$')
+        # Get list of files to process
+        files = list(self.data_dir.glob(f'*{quarter}*.txt'))
+        if not files:
+            logging.warning(f"No files found for quarter {quarter}")
+            return processed_data
+            
+        with tqdm(total=len(files), desc="Processing files") as pbar:
+            for file in files:
+                try:
+                    df = pd.read_csv(file, delimiter='$', dtype=str)
+                    file_type = self._get_file_type(file.name)
+                    processed_data[file_type] = df
+                    pbar.update(1)
+                except Exception as e:
+                    logging.error(f"Error processing {file}: {str(e)}")
+                    
+        return processed_data
+
+    def unify_files(self, data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """Unify processed FAERS files into a single DataFrame.
+        
+        Args:
+            data: Dictionary of processed DataFrames
+            
+        Returns:
+            Unified DataFrame
+        """
+        if not data:
+            logging.error("No data to unify")
+            return pd.DataFrame()
+            
+        try:
+            # Start with demographics
+            demo = data.get('DEMO', pd.DataFrame())
+            if demo.empty:
+                logging.error("No demographics data found")
+                return pd.DataFrame()
                 
-                # Rename columns using name_key
-                df = df.rename(columns={v: k for k, v in name_key.items()})
-                
-                if unified_data is None:
-                    unified_data = df
+            # Process each file type
+            with tqdm(total=len(data), desc="Unifying files") as pbar:
+                for file_type, df in data.items():
+                    if file_type != 'DEMO':
+                        demo = self._merge_dataframe(demo, df, file_type)
+                    pbar.update(1)
+                    
+            return demo
+            
+        except Exception as e:
+            logging.error(f"Error unifying files: {str(e)}")
+            return pd.DataFrame()
+
+    def process_quarter(self, quarter: str) -> pd.DataFrame:
+        """Process all FAERS files for a quarter.
+        
+        Args:
+            quarter: Quarter identifier (e.g., '23Q1')
+            
+        Returns:
+            Processed DataFrame
+        """
+        try:
+            # Process individual files
+            processed_data = self.process_files(quarter)
+            if not processed_data:
+                return pd.DataFrame()
+
+            # Unify files
+            unified_data = self.unify_files(processed_data)
+            if unified_data.empty:
+                return pd.DataFrame()
+
+            # Generate summary (for logging only)
+            self._generate_summary(unified_data)
+            
+            # Save output
+            output_path = self.output_dir / f"faers_{quarter}_processed.parquet"
+            unified_data.to_parquet(output_path)
+
+            return unified_data
+
+        except Exception as e:
+            logging.error(f"Error processing quarter {quarter}: {str(e)}")
+            return pd.DataFrame()
+
+    def _generate_summary(self, data: pd.DataFrame) -> None:
+        """Generate and log summary statistics.
+        
+        Args:
+            data: Input DataFrame
+        """
+        if data.empty:
+            logging.warning("No data for summary generation")
+            return
+            
+        try:
+            # Calculate summary statistics
+            summary = {
+                'Total Records': len(data),
+                'Unique Cases': data['caseid'].nunique(),
+                'Date Range': f"{data['fda_dt'].min()} to {data['fda_dt'].max()}",
+                'Missing Values (%)': (data.isna().sum() / len(data) * 100).round(2).to_dict()
+            }
+            
+            # Log summary statistics
+            for key, value in summary.items():
+                if key != 'Missing Values (%)':
+                    logging.info(f"{key}: {value}")
                 else:
-                    # Handle duplicate columns if specified
-                    if duplicated_cols_x and duplicated_cols_y:
-                        # Remove spaces from column names in y
-                        df.columns = df.columns.str.strip()
-
-                        # Merge based on common columns excluding duplicates
-                        common_cols = list(set(unified_data.columns) & set(df.columns))
-                        common_cols = [col for col in common_cols
-                                    if col not in duplicated_cols_x
-                                    and col not in duplicated_cols_y]
-                        
-                        unified_data = pd.merge(unified_data, df, on=common_cols, how='outer')
-
-                        # Handle duplicate columns
-                        for x_col, y_col in zip(duplicated_cols_x, duplicated_cols_y):
-                            # Use coalesce logic: take value from x if not null, otherwise from y
-                            unified_data[x_col] = unified_data[x_col].combine_first(unified_data[y_col])
-                            unified_data = unified_data.drop(columns=[y_col])
-                    else:
-                        # Simple outer merge on all common columns
-                        unified_data = pd.merge(unified_data, df, how='outer')
+                    logging.info("Missing Values (%):")
+                    for col, pct in value.items():
+                        logging.info(f"  {col}: {pct}%")
+            
+            # Create and save summary plot
+            try:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                data['fda_dt'].value_counts().sort_index().plot(ax=ax)
+                ax.set_title('Reports by FDA Receipt Date')
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Number of Reports')
                 
-                pbar.update(1)
+                plot_path = self.output_dir / "reports_by_date.png"
+                fig.savefig(plot_path)
+                plt.close(fig)
+                logging.info(f"Summary plot saved to {plot_path}")
+            except Exception as plot_error:
+                logging.warning(f"Could not generate summary plot: {str(plot_error)}")
+            
+        except Exception as e:
+            logging.error(f"Error generating summary: {str(e)}")
+
+    def validate_data(self, data: pd.DataFrame) -> bool:
+        """Validate processed data.
         
-        # Subset columns if specified
-        if column_subset:
-            # Only keep columns that exist in the data
-            valid_columns = [col for col in column_subset if col in unified_data.columns]
-            unified_data = unified_data[valid_columns]
+        Args:
+            data: DataFrame to validate
+            
+        Returns:
+            True if validation passes, False otherwise
+        """
+        try:
+            # Check required columns
+            required_cols = ['primaryid', 'caseid', 'fda_dt']
+            if not all(col in data.columns for col in required_cols):
+                logging.error("Missing required columns")
+                return False
+
+            # Check for empty DataFrame
+            if data.empty:
+                logging.error("Empty DataFrame")
+                return False
+
+            # Check for missing values in key columns
+            missing_key_vals = data[required_cols].isna().sum()
+            if missing_key_vals.any():
+                logging.warning(f"Missing values in key columns:\n{missing_key_vals}")
+
+            # Check date format
+            try:
+                pd.to_datetime(data['fda_dt'])
+            except Exception as e:
+                logging.error(f"Invalid date format in fda_dt: {str(e)}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating data: {str(e)}")
+            return False
+
+    def _get_file_type(self, filename: str) -> str:
+        """Extract file type from filename."""
+        file_types = {
+            'DEMO': ['demo', 'demographic'],
+            'DRUG': ['drug'],
+            'REAC': ['reac', 'reaction'],
+            'OUTC': ['outc', 'outcome'],
+            'RPSR': ['rpsr', 'source'],
+            'THER': ['ther', 'therapy']
+        }
         
-        return unified_data
+        filename = filename.lower()
+        for file_type, patterns in file_types.items():
+            if any(pattern in filename for pattern in patterns):
+                return file_type
+        return 'UNKNOWN'
+
+    def _merge_dataframe(self, base_df: pd.DataFrame, merge_df: pd.DataFrame, file_type: str) -> pd.DataFrame:
+        """Merge a DataFrame with the base DataFrame."""
+        try:
+            # Get merge columns based on file type
+            merge_cols = self._get_merge_columns(file_type)
+            if not merge_cols:
+                logging.warning(f"No merge columns defined for {file_type}")
+                return base_df
+                
+            # Perform merge
+            merged = pd.merge(
+                base_df,
+                merge_df,
+                on=merge_cols,
+                how='left',
+                suffixes=('', f'_{file_type.lower()}')
+            )
+            
+            return merged
+            
+        except Exception as e:
+            logging.error(f"Error merging {file_type}: {str(e)}")
+            return base_df
+
+    def _get_merge_columns(self, file_type: str) -> List[str]:
+        """Get merge columns for a file type."""
+        merge_columns = {
+            'DRUG': ['primaryid', 'caseid'],
+            'REAC': ['primaryid', 'caseid'],
+            'OUTC': ['primaryid', 'caseid'],
+            'RPSR': ['primaryid', 'caseid'],
+            'THER': ['primaryid', 'caseid', 'drug_seq']
+        }
+        return merge_columns.get(file_type, [])
 
     def process_demo_files(self, faers_files: List[str], output_path: str):
         """
@@ -617,79 +530,66 @@ class FAERSProcessor:
 
         return ther_data
 
-    def process_quarter(self, quarter: str) -> Tuple[pd.DataFrame, Optional[plt.Figure]]:
-        """Process all FAERS files for a quarter.
+    def unify_data(self, files_list: List[str], name_key: Dict[str, str],
+                   column_subset: List[str], duplicated_cols_x: List[str] = None,
+                   duplicated_cols_y: List[str] = None) -> pd.DataFrame:
+        """
+        Unify data from multiple FAERS files with standardized column names and handling duplicates.
         
         Args:
-            quarter: Quarter identifier (e.g., '23Q1')
-            
-        Returns:
-            Tuple of processed DataFrame and optional summary plot
-        """
-        try:
-            # Process individual files
-            processed_data = self.process_files(quarter)
-            if not processed_data:
-                return pd.DataFrame(), None
-
-            # Unify files
-            unified_data = self.unify_files(processed_data)
-            if unified_data.empty:
-                return pd.DataFrame(), None
-
-            # Generate summary
-            summary_df, summary_plot = self.generate_summary(unified_data)
-            
-            # Save outputs
-            output_path = self.output_dir / f"faers_{quarter}_processed.parquet"
-            unified_data.to_parquet(output_path)
-            
-            if summary_plot:
-                plot_path = self.output_dir / f"faers_{quarter}_summary.png"
-                summary_plot.savefig(plot_path)
-                plt.close(summary_plot)
-
-            return unified_data, summary_plot
-
-        except Exception as e:
-            logging.error(f"Error processing quarter {quarter}: {str(e)}")
-            return pd.DataFrame(), None
-
-    def validate_data(self, data: pd.DataFrame) -> bool:
-        """Validate processed data.
+            files_list: List of file paths to process
+            name_key: Dictionary mapping original column names to standardized names
+            column_subset: List of columns to keep in final dataset
+            duplicated_cols_x: List of duplicate columns from first file
+            duplicated_cols_y: List of duplicate columns from second file
         
-        Args:
-            data: DataFrame to validate
-            
         Returns:
-            True if validation passes, False otherwise
+            Unified DataFrame with standardized columns
         """
-        try:
-            # Check required columns
-            required_cols = ['primaryid', 'caseid', 'fda_dt']
-            if not all(col in data.columns for col in required_cols):
-                logging.error("Missing required columns")
-                return False
+        unified_data = None
+        
+        with tqdm(total=len(files_list), desc="Unifying files") as pbar:
+            for file_path in files_list:
+                # Read the file
+                if file_path.endswith('.csv'):
+                    df = pd.read_csv(file_path)
+                else:  # Assume text file with pipe delimiter
+                    df = pd.read_csv(file_path, sep='$')
+                
+                # Rename columns using name_key
+                df = df.rename(columns={v: k for k, v in name_key.items()})
+                
+                if unified_data is None:
+                    unified_data = df
+                else:
+                    # Handle duplicate columns if specified
+                    if duplicated_cols_x and duplicated_cols_y:
+                        # Remove spaces from column names in y
+                        df.columns = df.columns.str.strip()
 
-            # Check for empty DataFrame
-            if data.empty:
-                logging.error("Empty DataFrame")
-                return False
+                        # Merge based on common columns excluding duplicates
+                        common_cols = list(set(unified_data.columns) & set(df.columns))
+                        common_cols = [col for col in common_cols
+                                    if col not in duplicated_cols_x
+                                    and col not in duplicated_cols_y]
+                        
+                        unified_data = pd.merge(unified_data, df, on=common_cols, how='outer')
 
-            # Check for missing values in key columns
-            missing_key_vals = data[required_cols].isna().sum()
-            if missing_key_vals.any():
-                logging.warning(f"Missing values in key columns:\n{missing_key_vals}")
-
-            # Check date format
-            try:
-                pd.to_datetime(data['fda_dt'])
-            except Exception as e:
-                logging.error(f"Invalid date format in fda_dt: {str(e)}")
-                return False
-
-            return True
-
-        except Exception as e:
-            logging.error(f"Error validating data: {str(e)}")
-            return False
+                        # Handle duplicate columns
+                        for x_col, y_col in zip(duplicated_cols_x, duplicated_cols_y):
+                            # Use coalesce logic: take value from x if not null, otherwise from y
+                            unified_data[x_col] = unified_data[x_col].combine_first(unified_data[y_col])
+                            unified_data = unified_data.drop(columns=[y_col])
+                    else:
+                        # Simple outer merge on all common columns
+                        unified_data = pd.merge(unified_data, df, how='outer')
+                
+                pbar.update(1)
+        
+        # Subset columns if specified
+        if column_subset:
+            # Only keep columns that exist in the data
+            valid_columns = [col for col in column_subset if col in unified_data.columns]
+            unified_data = unified_data[valid_columns]
+        
+        return unified_data
