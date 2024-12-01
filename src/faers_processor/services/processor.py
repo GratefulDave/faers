@@ -79,14 +79,28 @@ class FAERSProcessor(DataProcessor):
         # Load MedDRA standardization data
         self.meddra_dir = self.external_dir / 'meddra'
         if self.meddra_dir.exists():
-            # Load main MedDRA dictionary if available
-            meddra_file = self.meddra_dir / 'meddra.csv'
-            if meddra_file.exists():
-                self.meddra_df = pd.read_csv(meddra_file, sep=';')
-                self.pt_list = self.meddra_df['pt'].str.lower().unique()
-            else:
+            try:
+                # Load MedDRA hierarchy files
+                self.meddra = {
+                    'soc': pd.read_csv(self.meddra_dir / 'soc.asc', sep='$'),
+                    'hlgt': pd.read_csv(self.meddra_dir / 'hlgt.asc', sep='$'),
+                    'hlt': pd.read_csv(self.meddra_dir / 'hlt.asc', sep='$'),
+                    'pt': pd.read_csv(self.meddra_dir / 'pt.asc', sep='$'),
+                    'llt': pd.read_csv(self.meddra_dir / 'llt.asc', sep='$'),
+                    'soc_hlgt': pd.read_csv(self.meddra_dir / 'soc_hlgt.asc', sep='$'),
+                    'hlgt_hlt': pd.read_csv(self.meddra_dir / 'hlgt_hlt.asc', sep='$'),
+                    'hlt_pt': pd.read_csv(self.meddra_dir / 'hlt_pt.asc', sep='$')
+                }
+                
+                # Create standardization mappings
+                self._create_meddra_mappings()
+                logging.info("Successfully loaded MedDRA dictionary files")
+            except Exception as e:
+                logging.error(f"Error loading MedDRA files: {str(e)}")
+                self.meddra = None
                 self.pt_list = set()
-                logging.warning("MedDRA dictionary not found. Using only pt_fixed.csv for standardization.")
+                self.pt_fixed_map = {}
+                return
 
             # Load manual PT fixes
             pt_fixed_file = self.meddra_dir / 'pt_fixed.csv'
@@ -101,8 +115,63 @@ class FAERSProcessor(DataProcessor):
                 logging.warning("pt_fixed.csv not found. PT standardization will be limited.")
         else:
             logging.warning("MedDRA directory not found. PT standardization will be skipped.")
+            self.meddra = None
             self.pt_list = set()
             self.pt_fixed_map = {}
+
+    def _create_meddra_mappings(self):
+        """Create mappings for MedDRA standardization."""
+        if not self.meddra:
+            return
+            
+        # Create PT list
+        self.pt_list = set(self.meddra['pt']['pt_name'].str.lower())
+        
+        # Create LLT to PT mapping
+        self.llt_pt_map = {}
+        llt_pt_pairs = self.meddra['llt'].merge(
+            self.meddra['pt'][['pt_code', 'pt_name']],
+            on='pt_code'
+        )
+        for _, row in llt_pt_pairs.iterrows():
+            if row['llt_currency'] == 'Y':  # Only use current terms
+                self.llt_pt_map[row['llt_name'].lower()] = row['pt_name'].lower()
+        
+        # Create PT to HLT mapping
+        self.pt_hlt_map = {}
+        pt_hlt_pairs = self.meddra['hlt_pt'].merge(
+            self.meddra['hlt'][['hlt_code', 'hlt_name']],
+            on='hlt_code'
+        ).merge(
+            self.meddra['pt'][['pt_code', 'pt_name']],
+            on='pt_code'
+        )
+        for _, row in pt_hlt_pairs.iterrows():
+            self.pt_hlt_map[row['pt_name'].lower()] = row['hlt_name'].lower()
+        
+        # Create HLT to HLGT mapping
+        self.hlt_hlgt_map = {}
+        hlt_hlgt_pairs = self.meddra['hlgt_hlt'].merge(
+            self.meddra['hlgt'][['hlgt_code', 'hlgt_name']],
+            on='hlgt_code'
+        ).merge(
+            self.meddra['hlt'][['hlt_code', 'hlt_name']],
+            on='hlt_code'
+        )
+        for _, row in hlt_hlgt_pairs.iterrows():
+            self.hlt_hlgt_map[row['hlt_name'].lower()] = row['hlgt_name'].lower()
+        
+        # Create HLGT to SOC mapping
+        self.hlgt_soc_map = {}
+        hlgt_soc_pairs = self.meddra['soc_hlgt'].merge(
+            self.meddra['soc'][['soc_code', 'soc_name']],
+            on='soc_code'
+        ).merge(
+            self.meddra['hlgt'][['hlgt_code', 'hlgt_name']],
+            on='hlgt_code'
+        )
+        for _, row in hlgt_soc_pairs.iterrows():
+            self.hlgt_soc_map[row['hlgt_name'].lower()] = row['soc_name'].lower()
 
     def process_file(self, file_path: Path) -> pd.DataFrame:
         """Process a single FAERS data file."""
@@ -143,7 +212,7 @@ class FAERSProcessor(DataProcessor):
             pt_column: Name of the PT column to standardize
             
         Returns:
-            DataFrame with standardized PT column
+            DataFrame with standardized PT column and additional MedDRA hierarchy columns
         """
         if pt_column not in df.columns:
             return df
@@ -165,12 +234,13 @@ class FAERSProcessor(DataProcessor):
         df[pt_column] = df[pt_column].map(lambda x: self.pt_fixed_map.get(x, x) if pd.notna(x) else x)
         
         # Try to find matches through LLTs if MedDRA dictionary is available
-        if hasattr(self, 'meddra_df'):
-            llt_map = dict(zip(
-                self.meddra_df['llt'].str.lower(),
-                self.meddra_df['pt'].str.lower()
-            ))
-            df[pt_column] = df[pt_column].map(lambda x: llt_map.get(x, x) if pd.notna(x) else x)
+        if self.meddra:
+            df[pt_column] = df[pt_column].map(lambda x: self.llt_pt_map.get(x, x) if pd.notna(x) else x)
+            
+            # Add MedDRA hierarchy columns
+            df[f'{pt_column}_hlt'] = df[pt_column].map(lambda x: self.pt_hlt_map.get(x, None) if pd.notna(x) else None)
+            df[f'{pt_column}_hlgt'] = df[f'{pt_column}_hlt'].map(lambda x: self.hlt_hlgt_map.get(x, None) if pd.notna(x) else None)
+            df[f'{pt_column}_soc'] = df[f'{pt_column}_hlgt'].map(lambda x: self.hlgt_soc_map.get(x, None) if pd.notna(x) else None)
         
         # Calculate final standardization stats
         final_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
