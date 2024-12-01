@@ -9,8 +9,8 @@ class Deduplicator:
         """Initialize deduplicator."""
         pass
 
+    @staticmethod
     def rule_based_deduplication(
-            self,
             demo_df: pd.DataFrame,
             reac_df: pd.DataFrame,
             drug_df: pd.DataFrame,
@@ -83,8 +83,8 @@ class Deduplicator:
 
         return demo_df
 
+    @staticmethod
     def probabilistic_deduplication(
-            self,
             demo_df: pd.DataFrame,
             reac_df: pd.DataFrame,
             drug_df: pd.DataFrame,

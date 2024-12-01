@@ -151,7 +151,8 @@ class FAERSDataDownloader:
         # Return paths to extracted files
         return list(extract_dir.rglob('*.txt'))
 
-    def _fix_known_issues(self, extract_dir: Path):
+    @staticmethod
+    def _fix_known_issues(extract_dir: Path):
         """Fix known issues in FAERS files."""
         fixes = {
             'DRUG11Q2.txt': ('$$$$$$7475791', '\n'),
