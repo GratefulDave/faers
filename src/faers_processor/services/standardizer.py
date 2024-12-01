@@ -32,9 +32,8 @@ try:
 
     if platform.machine() == 'arm64':
         # Check if OpenBLAS is being used
-        import numpy
-        config_info = numpy.show_config()
-        if hasattr(config_info, 'blas_opt_info') and 'openblas' in str(config_info.blas_opt_info):
+        blas_info = np.__config__.get_info('blas_opt_info')
+        if blas_info and 'openblas' in str(blas_info).lower():
             logging.info("Using optimized OpenBLAS for ARM64")
         else:
             logging.info("OpenBLAS optimization not detected for ARM64")

@@ -685,25 +685,28 @@ class FAERSProcessor:
             Processed DataFrame
         """
         try:
+            # Common read options
+            read_opts = {
+                'filepath_or_buffer': str(file_path),  # Convert Path to string
+                'sep': '$',
+                'dtype': str,
+                'na_values': ['', 'NA', 'NULL'],
+                'keep_default_na': True
+            }
+
             # Read data with optimized settings
             if self.use_dask:
                 df = dd.read_csv(
-                    file_path,
-                    sep='$',
-                    dtype=str,
-                    na_values=['', 'NA', 'NULL'],
-                    keep_default_na=True,
+                    **read_opts,
                     blocksize=self.chunk_size * 1024
                 )
             else:
-                df = pd.read_csv(
-                    file_path,
-                    sep='$',
-                    dtype=str,
-                    na_values=['', 'NA', 'NULL'],
-                    keep_default_na=True,
+                chunks = pd.read_csv(
+                    **read_opts,
                     chunksize=self.chunk_size
                 )
+                # Concatenate chunks into single DataFrame
+                df = pd.concat(chunks, ignore_index=True)
 
             # Process based on data type
             if data_type == 'demographics':
