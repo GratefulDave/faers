@@ -221,6 +221,64 @@ def process_chunk_dask(args: Dict[str, Any]) -> dd.DataFrame:
         return dd.from_pandas(pd.DataFrame(), npartitions=1)
 
 
+def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
+    """Process a chunk of FAERS data with optimizations.
+    
+    Args:
+        args: Dictionary containing:
+            - chunk: DataFrame chunk to process
+            - data_type: Type of data ('demographics', 'drugs', 'reactions')
+            - standardizer: DataStandardizer instance
+            - use_dask: Whether to use Dask for processing
+            - use_vaex: Whether to use Vaex for processing
+    
+    Returns:
+        Processed DataFrame chunk
+    """
+    chunk = args['chunk']
+    data_type = args['data_type']
+    standardizer = args['standardizer']
+    use_dask = args.get('use_dask', False)
+    use_vaex = args.get('use_vaex', False)
+
+    try:
+        if use_vaex:
+            # Convert to Vaex DataFrame for memory-efficient processing
+            chunk = standardizer._to_vaex_df(chunk)
+            if data_type == 'demographics':
+                result = standardizer.process_demographics_vaex(chunk)
+            elif data_type == 'drugs':
+                result = standardizer.process_drugs_vaex(chunk)
+            else:  # reactions
+                result = standardizer.process_reactions_vaex(chunk)
+            return result.to_pandas_df()
+
+        elif use_dask:
+            # Convert to Dask DataFrame for parallel processing
+            chunk = standardizer._to_dask_df(chunk)
+            if data_type == 'demographics':
+                result = standardizer.process_demographics_dask(chunk)
+            elif data_type == 'drugs':
+                result = standardizer.process_drugs_dask(chunk)
+            else:  # reactions
+                result = standardizer.process_reactions_dask(chunk)
+            return result.compute()
+
+        else:
+            # Standard processing with optimized dtypes
+            if data_type == 'demographics':
+                result = standardizer.process_demographics(chunk)
+            elif data_type == 'drugs':
+                result = standardizer.process_drugs(chunk)
+            else:  # reactions
+                result = standardizer.process_reactions(chunk)
+            return optimize_dtypes(result)
+
+    except Exception as e:
+        logging.error(f"Error processing {data_type} chunk: {str(e)}")
+        return pd.DataFrame()
+
+
 def process_file_optimized(args: Dict[str, Any]) -> Tuple[str, pd.DataFrame]:
     """Process a single FAERS file with optimized methods."""
     file_path = args['file_path']
