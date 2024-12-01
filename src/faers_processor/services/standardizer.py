@@ -29,11 +29,12 @@ from tqdm import tqdm
 try:
     import platform
     import numpy as np
+    from numpy.distutils.system_info import get_info
 
     if platform.machine() == 'arm64':
         # Check if OpenBLAS is being used
-        blas_info = np.__config__.get_info('blas_opt_info')
-        if blas_info and 'openblas' in str(blas_info).lower():
+        blas_info = get_info('blas_opt')
+        if blas_info and any('openblas' in str(v).lower() for v in blas_info.values()):
             logging.info("Using optimized OpenBLAS for ARM64")
         else:
             logging.info("OpenBLAS optimization not detected for ARM64")
