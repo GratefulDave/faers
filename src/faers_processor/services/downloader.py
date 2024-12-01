@@ -31,9 +31,8 @@ class DataDownloader(ABC):
 class FAERSDownloader(DataDownloader):
     """FAERS specific data downloader implementation."""
 
-    FAERS_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
-    BASE_URL = "https://fis.fda.gov/content/Exports/faers_ascii_"
-
+    FAERS_BASE_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
+    
     def __init__(self, output_dir: Path):
         """Initialize the FAERS downloader.
         
@@ -45,86 +44,98 @@ class FAERSDownloader(DataDownloader):
         self.session = None
 
     def get_quarters(self) -> List[str]:
-        """Get list of available FAERS quarters.
+        """Get list of available FAERS quarters from FDA website.
         
         Returns:
-            List of quarter identifiers (e.g., ['2023Q1', '2023Q2'])
+            List of quarter identifiers (e.g., ['2023q1', '2023q2'])
         """
         try:
-            response = requests.get(self.FAERS_URL)
+            # Get the webpage content
+            response = requests.get(self.FAERS_BASE_URL, timeout=30)
             response.raise_for_status()
             
+            # Parse HTML and find zip file links
             soup = BeautifulSoup(response.text, 'html.parser')
-            links = soup.find_all('a', href=re.compile(r'.*\.zip$'))
+            links = soup.find_all('a', href=True)
             
-            quarters = set()
+            # Filter for ASCII zip files
+            quarters = []
             for link in links:
-                match = re.search(r'(\d{4}q[1-4])', link['href'].lower())
-                if match:
-                    quarters.add(match.group(1))
+                href = link['href']
+                if '.zip' in href and 'ascii' in href.lower():
+                    # Extract quarter from filename (e.g., faers_ascii_2023q1.zip -> 2023q1)
+                    filename = os.path.basename(href)
+                    if '_ascii_' in filename:
+                        quarter = filename.split('_ascii_')[1].replace('.zip', '')
+                        quarters.append(quarter)
             
-            return sorted(list(quarters))
+            return sorted(quarters)
             
         except Exception as e:
-            logging.error(f"Error getting quarters: {str(e)}")
+            logging.error(f"Error getting quarters list: {str(e)}")
             return []
 
-    def download_quarter(self, quarter: str, output_dir: Path) -> bool:
-        """Download a specific FAERS quarter.
+    def download_quarter(self, quarter: str) -> None:
+        """Download and extract a specific FAERS quarter.
         
         Args:
-            quarter: Quarter identifier (e.g., '2023Q1')
-            output_dir: Directory to save downloaded files
-            
-        Returns:
-            bool: True if download successful, False otherwise
+            quarter: Quarter identifier (e.g., '2023q1')
         """
         try:
-            # Get download links for quarter
-            response = requests.get(self.FAERS_URL)
+            # Create quarter directory
+            quarter_dir = self.output_dir / quarter
+            quarter_dir.mkdir(exist_ok=True)
+            
+            # Get the webpage content to find the correct URL
+            response = requests.get(self.FAERS_BASE_URL, timeout=30)
             response.raise_for_status()
             
+            # Find the correct download link
             soup = BeautifulSoup(response.text, 'html.parser')
-            links = soup.find_all('a', href=re.compile(f'.*{quarter.lower()}.*\.zip$'))
+            download_url = None
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                if f'ascii_{quarter}.zip' in href.lower():
+                    download_url = href
+                    break
+                    
+            if not download_url:
+                raise ValueError(f"Could not find download URL for quarter {quarter}")
             
-            if not links:
-                logging.warning(f"No download links found for quarter {quarter}")
-                return False
+            # Download the zip file
+            zip_path = quarter_dir / f"faers_ascii_{quarter}.zip"
+            response = requests.get(download_url, stream=True)
+            response.raise_for_status()
             
-            # Create quarter directory
-            quarter_dir = output_dir / quarter
-            quarter_dir.mkdir(parents=True, exist_ok=True)
+            total_size = int(response.headers.get('content-length', 0))
+            block_size = 8192
             
-            # Download and extract each file
-            for link in tqdm(links, desc=f"Downloading {quarter} files"):
-                url = link['href']
-                filename = url.split('/')[-1]
-                zip_path = quarter_dir / filename
+            with open(zip_path, 'wb') as f:
+                with tqdm(
+                    total=total_size,
+                    unit='iB',
+                    unit_scale=True,
+                    desc=f"Downloading {quarter}"
+                ) as pbar:
+                    for data in response.iter_content(block_size):
+                        size = f.write(data)
+                        pbar.update(size)
+            
+            # Extract files
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(quarter_dir)
+            
+            # Clean up zip file
+            zip_path.unlink()
+            
+            # Handle special case for 2018Q1
+            demo_file = quarter_dir / 'ascii' / 'DEMO18Q1_new.txt'
+            if demo_file.exists():
+                demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
                 
-                # Download file
-                response = requests.get(url, stream=True)
-                response.raise_for_status()
-                
-                total_size = int(response.headers.get('content-length', 0))
-                with tqdm(total=total_size, unit='iB', unit_scale=True) as pbar:
-                    with open(zip_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                pbar.update(len(chunk))
-                
-                # Extract file
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(quarter_dir)
-                
-                # Remove zip file after extraction
-                zip_path.unlink()
-            
-            return True
-            
         except Exception as e:
-            logging.error(f"Error downloading quarter {quarter}: {str(e)}")
-            return False
+            logging.error(f"Error downloading {quarter}: {str(e)}")
+            raise
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -136,7 +147,7 @@ class FAERSDownloader(DataDownloader):
 
     async def get_download_links(self) -> Set[str]:
         """Get all FAERS download links."""
-        async with self.session.get(self.FAERS_URL) as response:
+        async with self.session.get(self.FAERS_BASE_URL) as response:
             soup = BeautifulSoup(await response.text(), 'lxml')
             links = {a['href'] for a in soup.find_all('a', href=True)
                      if '.zip' in a['href'] and 'ascii' in a['href']}
@@ -232,37 +243,6 @@ class FAERSDownloader(DataDownloader):
                     except Exception as e:
                         logging.error(f"Error downloading quarter {quarter}: {str(e)}")
                     pbar.update(1)
-
-    def download_quarter(self, quarter: str) -> None:
-        """Download and extract a specific FAERS quarter.
-        
-        Args:
-            quarter: Quarter identifier (e.g., '23Q1')
-        """
-        url = f"{self.BASE_URL}{quarter}.zip"
-        quarter_dir = self.output_dir / quarter
-        quarter_dir.mkdir(exist_ok=True)
-        
-        try:
-            # Download the zip file
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            
-            # Extract the zip file
-            with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
-                zip_ref.extractall(quarter_dir)
-            
-            logging.info(f"Successfully downloaded and extracted {quarter}")
-            
-        except requests.RequestException as e:
-            logging.error(f"Error downloading {quarter}: {str(e)}")
-            raise
-        except zipfile.BadZipFile as e:
-            logging.error(f"Error extracting {quarter}: {str(e)}")
-            raise
-        except Exception as e:
-            logging.error(f"Unexpected error processing {quarter}: {str(e)}")
-            raise
 
 
 class FAERSDataDownloader:
