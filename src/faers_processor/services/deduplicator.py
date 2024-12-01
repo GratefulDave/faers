@@ -77,29 +77,29 @@ class Deduplicator:
         return df.drop_duplicates(subset=key_fields, keep='first')
 
     def deduplicate_file(self, file_path: Path) -> None:
-        """Deduplicate a single parquet file.
+        """Deduplicate a single txt file.
         
         Args:
-            file_path: Path to parquet file
+            file_path: Path to txt file
         """
         try:
-            # Read parquet file
-            df = pd.read_parquet(file_path)
+            # Read txt file
+            df = pd.read_csv(file_path, sep='$', encoding='utf-8')
             
             # Determine file type and apply appropriate deduplication
-            if 'demographics' in file_path.stem.lower():
+            if 'demo' in file_path.stem.lower():
                 df_dedup = self.deduplicate_demographics(df)
-            elif 'drugs' in file_path.stem.lower():
+            elif 'drug' in file_path.stem.lower():
                 df_dedup = self.deduplicate_drugs(df)
-            elif 'reactions' in file_path.stem.lower():
+            elif 'reac' in file_path.stem.lower():
                 df_dedup = self.deduplicate_reactions(df)
             else:
                 logging.warning(f"Unknown file type: {file_path}")
                 return
                 
             # Save deduplicated file
-            output_path = file_path.parent / f"{file_path.stem}_dedup.parquet"
-            df_dedup.to_parquet(output_path, engine='pyarrow', index=False)
+            output_path = file_path.parent / f"{file_path.stem}_dedup.txt"
+            df_dedup.to_csv(output_path, sep='$', index=False, encoding='utf-8')
             
             # Log results
             reduction = ((len(df) - len(df_dedup)) / len(df)) * 100 if len(df) > 0 else 0
@@ -112,15 +112,15 @@ class Deduplicator:
     def deduplicate_all(self) -> None:
         """Deduplicate all processed FAERS data files."""
         try:
-            # Find all parquet files
-            parquet_files = list(self.data_dir.glob('*.parquet'))
-            if not parquet_files:
-                logging.warning("No parquet files found to deduplicate")
+            # Find all txt files
+            txt_files = list(self.data_dir.glob('*.txt'))
+            if not txt_files:
+                logging.warning("No txt files found to deduplicate")
                 return
                 
             # Process each file
-            with tqdm(total=len(parquet_files), desc="Deduplicating files") as pbar:
-                for file_path in parquet_files:
+            with tqdm(total=len(txt_files), desc="Deduplicating files") as pbar:
+                for file_path in txt_files:
                     try:
                         if not file_path.stem.endswith('_dedup'):  # Skip already deduplicated files
                             self.deduplicate_file(file_path)

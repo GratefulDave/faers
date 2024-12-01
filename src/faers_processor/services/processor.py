@@ -620,53 +620,56 @@ class FAERSProcessor:
     def process_all(self) -> None:
         """Process all FAERS data files."""
         try:
-            # Get list of all quarters
-            quarters = [d.name for d in self.data_dir.iterdir() if d.is_dir()]
-
+            # Get list of all quarters from raw directory
+            raw_dir = self.data_dir / 'raw'
+            clean_dir = self.data_dir / 'clean'
+            clean_dir.mkdir(exist_ok=True)
+            
+            quarters = [d.name for d in raw_dir.iterdir() if d.is_dir()]
+            
             if not quarters:
                 logging.warning("No quarters found to process")
                 return
-
+                
             logging.info(f"Found {len(quarters)} quarters to process")
-
+            
             # Process each quarter
             with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
                 for quarter in quarters:
                     try:
-                        # Get files for this quarter
-                        demo_file = next(self.data_dir.glob(f"{quarter}/*DEMO*.txt"), None)
-                        drug_file = next(self.data_dir.glob(f"{quarter}/*DRUG*.txt"), None)
-                        reac_file = next(self.data_dir.glob(f"{quarter}/*REAC*.txt"), None)
-
+                        demo_file = next(raw_dir.glob(f"{quarter}/*DEMO*.txt"), None)
+                        drug_file = next(raw_dir.glob(f"{quarter}/*DRUG*.txt"), None)
+                        reac_file = next(raw_dir.glob(f"{quarter}/*REAC*.txt"), None)
+                        
                         if not all([demo_file, drug_file, reac_file]):
                             logging.warning(f"Missing files for quarter {quarter}")
                             continue
-
+                            
                         # Process demographics
                         demo_df = self.process_file(demo_file, 'demographics')
                         if not demo_df.empty:
-                            save_path = self.output_dir / f"{quarter}_demographics.parquet"
-                            demo_df.to_parquet(save_path, engine='pyarrow', index=False)
-
+                            save_path = clean_dir / f"{quarter}_demographics.txt"
+                            demo_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
+                        
                         # Process drugs
                         drug_df = self.process_file(drug_file, 'drugs')
                         if not drug_df.empty:
-                            save_path = self.output_dir / f"{quarter}_drugs.parquet"
-                            drug_df.to_parquet(save_path, engine='pyarrow', index=False)
-
+                            save_path = clean_dir / f"{quarter}_drugs.txt"
+                            drug_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
+                        
                         # Process reactions
                         reac_df = self.process_file(reac_file, 'reactions')
                         if not reac_df.empty:
-                            save_path = self.output_dir / f"{quarter}_reactions.parquet"
-                            reac_df.to_parquet(save_path, engine='pyarrow', index=False)
-
+                            save_path = clean_dir / f"{quarter}_reactions.txt"
+                            reac_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
+                        
                         logging.info(f"Successfully processed quarter {quarter}")
-
+                        
                     except Exception as e:
                         logging.error(f"Error processing quarter {quarter}: {str(e)}")
                     finally:
                         pbar.update(1)
-
+                        
         except Exception as e:
             logging.error(f"Error in process_all: {str(e)}")
             raise
