@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from ..models.faers_data import Demographics, Drug, Reaction, Outcome, DrugInfo, Indication, ReportSource, Therapy
 import re
 import datetime
+import logging
 
 class DataProcessor(ABC):
     """Abstract base class for data processing."""
@@ -62,14 +63,23 @@ class FAERSProcessor(DataProcessor):
         
     def process_file(self, file_path: Path) -> pd.DataFrame:
         """Process a single FAERS data file."""
-        # Read the header to get column names
-        with open(file_path, 'r') as f:
-            header = f.readline().strip().split('$')
+        try:
+            # Read the header to get column names
+            with open(file_path, 'r', encoding='utf-8') as f:
+                header = f.readline().strip().split('$')
             
-        # Read the data with the correct delimiter
-        df = pd.read_csv(file_path, sep='$', names=header, skiprows=1,
-                        dtype=str, na_values=[''], keep_default_na=False)
-        return self.standardize_columns(df)
+            # Read the data with the correct delimiter
+            df = pd.read_csv(file_path, sep='$', names=header, skiprows=1,
+                           dtype=str, na_values=[''], keep_default_na=False,
+                           on_bad_lines='warn', encoding='utf-8')
+            
+            if df.empty:
+                raise ValueError(f"Empty dataframe from file: {file_path}")
+                
+            return self.standardize_columns(df)
+        except (IOError, pd.errors.EmptyDataError) as e:
+            logging.error(f"Error processing file {file_path}: {str(e)}")
+            return pd.DataFrame()
         
     def standardize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize column names and formats."""
@@ -406,15 +416,18 @@ class FAERSProcessor(DataProcessor):
         
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Correct files with missing newlines."""
-        with open(file_path, 'r') as f:
-            lines = f.readlines()
-        
-        # Replace problematic line with corrected version
-        new_line = old_line.replace('$', '$\n')
-        content = ''.join(lines).replace(old_line, new_line)
-        
-        with open(file_path, 'w') as f:
-            f.write(content)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Replace problematic line with corrected version
+            new_line = old_line.replace('$', '$\n')
+            content = ''.join(lines).replace(old_line, new_line)
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        except IOError as e:
+            logging.error(f"Error correcting file {file_path}: {str(e)}")
 
     def process_drug_info(self, file_path: Path) -> List[DrugInfo]:
         """Process drug information data file."""
