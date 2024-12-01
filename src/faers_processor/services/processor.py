@@ -76,6 +76,103 @@ class FAERSProcessor(DataProcessor):
             logging.warning("Drug mappings file not found. Drug name standardization will be skipped.")
             self.drug_map = {}
 
+        # Load MedDRA standardization data
+        self.meddra_dir = self.external_dir / 'meddra'
+        if self.meddra_dir.exists():
+            try:
+                # Load MedDRA hierarchy files
+                self.meddra = {
+                    'soc': pd.read_csv(self.meddra_dir / 'soc.asc', sep='$'),
+                    'hlgt': pd.read_csv(self.meddra_dir / 'hlgt.asc', sep='$'),
+                    'hlt': pd.read_csv(self.meddra_dir / 'hlt.asc', sep='$'),
+                    'pt': pd.read_csv(self.meddra_dir / 'pt.asc', sep='$'),
+                    'llt': pd.read_csv(self.meddra_dir / 'llt.asc', sep='$'),
+                    'soc_hlgt': pd.read_csv(self.meddra_dir / 'soc_hlgt.asc', sep='$'),
+                    'hlgt_hlt': pd.read_csv(self.meddra_dir / 'hlgt_hlt.asc', sep='$'),
+                    'hlt_pt': pd.read_csv(self.meddra_dir / 'hlt_pt.asc', sep='$')
+                }
+                
+                # Create standardization mappings
+                self._create_meddra_mappings()
+                logging.info("Successfully loaded MedDRA dictionary files")
+            except Exception as e:
+                logging.error(f"Error loading MedDRA files: {str(e)}")
+                self.meddra = None
+                self.pt_list = set()
+                self.pt_fixed_map = {}
+                return
+
+            # Load manual PT fixes
+            pt_fixed_file = self.meddra_dir / 'pt_fixed.csv'
+            if pt_fixed_file.exists():
+                self.pt_fixed_df = pd.read_csv(pt_fixed_file)
+                self.pt_fixed_map = dict(zip(
+                    self.pt_fixed_df['pt'].str.lower(),
+                    self.pt_fixed_df['standard_pt'].str.lower()
+                ))
+            else:
+                self.pt_fixed_map = {}
+                logging.warning("pt_fixed.csv not found. PT standardization will be limited.")
+        else:
+            logging.warning("MedDRA directory not found. PT standardization will be skipped.")
+            self.meddra = None
+            self.pt_list = set()
+            self.pt_fixed_map = {}
+
+    def _create_meddra_mappings(self):
+        """Create mappings for MedDRA standardization."""
+        if not self.meddra:
+            return
+            
+        # Create PT list
+        self.pt_list = set(self.meddra['pt']['pt_name'].str.lower())
+        
+        # Create LLT to PT mapping
+        self.llt_pt_map = {}
+        llt_pt_pairs = self.meddra['llt'].merge(
+            self.meddra['pt'][['pt_code', 'pt_name']],
+            on='pt_code'
+        )
+        for _, row in llt_pt_pairs.iterrows():
+            if row['llt_currency'] == 'Y':  # Only use current terms
+                self.llt_pt_map[row['llt_name'].lower()] = row['pt_name'].lower()
+        
+        # Create PT to HLT mapping
+        self.pt_hlt_map = {}
+        pt_hlt_pairs = self.meddra['hlt_pt'].merge(
+            self.meddra['hlt'][['hlt_code', 'hlt_name']],
+            on='hlt_code'
+        ).merge(
+            self.meddra['pt'][['pt_code', 'pt_name']],
+            on='pt_code'
+        )
+        for _, row in pt_hlt_pairs.iterrows():
+            self.pt_hlt_map[row['pt_name'].lower()] = row['hlt_name'].lower()
+        
+        # Create HLT to HLGT mapping
+        self.hlt_hlgt_map = {}
+        hlt_hlgt_pairs = self.meddra['hlgt_hlt'].merge(
+            self.meddra['hlgt'][['hlgt_code', 'hlgt_name']],
+            on='hlgt_code'
+        ).merge(
+            self.meddra['hlt'][['hlt_code', 'hlt_name']],
+            on='hlt_code'
+        )
+        for _, row in hlt_hlgt_pairs.iterrows():
+            self.hlt_hlgt_map[row['hlt_name'].lower()] = row['hlgt_name'].lower()
+        
+        # Create HLGT to SOC mapping
+        self.hlgt_soc_map = {}
+        hlgt_soc_pairs = self.meddra['soc_hlgt'].merge(
+            self.meddra['soc'][['soc_code', 'soc_name']],
+            on='soc_code'
+        ).merge(
+            self.meddra['hlgt'][['hlgt_code', 'hlgt_name']],
+            on='hlgt_code'
+        )
+        for _, row in hlgt_soc_pairs.iterrows():
+            self.hlgt_soc_map[row['hlgt_name'].lower()] = row['soc_name'].lower()
+
     def process_file(self, file_path: Path) -> pd.DataFrame:
         """Process a single FAERS data file."""
         try:
@@ -107,16 +204,55 @@ class FAERSProcessor(DataProcessor):
         return df
         
     def standardize_pt(self, df: pd.DataFrame, pt_column: str = 'pt') -> pd.DataFrame:
-        """Standardize Preferred Terms (PT)."""
+        """
+        Standardize Preferred Terms (PT) using MedDRA dictionary and manual fixes.
+        
+        Args:
+            df: DataFrame containing PT column
+            pt_column: Name of the PT column to standardize
+            
+        Returns:
+            DataFrame with standardized PT column and additional MedDRA hierarchy columns
+        """
         if pt_column not in df.columns:
             return df
             
-        # Convert to lowercase and strip whitespace
+        # Make a copy to avoid modifying the original
+        df = df.copy()
+        
+        # Convert to lowercase and trim whitespace
         df[pt_column] = df[pt_column].str.lower().str.strip()
         
-        # Remove special characters and standardize spacing
-        df[pt_column] = df[pt_column].str.replace(r'[^\w\s]', ' ', regex=True)
-        df[pt_column] = df[pt_column].str.replace(r'\s+', ' ', regex=True)
+        # Calculate initial standardization stats
+        total_pts = df[pt_column].notna().sum()
+        initial_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
+        initial_pct = round(initial_standard * 100 / total_pts, 3) if total_pts > 0 else 0
+        
+        logging.info(f"Initial PT standardization: {initial_pct}% ({initial_standard}/{total_pts})")
+        
+        # Try to standardize using pt_fixed mappings
+        df[pt_column] = df[pt_column].map(lambda x: self.pt_fixed_map.get(x, x) if pd.notna(x) else x)
+        
+        # Try to find matches through LLTs if MedDRA dictionary is available
+        if self.meddra:
+            df[pt_column] = df[pt_column].map(lambda x: self.llt_pt_map.get(x, x) if pd.notna(x) else x)
+            
+            # Add MedDRA hierarchy columns
+            df[f'{pt_column}_hlt'] = df[pt_column].map(lambda x: self.pt_hlt_map.get(x, None) if pd.notna(x) else None)
+            df[f'{pt_column}_hlgt'] = df[f'{pt_column}_hlt'].map(lambda x: self.hlt_hlgt_map.get(x, None) if pd.notna(x) else None)
+            df[f'{pt_column}_soc'] = df[f'{pt_column}_hlgt'].map(lambda x: self.hlgt_soc_map.get(x, None) if pd.notna(x) else None)
+        
+        # Calculate final standardization stats
+        final_standard = df[df[pt_column].isin(self.pt_list)][pt_column].count()
+        final_pct = round(final_standard * 100 / total_pts, 3) if total_pts > 0 else 0
+        
+        logging.info(f"Final PT standardization: {final_pct}% ({final_standard}/{total_pts})")
+        
+        # Log unstandardized terms for manual review
+        if final_pct < 100:
+            unstandardized = df[~df[pt_column].isin(self.pt_list)][pt_column].unique()
+            logging.warning(f"Unstandardized PTs found: {', '.join(unstandardized)}")
+            logging.warning("Consider updating pt_fixed.csv with mappings for these terms")
         
         return df
         
@@ -302,7 +438,11 @@ class FAERSProcessor(DataProcessor):
     def process_reactions(self, file_path: Path) -> List[Reaction]:
         """Process reaction data file."""
         df = self.process_file(file_path)
-        df = self.standardize_pt(df)
+        
+        # Standardize both PT and drug_rec_act
+        df = self.standardize_pt(df, 'pt')
+        df = self.standardize_pt(df, 'drug_rec_act')
+        
         return [
             Reaction(
                 primary_id=row['primary_id'],
@@ -496,10 +636,9 @@ class FAERSProcessor(DataProcessor):
     def process_indications(self, file_path: Path) -> List[Indication]:
         """Process drug indications data file."""
         df = self.process_file(file_path)
-        df = self.standardize_pt(df, 'indi_pt')
         
-        # Remove rows with missing PT
-        df = df[df['indi_pt'].notna()]
+        # Standardize indication PT
+        df = self.standardize_pt(df, 'indi_pt')
         
         return [
             Indication(
