@@ -220,8 +220,7 @@ class FAERSDownloader(DataDownloader):
             for quarter in quarters:
                 future = executor.submit(
                     self.download_quarter,
-                    quarter=quarter,
-                    output_dir=self.output_dir
+                    quarter=quarter
                 )
                 futures.append((quarter, future))
             

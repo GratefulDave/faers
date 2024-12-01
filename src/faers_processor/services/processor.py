@@ -615,3 +615,106 @@ class FAERSProcessor:
             unified_data = unified_data[valid_columns]
 
         return unified_data
+
+    def process_all(self) -> None:
+        """Process all FAERS data files."""
+        try:
+            # Get list of all quarters
+            quarters = [d.name for d in self.data_dir.iterdir() if d.is_dir()]
+            
+            if not quarters:
+                logging.warning("No quarters found to process")
+                return
+                
+            logging.info(f"Found {len(quarters)} quarters to process")
+            
+            # Process each quarter
+            with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
+                for quarter in quarters:
+                    try:
+                        # Get files for this quarter
+                        demo_file = next(self.data_dir.glob(f"{quarter}/*DEMO*.txt"), None)
+                        drug_file = next(self.data_dir.glob(f"{quarter}/*DRUG*.txt"), None)
+                        reac_file = next(self.data_dir.glob(f"{quarter}/*REAC*.txt"), None)
+                        
+                        if not all([demo_file, drug_file, reac_file]):
+                            logging.warning(f"Missing files for quarter {quarter}")
+                            continue
+                            
+                        # Process demographics
+                        demo_df = self.process_file(demo_file, 'demographics')
+                        if not demo_df.empty:
+                            save_path = self.output_dir / f"{quarter}_demographics.parquet"
+                            demo_df.to_parquet(save_path, engine='pyarrow', index=False)
+                        
+                        # Process drugs
+                        drug_df = self.process_file(drug_file, 'drugs')
+                        if not drug_df.empty:
+                            save_path = self.output_dir / f"{quarter}_drugs.parquet"
+                            drug_df.to_parquet(save_path, engine='pyarrow', index=False)
+                        
+                        # Process reactions
+                        reac_df = self.process_file(reac_file, 'reactions')
+                        if not reac_df.empty:
+                            save_path = self.output_dir / f"{quarter}_reactions.parquet"
+                            reac_df.to_parquet(save_path, engine='pyarrow', index=False)
+                        
+                        logging.info(f"Successfully processed quarter {quarter}")
+                        
+                    except Exception as e:
+                        logging.error(f"Error processing quarter {quarter}: {str(e)}")
+                    finally:
+                        pbar.update(1)
+                        
+        except Exception as e:
+            logging.error(f"Error in process_all: {str(e)}")
+            raise
+
+    def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
+        """Process a single FAERS file.
+        
+        Args:
+            file_path: Path to the file
+            data_type: Type of data ('demographics', 'drugs', 'reactions')
+        
+        Returns:
+            Processed DataFrame
+        """
+        try:
+            # Read data with optimized settings
+            if self.use_dask:
+                df = dd.read_csv(
+                    file_path,
+                    sep='$',
+                    dtype=str,
+                    na_values=['', 'NA', 'NULL'],
+                    keep_default_na=True,
+                    blocksize=self.chunk_size * 1024
+                )
+            else:
+                df = pd.read_csv(
+                    file_path,
+                    sep='$',
+                    dtype=str,
+                    na_values=['', 'NA', 'NULL'],
+                    keep_default_na=True,
+                    chunksize=self.chunk_size
+                )
+                
+            # Process based on data type
+            if data_type == 'demographics':
+                result = self.standardizer.process_demographics(df)
+            elif data_type == 'drugs':
+                result = self.standardizer.process_drugs(df)
+            else:  # reactions
+                result = self.standardizer.process_reactions(df)
+                
+            # Compute if using Dask
+            if self.use_dask:
+                result = result.compute()
+                
+            return result
+            
+        except Exception as e:
+            logging.error(f"Error processing file {file_path}: {str(e)}")
+            return pd.DataFrame()
