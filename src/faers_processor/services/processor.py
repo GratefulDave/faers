@@ -71,6 +71,29 @@ class QuarterSummary:
     indi_summary: TableSummary = field(default_factory=TableSummary)
     processing_time: float = 0.0
 
+    def log_summary(self):
+        """Log processing summary for this quarter."""
+        logging.info(f"\nProcessing Summary for Quarter {self.quarter}:")
+        for data_type in ['demo', 'drug', 'reac', 'outc', 'rpsr', 'ther', 'indi']:
+            summary = getattr(self, f"{data_type}_summary")
+            if summary.total_rows > 0:
+                logging.info(f"\n{data_type.upper()} Summary:")
+                logging.info(f"Total Rows: {summary.total_rows}")
+                logging.info(f"Processed Rows: {summary.processed_rows}")
+                if summary.missing_columns:
+                    logging.info("Missing Columns:")
+                    for col, default in summary.missing_columns.items():
+                        logging.info(f"  - {col} (default: {default})")
+                if summary.invalid_dates:
+                    logging.info("Invalid Dates:")
+                    for field, count in summary.invalid_dates.items():
+                        pct = (count/summary.total_rows*100) if summary.total_rows > 0 else 0
+                        logging.info(f"  - {field}: {count}/{summary.total_rows} rows ({pct:.1f}%)")
+                if summary.parsing_errors:
+                    logging.info("Parsing Errors:")
+                    for error in summary.parsing_errors:
+                        logging.info(f"  - {error}")
+
 
 class FAERSProcessingSummary:
     """Tracks and generates summary reports for FAERS data processing."""
@@ -424,34 +447,28 @@ class FAERSProcessor:
                     logging.warning(f"No {data_type} files found in {ascii_dir}")
                     continue
                     
-                # Use the first matching file
+                # Process the file
                 file_path = matched_files[0]
                 logging.info(f"Processing {data_type} file: {file_path}")
                 
-                # Process the file
-                df = self.process_file(file_path, data_type)
-                
-                # Update statistics
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
-                table_summary.total_rows = len(df) if not df.empty else 0
+                df = self.process_file(file_path, data_type, table_summary)
                 
                 if not df.empty:
                     results[data_type] = df
-                    table_summary.processed_rows = len(df)
                     logging.info(f"Successfully processed {data_type} file. Shape: {df.shape}")
-                    logging.info(f"Success rate: {table_summary.success_rate:.1f}%")
                 else:
                     logging.warning(f"Empty DataFrame returned for {data_type}")
-                    table_summary.parsing_errors.append("Empty DataFrame returned")
                     
             except Exception as e:
                 error_msg = f"Error processing {data_type}: {str(e)}"
                 logging.error(error_msg)
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
-                table_summary.parsing_errors.append(error_msg)
+                table_summary.add_parsing_error(error_msg)
         
-        # Update quarter processing time
+        # Update quarter processing time and log summary
         quarter_summary.processing_time = time.time() - start_time
+        quarter_summary.log_summary()
         
         # Add quarter summary to processing summary
         if not hasattr(self, 'processing_summary'):
@@ -460,12 +477,11 @@ class FAERSProcessor:
         
         return results
 
-    def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
+    def process_file(self, file_path: Path, data_type: str, table_summary: TableSummary) -> pd.DataFrame:
         """Process a single FAERS file with enhanced error tracking.
         
         NOTE: DO NOT MODIFY FILE FINDING LOGIC - case insensitive file matching is working as intended.
         """
-        table_summary = TableSummary()
         start_time = time.time()
         
         try:
@@ -601,6 +617,7 @@ class FAERSProcessor:
         try:
             # Common processing for all types
             df = df.fillna('')  # Replace NaN with empty string
+            table_summary.total_rows = len(df)
             
             # Type-specific processing
             if data_type == 'demo':
@@ -608,23 +625,25 @@ class FAERSProcessor:
                 if 'i_f_code' not in df.columns:
                     table_summary.add_missing_column('i_f_code', 'I')
                     df['i_f_code'] = 'I'
+                    logging.warning("Required column 'i_f_code' not found, adding with default value: I")
                     
                 if 'sex' not in df.columns:
                     table_summary.add_missing_column('sex', '<NA>')
                     df['sex'] = '<NA>'
+                    logging.warning("Required column 'sex' not found, adding with default value: <NA>")
                 
                 # Validate dates
                 date_fields = ['event_dt', 'fda_dt', 'rept_dt']
                 for field in date_fields:
                     if field in df.columns:
-                        invalid_dates = df[field].str.match(r'^\d{8}$').sum()
+                        invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
                         if invalid_dates > 0:
                             table_summary.add_invalid_date(field, invalid_dates)
+                            logging.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
                 
                 # Check country standardization
                 if 'country' not in df.columns:
                     logging.warning("Country column not found, skipping country standardization")
-                    table_summary.add_missing_column('country', '<NA>')
                 
             elif data_type == 'drug':
                 # Check for required drug fields
@@ -633,18 +652,57 @@ class FAERSProcessor:
                     if field not in df.columns:
                         table_summary.add_missing_column(field, '<NA>')
                         df[field] = '<NA>'
+                        logging.warning(f"Required column '{field}' not found, adding with default value: <NA>")
                 
-                # Track invalid ages
-                if 'age' in df.columns:
-                    invalid_ages = df[~df['age'].str.match(r'^\d+$', na=True)].shape[0]
-                    if invalid_ages > 0:
-                        table_summary.add_data_error(f'invalid_age_format')
-                
-            # Add more type-specific processing and error tracking as needed
+            elif data_type == 'reac':
+                if 'pt' not in df.columns:
+                    table_summary.add_missing_column('pt', '<NA>')
+                    df['pt'] = '<NA>'
+                    logging.warning("Required column 'pt' not found, adding with default value: <NA>")
+                    
+            elif data_type == 'outc':
+                if 'outc_cod' not in df.columns:
+                    table_summary.add_missing_column('outc_cod', '<NA>')
+                    df['outc_cod'] = '<NA>'
+                    logging.warning("Required column 'outc_cod' not found, adding with default value: <NA>")
+                    
+            elif data_type == 'rpsr':
+                if 'rpsr_cod' not in df.columns:
+                    table_summary.add_missing_column('rpsr_cod', '<NA>')
+                    df['rpsr_cod'] = '<NA>'
+                    logging.warning("Required column 'rpsr_cod' not found, adding with default value: <NA>")
+                    
+            elif data_type == 'ther':
+                # Check for required therapy fields
+                required_fields = ['dsg_drug_seq', 'start_dt', 'end_dt']
+                for field in required_fields:
+                    if field not in df.columns:
+                        table_summary.add_missing_column(field, '<NA>')
+                        df[field] = '<NA>'
+                        logging.warning(f"Required column '{field}' not found, adding with default value: <NA>")
+                        
+                # Validate dates
+                date_fields = ['start_dt', 'end_dt']
+                for field in date_fields:
+                    if field in df.columns:
+                        invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
+                        if invalid_dates > 0:
+                            table_summary.add_invalid_date(field, invalid_dates)
+                            logging.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
+                            
+            elif data_type == 'indi':
+                if 'indi_pt' not in df.columns:
+                    table_summary.add_missing_column('indi_pt', '<NA>')
+                    df['indi_pt'] = '<NA>'
+                    logging.warning("Required column 'indi_pt' not found, adding with default value: <NA>")
+            
+            # Call standardizer for final processing
+            df = self.standardizer.standardize_data(df, data_type)
             
         except Exception as e:
             error_msg = f"Error processing DataFrame: {str(e)}"
             table_summary.add_parsing_error(error_msg)
+            logging.error(error_msg)
             return pd.DataFrame()
             
         return df
