@@ -4,7 +4,7 @@ import argparse
 import concurrent.futures
 import logging
 import multiprocessing
-import platform
+import os
 import sys
 from pathlib import Path
 from typing import Dict, Any
@@ -18,6 +18,7 @@ from tqdm import tqdm
 from .services.deduplicator import Deduplicator
 from .services.downloader import FAERSDownloader
 from .services.processor import FAERSProcessor
+from .services.standardizer import DataStandardizer
 
 # Set up logging first
 logging.basicConfig(
@@ -25,21 +26,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Check if running on Apple Silicon
-machine = platform.machine()
-logging.info(f"Detected machine architecture: {machine}")
-IS_APPLE_SILICON = machine == 'arm64'
-
-if IS_APPLE_SILICON:
-    logging.info("Running on Apple Silicon - enabling optimizations")
-    # Enable Apple Silicon optimizations
-    import os
-    os.environ['OPENBLAS_NUM_THREADS'] = str(multiprocessing.cpu_count())
-    os.environ['MKL_NUM_THREADS'] = str(multiprocessing.cpu_count())
-    os.environ['VECLIB_MAXIMUM_THREADS'] = str(multiprocessing.cpu_count())
-    logging.info(f"Set thread count to {multiprocessing.cpu_count()} for optimized libraries")
-else:
-    logging.info(f"Running on {machine} architecture - using standard optimizations")
+# Enable Apple Silicon optimizations
+logging.info("Configuring optimizations for Apple Silicon")
+num_cpus = multiprocessing.cpu_count()
+os.environ['OPENBLAS_NUM_THREADS'] = str(num_cpus)
+os.environ['MKL_NUM_THREADS'] = str(num_cpus)
+os.environ['VECLIB_MAXIMUM_THREADS'] = str(num_cpus)
+logging.info(f"Set thread count to {num_cpus} for optimized libraries")
 
 # Configure pandas for better performance
 pd.set_option('compute.use_numexpr', True)
