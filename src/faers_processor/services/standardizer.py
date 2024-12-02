@@ -1713,30 +1713,26 @@ class DataStandardizer:
         df.loc[df['dur_in_days'] > 50*365, 'dur_in_days'] = np.nan
         
         # Calculate standardized duration from dates
-        def ymd(date_str):
-            if pd.isna(date_str) or len(str(date_str)) != 8:
-                return pd.NaT
-            return pd.to_datetime(str(date_str), format='%Y%m%d')
-        
-        df['dur_std'] = (
-            np.where(df['end_dt'].astype(str).str.len() == 8, 
-                    ymd(df['end_dt']), pd.NaT) - 
-            np.where(df['start_dt'].astype(str).str.len() == 8, 
-                    ymd(df['start_dt']), pd.NaT)
-        ).dt.days + 1
-        
+        df['dur_std'] = pd.NA
+        mask_8digit = (df['start_dt'].astype(str).str.len() == 8) & (df['end_dt'].astype(str).str.len() == 8)
+
+        if mask_8digit.any():
+            start_dates = pd.to_datetime(df.loc[mask_8digit, 'start_dt'].astype(str), format='%Y%m%d')
+            end_dates = pd.to_datetime(df.loc[mask_8digit, 'end_dt'].astype(str), format='%Y%m%d')
+            df.loc[mask_8digit, 'dur_std'] = (end_dates - start_dates).dt.days + 1
+
         # Handle negative durations
-        df.loc[df['dur_std'] < 0, 'dur_std'] = np.nan
-        
+        df.loc[df['dur_std'] < 0, 'dur_std'] = pd.NA
+
         # Use calculated duration if date-based duration is NA
         df.loc[df['dur_std'].isna(), 'dur_std'] = df.loc[df['dur_std'].isna(), 'dur_in_days']
-        
+
         # Backfill missing dates using duration
         mask_start = (df['start_dt'].isna() & 
                      df['end_dt'].notna() & 
                      df['dur_std'].notna())
         df.loc[mask_start, 'start_dt'] = (
-            ymd(df.loc[mask_start, 'end_dt']) - 
+            pd.to_datetime(df.loc[mask_start, 'end_dt'], format='%Y%m%d') - 
             pd.Timedelta(days=df.loc[mask_start, 'dur_std'] - 1)
         ).dt.strftime('%Y%m%d').astype(float)
         
@@ -1744,16 +1740,14 @@ class DataStandardizer:
                    df['start_dt'].notna() & 
                    df['dur_std'].notna())
         df.loc[mask_end, 'end_dt'] = (
-            ymd(df.loc[mask_end, 'start_dt']) + 
+            pd.to_datetime(df.loc[mask_end, 'start_dt'], format='%Y%m%d') + 
             pd.Timedelta(days=df.loc[mask_end, 'dur_std'] - 1)
         ).dt.strftime('%Y%m%d').astype(float)
         
         # Calculate time to onset
         df['time_to_onset'] = (
-            np.where(df['event_dt'].astype(str).str.len() == 8, 
-                    ymd(df['event_dt']), pd.NaT) - 
-            np.where(df['start_dt'].astype(str).str.len() == 8, 
-                    ymd(df['start_dt']), pd.NaT)
+            pd.to_datetime(df['event_dt'], format='%Y%m%d') - 
+            pd.to_datetime(df['start_dt'], format='%Y%m%d')
         ).dt.days + 1
         
         # Clean up time to onset
@@ -1820,3 +1814,64 @@ class DataStandardizer:
                 demo_supp[col] = demo_supp[col].astype('category')
         
         return demo, demo_supp
+
+    def process_drug_file(self, file_path: Path, quarter: str) -> pd.DataFrame:
+        """Process drug file exactly as in R script."""
+        # Read drug file with exact column names from R script
+        drug_cols = {
+            'primaryid': np.int64,
+            'caseid': np.int64,
+            'drug_seq': np.int64,
+            'role_cod': str,
+            'drugname': str,
+            'val_vbm': str,
+            'route': str,
+            'dose_vbm': str,
+            'cum_dose_chr': str,
+            'cum_dose_unit': str,
+            'dechal': str,
+            'rechal': str,
+            'lot_num': str,
+            'exp_dt': str,
+            'nda_num': str,
+            'dose_amt': str,
+            'dose_unit': str,
+            'dose_form': str,
+            'dose_freq': str,
+        }
+        
+        try:
+            df = pd.read_csv(
+                file_path, 
+                dtype=drug_cols,
+                encoding='latin1',
+                delimiter='$',
+                on_bad_lines='skip',
+                low_memory=False
+            )
+            
+            # Ensure all expected columns exist
+            for col in drug_cols:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            
+            # Convert empty strings to NA
+            df = df.replace('', pd.NA)
+            
+            # Add quarter information
+            df['quarter'] = quarter
+            
+            # Standardize drug names
+            df = self.standardize_drugs(df)
+            
+            # Standardize route and form
+            df = self.standardize_route_and_form(df)
+            
+            # Standardize other drug info
+            df = self.standardize_drug_info(df)
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error processing file {file_path}: {str(e)}")
+            raise
