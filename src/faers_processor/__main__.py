@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import Dict, Any
 
-import dask.dataframe as dd
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -87,7 +86,6 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
             - chunk: DataFrame chunk to process
             - data_type: Type of data ('demographics', 'drugs', 'reactions')
             - standardizer: DataStandardizer instance
-            - use_dask: Whether to use Dask for processing
     
     Returns:
         Processed DataFrame chunk
@@ -95,28 +93,16 @@ def process_chunk(args: Dict[str, Any]) -> pd.DataFrame:
     chunk = args['chunk']
     data_type = args['data_type']
     standardizer = args['standardizer']
-    use_dask = args.get('use_dask', False)
 
     try:
-        if use_dask:
-            # Convert to Dask DataFrame for parallel processing
-            chunk = dd.from_pandas(chunk, npartitions=multiprocessing.cpu_count())
-            if data_type == 'demographics':
-                result = standardizer.process_demographics(chunk)
-            elif data_type == 'drugs':
-                result = standardizer.process_drugs(chunk)
-            else:  # reactions
-                result = standardizer.process_reactions(chunk)
-            return optimize_dtypes(result.compute())
-        else:
-            # Process with standard pandas
-            if data_type == 'demographics':
-                result = standardizer.process_demographics(chunk)
-            elif data_type == 'drugs':
-                result = standardizer.process_drugs(chunk)
-            else:  # reactions
-                result = standardizer.process_reactions(chunk)
-            return optimize_dtypes(result)
+        # Process with standard pandas
+        if data_type == 'demographics':
+            result = standardizer.process_demographics(chunk)
+        elif data_type == 'drugs':
+            result = standardizer.process_drugs(chunk)
+        else:  # reactions
+            result = standardizer.process_reactions(chunk)
+        return optimize_dtypes(result)
 
     except Exception as e:
         logging.error(f"Error processing {data_type} chunk: {str(e)}")
@@ -135,7 +121,6 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
     file_path = args['file_path']
     data_type = args['data_type']
     standardizer = args['standardizer']
-    use_dask = args.get('use_dask', False)
     chunk_size = args.get('chunk_size', 100000)
 
     # Common read options
@@ -149,18 +134,12 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
 
     try:
         # Read data with optimized settings
-        if use_dask:
-            df = dd.read_csv(
-                **read_opts,
-                blocksize=chunk_size * 1024
-            )
-        else:
-            chunks = pd.read_csv(
-                **read_opts,
-                chunksize=chunk_size
-            )
-            # Concatenate chunks into single DataFrame
-            df = pd.concat(chunks, ignore_index=True)
+        chunks = pd.read_csv(
+            **read_opts,
+            chunksize=chunk_size
+        )
+        # Concatenate chunks into single DataFrame
+        df = pd.concat(chunks, ignore_index=True)
 
         # Process based on data type
         if data_type == 'demographics':
@@ -169,10 +148,6 @@ def process_file_optimized(args: Dict[str, Any]) -> pd.DataFrame:
             result = standardizer.process_drugs(df)
         else:  # reactions
             result = standardizer.process_reactions(df)
-
-        # Compute if using Dask
-        if use_dask:
-            result = result.compute()
 
         return result
 
@@ -228,21 +203,19 @@ def download_data(max_workers: int) -> None:
 
 def process_data(
     chunk_size: int,
-    use_dask: bool = False,
     max_workers: int = None
 ) -> None:
-    """Process downloaded FAERS data with optimized parallel processing.
+    """Process downloaded FAERS data with parallel processing.
     
     Args:
         chunk_size: Number of rows to process at once
-        use_dask: Whether to use Dask for parallel processing
         max_workers: Maximum number of worker processes to use
     """
     try:
         # Get absolute paths from project root
-        root_dir = Path(__file__).parent.parent.parent  # Go up to project root
+        root_dir = Path(__file__).parent.parent.parent
         input_dir = root_dir / 'data' / 'raw'
-        output_dir = root_dir / 'data' / 'clean'  # Fixed output directory path
+        output_dir = root_dir / 'data' / 'clean'
         external_dir = root_dir / 'external_data'
         
         # Create directories if they don't exist
@@ -253,60 +226,16 @@ def process_data(
         logging.info(f"Using external data from: {external_dir}")
         logging.info(f"Saving processed data to: {output_dir}")
         
-        if use_dask:
-            logging.info("Initializing Dask cluster")
-            from distributed import Client, LocalCluster
-            import dask
-            
-            # Configure dask for better stability
-            if max_workers is None:
-                max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
-            
-            # Configure dask settings
-            dask.config.set({
-                'distributed.worker.memory.target': 0.6,  # Target 60% memory usage
-                'distributed.worker.memory.spill': 0.7,   # Spill to disk at 70%
-                'distributed.worker.memory.pause': 0.8,   # Pause work at 80%
-                'distributed.worker.memory.terminate': 0.95  # Emergency shutdown at 95%
-            })
-            
-            # Create a local cluster with specific resource limits
-            cluster = LocalCluster(
-                n_workers=max_workers,
-                threads_per_worker=1,  # Use processes instead of threads
-                memory_limit='4GB',    # Limit memory per worker
-                lifetime=None,         # Don't timeout workers
-                lifetime_stagger='10s', # Stagger worker restarts
-                lifetime_restart=True,  # Restart workers if they die
-                silence_logs=logging.WARNING  # Reduce log noise
-            )
-            
-            client = Client(cluster)
-            logging.info(f"Dask dashboard available at: {client.dashboard_link}")
-            
-            try:
-                # Initialize processor with standardizer
-                standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
-                processor = FAERSProcessor(standardizer, use_dask=use_dask)
-                
-                # Process all quarters
-                processor.process_all(
-                    input_dir=input_dir,
-                    output_dir=output_dir
-                )
-            finally:
-                # Clean up dask resources
-                client.close()
-                cluster.close()
-        else:
-            # Sequential processing
-            standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
-            processor = FAERSProcessor(standardizer, use_dask=False)
-            
-            processor.process_all(
-                input_dir=input_dir,
-                output_dir=output_dir
-            )
+        # Initialize processor with standardizer
+        standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
+        processor = FAERSProcessor(standardizer, use_parallel=True)
+        
+        # Process all quarters
+        processor.process_all(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            max_workers=max_workers
+        )
         
         logging.info("Data processing completed successfully")
         
@@ -338,11 +267,6 @@ def parse_args() -> argparse.Namespace:
         help='Number of rows to process at once'
     )
     parser.add_argument(
-        '--use-dask',
-        action='store_true',
-        help='Use Dask for parallel processing'
-    )
-    parser.add_argument(
         '--log-level',
         type=str,
         default='INFO',
@@ -352,8 +276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--max-workers',
         type=int,
-        default=multiprocessing.cpu_count(),
-        help='Maximum number of parallel workers for downloading'
+        help='Maximum number of worker processes'
     )
     
     # Action flags
@@ -388,7 +311,7 @@ def main() -> None:
         if args.process:
             process_data(
                 chunk_size=args.chunk_size,
-                use_dask=args.use_dask
+                max_workers=args.max_workers
             )
 
         if args.deduplicate:

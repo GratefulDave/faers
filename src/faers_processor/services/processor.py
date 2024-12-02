@@ -4,12 +4,14 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
-import dask.dataframe as dd
 import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 import io
 import os
+import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 from .standardizer import DataStandardizer
 
@@ -48,40 +50,39 @@ class FAERSProcessor:
         logging.info(f"Found {len(quarter_dirs)} quarters to process")
         
         if self.use_dask:
-            import dask.dataframe as dd
-            from distributed import get_client
+            # Use ProcessPoolExecutor instead of dask
+            max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
             
-            # Get the dask client
-            client = get_client()
-            
-            # Process quarters in smaller batches to avoid memory issues
-            batch_size = 4  # Process 4 quarters at a time
-            for i in range(0, len(quarter_dirs), batch_size):
-                batch = quarter_dirs[i:i + batch_size]
-                logging.info(f"Processing batch of {len(batch)} quarters")
-                
-                # Process batch in parallel
-                futures = []
-                for quarter_dir in batch:
-                    future = client.submit(self.process_quarter, quarter_dir)
-                    futures.append(future)
-                
-                # Gather results as they complete
-                for future, quarter_dir in zip(futures, batch):
-                    try:
-                        results = future.result()
-                        quarter = quarter_dir.name
-                        
-                        # Save results for this quarter
-                        for data_type, df in results.items():
-                            if not df.empty:
-                                output_file = output_dir / f"{quarter}_{data_type}.txt"
-                                df.to_csv(output_file, sep='$', index=False)
-                                logging.info(f"Saved {data_type} data for {quarter} to {output_file}")
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # Process quarters in batches to control memory
+                batch_size = 4
+                for i in range(0, len(quarter_dirs), batch_size):
+                    batch = quarter_dirs[i:i + batch_size]
+                    logging.info(f"Processing batch of {len(batch)} quarters")
                     
-                    except Exception as e:
-                        logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
-                        continue
+                    # Submit batch for processing
+                    futures = {
+                        executor.submit(self.process_quarter, quarter_dir): quarter_dir 
+                        for quarter_dir in batch
+                    }
+                    
+                    # Process results as they complete
+                    for future in concurrent.futures.as_completed(futures):
+                        quarter_dir = futures[future]
+                        try:
+                            results = future.result()
+                            quarter = quarter_dir.name
+                            
+                            # Save results for this quarter
+                            for data_type, df in results.items():
+                                if not df.empty:
+                                    output_file = output_dir / f"{quarter}_{data_type}.txt"
+                                    df.to_csv(output_file, sep='$', index=False)
+                                    logging.info(f"Saved {data_type} data for {quarter} to {output_file}")
+                        
+                        except Exception as e:
+                            logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
+                            continue
         else:
             # Sequential processing
             for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
@@ -149,46 +150,25 @@ class FAERSProcessor:
             return results
             
         try:
-            if self.use_dask:
-                # Process files sequentially but use dask for the file reading
-                # This avoids memory issues while still maintaining parallelism
-                logging.info(f"Processing demographics from {demo_file}")
-                demo_df = self.process_file(demo_file, 'demographics')
-                if not demo_df.empty:
-                    demo_df = self.standardizer.standardize_demographics(demo_df)
-                    results['demographics'] = demo_df
-                
-                logging.info(f"Processing drugs from {drug_file}")
-                drug_df = self.process_file(drug_file, 'drugs')
-                if not drug_df.empty:
-                    drug_df = self.standardizer.standardize_drugs(drug_df)
-                    results['drugs'] = drug_df
-                
-                logging.info(f"Processing reactions from {reac_file}")
-                reac_df = self.process_file(reac_file, 'reactions')
-                if not reac_df.empty:
-                    reac_df = self.standardizer.standardize_reactions(reac_df)
-                    results['reactions'] = reac_df
-            else:
-                # Sequential processing (same as above)
-                logging.info(f"Processing demographics from {demo_file}")
-                demo_df = self.process_file(demo_file, 'demographics')
-                if not demo_df.empty:
-                    demo_df = self.standardizer.standardize_demographics(demo_df)
-                    results['demographics'] = demo_df
-                
-                logging.info(f"Processing drugs from {drug_file}")
-                drug_df = self.process_file(drug_file, 'drugs')
-                if not drug_df.empty:
-                    drug_df = self.standardizer.standardize_drugs(drug_df)
-                    results['drugs'] = drug_df
-                
-                logging.info(f"Processing reactions from {reac_file}")
-                reac_df = self.process_file(reac_file, 'reactions')
-                if not reac_df.empty:
-                    reac_df = self.standardizer.standardize_reactions(reac_df)
-                    results['reactions'] = reac_df
-                
+            # Process files sequentially
+            logging.info(f"Processing demographics from {demo_file}")
+            demo_df = self.process_file(demo_file, 'demographics')
+            if not demo_df.empty:
+                demo_df = self.standardizer.standardize_demographics(demo_df)
+                results['demographics'] = demo_df
+            
+            logging.info(f"Processing drugs from {drug_file}")
+            drug_df = self.process_file(drug_file, 'drugs')
+            if not drug_df.empty:
+                drug_df = self.standardizer.standardize_drugs(drug_df)
+                results['drugs'] = drug_df
+            
+            logging.info(f"Processing reactions from {reac_file}")
+            reac_df = self.process_file(reac_file, 'reactions')
+            if not reac_df.empty:
+                reac_df = self.standardizer.standardize_reactions(reac_df)
+                results['reactions'] = reac_df
+        
         except Exception as e:
             logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
             
@@ -358,39 +338,11 @@ class FAERSProcessor:
             file_size = file_path.stat().st_size
             chunk_size = min(50_000, max(10_000, file_size // (100 * 1024 * 1024)))  # Smaller chunks
             
-            if self.use_dask:
-                try:
-                    # Process in smaller chunks to avoid large graph
-                    ddf = dd.read_csv(
-                        file_path,
-                        sep='$',
-                        dtype=str,
-                        na_values=['', 'NA', 'NULL'],
-                        keep_default_na=True,
-                        header=0,
-                        blocksize=25 * 1024 * 1024,  # 25MB blocks
-                        sample=1000,  # Reduced sample size
-                        assume_missing=True,
-                        encoding='utf-8'
-                    )
-                    
-                    # Process in smaller partitions
-                    n_partitions = max(1, file_size // (50 * 1024 * 1024))  # 50MB per partition
-                    ddf = ddf.repartition(npartitions=n_partitions)
-                    
-                    # Process and compute immediately
-                    df = ddf.compute()
-                    return self._process_dataframe(df, data_type)
-                    
-                except Exception as e:
-                    logging.warning(f"Dask processing failed for {file_path}, falling back to pandas: {str(e)}")
-            
-            # Pandas processing with chunking
+            # Read and process in chunks
             chunks = []
             total_chunks = 0
             
             try:
-                # Read and process in chunks
                 for chunk in pd.read_csv(
                     file_path,
                     sep='$',
