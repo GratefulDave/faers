@@ -173,33 +173,33 @@ class FAERSProcessor:
             # Convert Path to string for compatibility
             file_path_str = str(file_path)
             
-            # Define metadata based on data type
+            # Define dtypes based on data type
             if data_type == 'demographics':
-                meta = {
-                    'primaryid': 'int64',
-                    'caseid': 'float64',
-                    'age': 'float64',
-                    'age_cod': 'object',
-                    'sex': 'object',
-                    'reporter_country': 'object',
-                    'occr_country': 'object'
+                dtypes = {
+                    'primaryid': 'str',  # Convert to int later
+                    'caseid': 'str',     # Convert to float later
+                    'age': 'str',        # Convert to float later
+                    'age_cod': 'str',
+                    'sex': 'str',
+                    'reporter_country': 'str',
+                    'occr_country': 'str'
                 }
             elif data_type == 'drugs':
-                meta = {
-                    'primaryid': 'int64',
-                    'drug_seq': 'int64',
-                    'drugname': 'object',
-                    'prod_ai': 'object',
-                    'route': 'object',
-                    'dose_amt': 'object',
-                    'dose_unit': 'object',
-                    'dose_form': 'object'
+                dtypes = {
+                    'primaryid': 'str',  # Convert to int later
+                    'drug_seq': 'str',   # Convert to int later
+                    'drugname': 'str',
+                    'prod_ai': 'str',
+                    'route': 'str',
+                    'dose_amt': 'str',
+                    'dose_unit': 'str',
+                    'dose_form': 'str'
                 }
             else:  # reactions
-                meta = {
-                    'primaryid': 'int64',
-                    'pt': 'object',
-                    'drug_rec_act': 'object'
+                dtypes = {
+                    'primaryid': 'str',  # Convert to int later
+                    'pt': 'str',
+                    'drug_rec_act': 'str'
                 }
             
             # Read data with optimized settings
@@ -208,14 +208,24 @@ class FAERSProcessor:
                     df = dd.read_csv(
                         file_path_str,
                         sep='$',
-                        dtype=str,
+                        dtype=dtypes,
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True,
                         blocksize=self.chunk_size * 1024,
-                        assume_missing=True,
-                        sample=10000,  # Sample size for dtype inference
-                        meta=meta
+                        assume_missing=True
                     )
+                    
+                    # Convert numeric columns after reading
+                    if data_type == 'demographics':
+                        df['primaryid'] = df['primaryid'].astype('int64')
+                        df['caseid'] = dd.to_numeric(df['caseid'], errors='coerce')
+                        df['age'] = dd.to_numeric(df['age'], errors='coerce')
+                    elif data_type == 'drugs':
+                        df['primaryid'] = df['primaryid'].astype('int64')
+                        df['drug_seq'] = df['drug_seq'].astype('int64')
+                    else:  # reactions
+                        df['primaryid'] = df['primaryid'].astype('int64')
+                        
                 except Exception as e:
                     logging.warning(f"Dask read failed, falling back to pandas: {str(e)}")
                     df = None
