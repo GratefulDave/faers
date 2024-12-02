@@ -196,7 +196,8 @@ class FAERSProcessor:
                 'drugs': {
                     'isr': 'primaryid',
                     'drug_seq': 'drug_seq',
-                    'drugname': 'drugname',
+                    'DRUGNAME': 'drugname',  # Map uppercase to lowercase
+                    'drugname': 'drugname',  # Keep lowercase mapping for newer files
                     'prod_ai': 'prod_ai'
                 },
                 'reactions': {
@@ -211,18 +212,21 @@ class FAERSProcessor:
                 try:
                     df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'], 
                                    keep_default_na=True, header=0, encoding='utf-8')
-                    logging.debug(f"Successfully read file with columns: {df.columns.tolist()}")
+                    logging.debug(f"File {file_path.name}")
+                    logging.debug(f"Original columns: {df.columns.tolist()}")
                 except UnicodeDecodeError:
                     # If UTF-8 fails, try with latin1 encoding
                     df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
                                    keep_default_na=True, header=0, encoding='latin1')
-                    logging.debug(f"Successfully read file with latin1 encoding, columns: {df.columns.tolist()}")
+                    logging.debug(f"File {file_path.name} (latin1)")
+                    logging.debug(f"Original columns: {df.columns.tolist()}")
                 
                 # Rename columns according to mapping
                 if data_type in column_mapping:
                     logging.debug(f"Before mapping: {df.columns.tolist()}")
                     df = df.rename(columns=column_mapping[data_type])
                     logging.debug(f"After mapping: {df.columns.tolist()}")
+                    logging.debug(f"Has 'drugname': {'drugname' in df.columns}")
                 
                 # Convert numeric columns
                 if 'primaryid' in df.columns:
