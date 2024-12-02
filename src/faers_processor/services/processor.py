@@ -44,9 +44,94 @@ class FAERSProcessor:
         logging.info(f"Data directory: {self.data_dir}")
         logging.info(f"Output directory: {self.output_dir}")
 
+    def merge_quarters(self, output_dir: Path) -> None:
+        """Merge all processed quarterly files into single files for each data type.
+        
+        Args:
+            output_dir: Directory containing processed quarterly files
+        """
+        logging.info("Starting quarter merging process...")
+        
+        # Define data types and their patterns
+        data_types = {
+            'demographics': '*_demographics.txt',
+            'drugs': '*_drugs.txt',
+            'reactions': '*_reactions.txt'
+        }
+        
+        # Process each data type
+        for data_type, pattern in data_types.items():
+            try:
+                # Find all quarterly files for this data type
+                quarterly_files = list(output_dir.glob(pattern))
+                if not quarterly_files:
+                    logging.warning(f"No {data_type} files found to merge")
+                    continue
+                
+                logging.info(f"Found {len(quarterly_files)} {data_type} files to merge")
+                
+                # Initialize list to store dataframes
+                dfs = []
+                
+                # Read each quarterly file
+                for file in tqdm(quarterly_files, desc=f"Reading {data_type} files"):
+                    try:
+                        # Extract quarter from filename
+                        quarter = file.stem.split('_')[0]
+                        
+                        # Read the file
+                        df = pd.read_csv(file, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
+                                       keep_default_na=True, encoding='utf-8')
+                        
+                        # Add quarter column
+                        df['quarter'] = quarter
+                        
+                        dfs.append(df)
+                        
+                    except Exception as e:
+                        logging.error(f"Error reading {file}: {str(e)}")
+                        continue
+                
+                if not dfs:
+                    logging.warning(f"No valid {data_type} dataframes to merge")
+                    continue
+                
+                # Merge all dataframes
+                logging.info(f"Merging {len(dfs)} {data_type} dataframes")
+                merged_df = pd.concat(dfs, ignore_index=True)
+                
+                # Sort by primaryid and quarter
+                if 'primaryid' in merged_df.columns:
+                    merged_df['primaryid'] = pd.to_numeric(merged_df['primaryid'], errors='coerce')
+                    merged_df = merged_df.sort_values(['primaryid', 'quarter'])
+                
+                # Save merged file
+                output_file = output_dir / f"merged_{data_type}.txt"
+                logging.info(f"Saving merged {data_type} to {output_file}")
+                merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
+                
+                # Log merge statistics
+                logging.info(f"{data_type.capitalize()} merge statistics:")
+                logging.info(f"  Total records: {len(merged_df)}")
+                logging.info(f"  Unique cases: {merged_df['primaryid'].nunique()}")
+                if 'quarter' in merged_df.columns:
+                    logging.info("  Records per quarter:")
+                    quarter_counts = merged_df['quarter'].value_counts().sort_index()
+                    for quarter, count in quarter_counts.items():
+                        logging.info(f"    {quarter}: {count}")
+                
+            except Exception as e:
+                logging.error(f"Error merging {data_type} files: {str(e)}")
+                continue
+        
+        logging.info("Quarter merging process completed")
+
     def process_all(self) -> None:
         """Process all FAERS data files."""
         try:
+            # Create output directory if it doesn't exist
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            
             # Get list of all quarters from data directory (excluding clean dir)
             quarters = []
             logging.info("Discovering quarters...")
@@ -82,7 +167,6 @@ class FAERSProcessor:
                         logging.info(f"Looking for ascii directory in {quarter_path}")
                         ascii_dir = None
                         for d in quarter_path.iterdir():
-                            logging.info(f"  Checking directory: {d.name}")
                             if d.is_dir() and d.name.lower() == 'ascii':
                                 ascii_dir = d
                                 break
@@ -93,66 +177,39 @@ class FAERSProcessor:
                             
                         logging.info(f"Processing quarter {quarter} from {ascii_dir}")
                         
-                        # List all files in ascii directory
-                        logging.info(f"All files in {ascii_dir}:")
-                        for f in ascii_dir.iterdir():
-                            logging.info(f"  Found file: {f.name}")
+                        # Find data files case-insensitively
+                        demo_files = list(ascii_dir.glob('*DEMO*.txt'))
+                        drug_files = list(ascii_dir.glob('*DRUG*.txt'))
+                        reac_files = list(ascii_dir.glob('*REAC*.txt'))
                         
-                        # Look for files case-insensitively
-                        demo_files = []
-                        drug_files = []
-                        reac_files = []
+                        # Process each file type if found
+                        if demo_files:
+                            demo_df = self.process_file(demo_files[0], 'demographics')
+                            if not demo_df.empty:
+                                save_path = self.output_dir / f"{quarter}_demographics.txt"
+                                demo_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
                         
-                        for f in ascii_dir.iterdir():
-                            if f.is_file() and f.suffix.lower() == '.txt':
-                                fname = f.name.lower()
-                                logging.info(f"  Checking file: {f.name} (lowercase: {fname})")
-                                if 'demo' in fname:
-                                    demo_files.append(f)
-                                    logging.info(f"    Added as demo file")
-                                elif 'drug' in fname:
-                                    drug_files.append(f)
-                                    logging.info(f"    Added as drug file")
-                                elif 'reac' in fname:
-                                    reac_files.append(f)
-                                    logging.info(f"    Added as reac file")
+                        if drug_files:
+                            drug_df = self.process_file(drug_files[0], 'drugs')
+                            if not drug_df.empty:
+                                save_path = self.output_dir / f"{quarter}_drugs.txt"
+                                drug_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
                         
-                        demo_file = demo_files[0] if demo_files else None
-                        drug_file = drug_files[0] if drug_files else None
-                        reac_file = reac_files[0] if reac_files else None
-                        
-                        if not all([demo_file, drug_file, reac_file]):
-                            logging.warning(f"Missing files for quarter {quarter}:")
-                            logging.warning(f"  DEMO: {demo_file}")
-                            logging.warning(f"  DRUG: {drug_file}")
-                            logging.warning(f"  REAC: {reac_file}")
-                            continue
-                            
-                        # Process demographics
-                        demo_df = self.process_file(demo_file, 'demographics')
-                        if not demo_df.empty:
-                            save_path = self.output_dir / f"{quarter}_demographics.txt"
-                            demo_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
-                        
-                        # Process drugs
-                        drug_df = self.process_file(drug_file, 'drugs')
-                        if not drug_df.empty:
-                            save_path = self.output_dir / f"{quarter}_drugs.txt"
-                            drug_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
-                        
-                        # Process reactions
-                        reac_df = self.process_file(reac_file, 'reactions')
-                        if not reac_df.empty:
-                            save_path = self.output_dir / f"{quarter}_reactions.txt"
-                            reac_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
-                        
-                        logging.info(f"Successfully processed quarter {quarter}")
+                        if reac_files:
+                            reac_df = self.process_file(reac_files[0], 'reactions')
+                            if not reac_df.empty:
+                                save_path = self.output_dir / f"{quarter}_reactions.txt"
+                                reac_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
                         
                     except Exception as e:
                         logging.error(f"Error processing quarter {quarter}: {str(e)}")
                     finally:
                         pbar.update(1)
-                        
+            
+            # After processing all quarters, merge them
+            logging.info("All quarters processed. Starting merge process...")
+            self.merge_quarters(self.output_dir)
+            
         except Exception as e:
             logging.error(f"Error in process_all: {str(e)}")
             raise
