@@ -344,28 +344,43 @@ class DataStandardizer:
 
     def _load_reference_data(self):
         """Load reference data for standardization."""
-        # Load country mappings
-        country_file = self.external_dir / 'manual_fix' / 'countries.csv'
-        if country_file.exists():
-            self.country_map = pd.read_csv(country_file, sep=';', dtype=str, low_memory=False).set_index('country')['Country_Name'].to_dict()
-
-        # Load occupation codes (matching R script)
-        self.valid_occupations = {'MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN'}
-
-        # Load route standardization
-        route_file = self.external_dir / 'manual_fix' / 'route_st.csv'
-        if route_file.exists():
-            self.route_map = pd.read_csv(route_file, sep=';', dtype=str, low_memory=False).set_index('route')['route_st'].to_dict()
-
-        # Load dose form standardization
-        dose_form_file = self.external_dir / 'manual_fix' / 'dose_form_st.csv'
-        if dose_form_file.exists():
-            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', dtype=str, low_memory=False).set_index('dose_form')['dose_form_st'].to_dict()
-
-        # Load dose frequency standardization
-        dose_freq_file = self.external_dir / 'manual_fix' / 'dose_freq_st.csv'
-        if dose_freq_file.exists():
-            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', dtype=str, low_memory=False).set_index('dose_freq')['dose_freq_st'].to_dict()
+        try:
+            # Manual fix files are under external_data/manual_fixes
+            manual_fix_dir = self.external_dir / 'manual_fixes'
+            
+            # Load country mappings
+            countries_file = manual_fix_dir / 'countries.csv'
+            self.country_map = pd.read_csv(countries_file, sep=';', low_memory=False)
+            logging.info(f"Loaded {len(self.country_map)} country mappings")
+            
+            # Load route standardization
+            route_file = manual_fix_dir / 'route_st.csv'
+            self.route_map = pd.read_csv(route_file, sep=';', low_memory=False)
+            logging.info(f"Loaded {len(self.route_map)} route mappings")
+            
+            # Load dose form standardization
+            dose_form_file = manual_fix_dir / 'dose_form_st.csv'
+            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', low_memory=False)
+            logging.info(f"Loaded {len(self.dose_form_map)} dose form mappings")
+            
+            # Load dose frequency standardization
+            dose_freq_file = manual_fix_dir / 'dose_freq_st.csv'
+            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', low_memory=False)
+            logging.info(f"Loaded {len(self.dose_freq_map)} dose frequency mappings")
+            
+            # Load PT fixes
+            pt_file = manual_fix_dir / 'pt_fixed.csv'
+            self.pt_fixes = pd.read_csv(pt_file, sep=';', low_memory=False)
+            logging.info(f"Loaded {len(self.pt_fixes)} PT fixes")
+            
+            # Load route form standardization
+            route_form_file = manual_fix_dir / 'route_form_st.csv'
+            self.route_form_map = pd.read_csv(route_form_file, sep=';', low_memory=False)
+            logging.info(f"Loaded {len(self.route_form_map)} route form mappings")
+            
+        except Exception as e:
+            logging.error(f"Error loading reference data: {str(e)}")
+            raise
 
     def _load_meddra_data(self):
         """Load MedDRA terminology data from external files."""
@@ -927,7 +942,7 @@ class DataStandardizer:
         route_map = pd.read_csv(self.external_dir / 'Manual_fix/routes.csv', 
                               sep=';', low_memory=False)
         
-        # Create mapping dictionary preserving original case
+        # Create route mapping dictionary preserving original case
         route_dict = dict(zip(route_map['route'], route_map['Route_std']))
         
         # First try exact matches (case-sensitive)
@@ -1639,5 +1654,192 @@ class DataStandardizer:
             'drug_rec_act': 'drug_reaction_action'
         }
         df = df.rename(columns=column_map)
+        
+        return df
+
+    def standardize_route(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize route values using route_st.csv mapping.
+        
+        Args:
+            df: DataFrame with route column
+            
+        Returns:
+            DataFrame with standardized route values
+        """
+        if 'route' not in df.columns:
+            logging.warning("Route column not found, skipping route standardization")
+            return df
+            
+        df = df.copy()
+        
+        # Convert to uppercase for consistent matching
+        df['route'] = df['route'].str.upper()
+        
+        # Create route mapping dictionary
+        route_dict = dict(zip(
+            self.route_map['route'].str.upper(),
+            self.route_map['route_st']
+        ))
+        
+        # Apply standardization
+        df['route_st'] = df['route'].map(route_dict)
+        
+        # Log standardization results
+        total_routes = len(df['route'].dropna())
+        mapped_routes = len(df['route_st'].dropna())
+        logging.info(f"Route standardization: {mapped_routes}/{total_routes} routes mapped ({mapped_routes/total_routes*100:.1f}%)")
+        
+        # Log unmapped values
+        unmapped = df[df['route_st'].isna() & df['route'].notna()]['route'].unique()
+        if len(unmapped) > 0:
+            logging.warning(f"Unmapped routes: {', '.join(unmapped)}")
+        
+        return df
+
+    def standardize_dose_form(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize dose form values using dose_form_st.csv mapping.
+        
+        Args:
+            df: DataFrame with dose_form column
+            
+        Returns:
+            DataFrame with standardized dose form values
+        """
+        if 'dose_form' not in df.columns:
+            logging.warning("Dose form column not found, skipping dose form standardization")
+            return df
+            
+        df = df.copy()
+        
+        # Convert to uppercase for consistent matching
+        df['dose_form'] = df['dose_form'].str.upper()
+        
+        # Create dose form mapping dictionary
+        dose_form_dict = dict(zip(
+            self.dose_form_map['dose_form'].str.upper(),
+            self.dose_form_map['dose_form_st']
+        ))
+        
+        # Apply standardization
+        df['dose_form_st'] = df['dose_form'].map(dose_form_dict)
+        
+        # Log standardization results
+        total_forms = len(df['dose_form'].dropna())
+        mapped_forms = len(df['dose_form_st'].dropna())
+        logging.info(f"Dose form standardization: {mapped_forms}/{total_forms} forms mapped ({mapped_forms/total_forms*100:.1f}%)")
+        
+        # Log unmapped values
+        unmapped = df[df['dose_form_st'].isna() & df['dose_form'].notna()]['dose_form'].unique()
+        if len(unmapped) > 0:
+            logging.warning(f"Unmapped dose forms: {', '.join(unmapped)}")
+        
+        return df
+
+    def standardize_dose_freq(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize dose frequency values using dose_freq_st.csv mapping.
+        
+        Args:
+            df: DataFrame with dose_freq column
+            
+        Returns:
+            DataFrame with standardized dose frequency values
+        """
+        if 'dose_freq' not in df.columns:
+            logging.warning("Dose frequency column not found, skipping dose frequency standardization")
+            return df
+            
+        df = df.copy()
+        
+        # Convert to uppercase for consistent matching
+        df['dose_freq'] = df['dose_freq'].str.upper()
+        
+        # Create dose frequency mapping dictionary
+        dose_freq_dict = dict(zip(
+            self.dose_freq_map['dose_freq'].str.upper(),
+            self.dose_freq_map['dose_freq_st']
+        ))
+        
+        # Apply standardization
+        df['dose_freq_st'] = df['dose_freq'].map(dose_freq_dict)
+        
+        # Log standardization results
+        total_freqs = len(df['dose_freq'].dropna())
+        mapped_freqs = len(df['dose_freq_st'].dropna())
+        logging.info(f"Dose frequency standardization: {mapped_freqs}/{total_freqs} frequencies mapped ({mapped_freqs/total_freqs*100:.1f}%)")
+        
+        # Log unmapped values
+        unmapped = df[df['dose_freq_st'].isna() & df['dose_freq'].notna()]['dose_freq'].unique()
+        if len(unmapped) > 0:
+            logging.warning(f"Unmapped dose frequencies: {', '.join(unmapped)}")
+        
+        return df
+
+    def standardize_pt(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize preferred terms using pt_fixed.csv mapping.
+        
+        Args:
+            df: DataFrame with pt column
+            
+        Returns:
+            DataFrame with standardized preferred terms
+        """
+        if 'pt' not in df.columns:
+            logging.warning("PT column not found, skipping PT standardization")
+            return df
+            
+        df = df.copy()
+        
+        # Create PT mapping dictionary
+        pt_dict = dict(zip(
+            self.pt_fixes['pt_original'],
+            self.pt_fixes['pt_fixed']
+        ))
+        
+        # Apply standardization
+        df['pt_st'] = df['pt'].map(pt_dict).fillna(df['pt'])
+        
+        # Log standardization results
+        total_pts = len(df['pt'].dropna())
+        fixed_pts = len(df[df['pt'] != df['pt_st']].dropna())
+        logging.info(f"PT standardization: {fixed_pts} terms fixed out of {total_pts} total terms")
+        
+        return df
+
+    def standardize_country(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize country values using countries.csv mapping.
+        
+        Args:
+            df: DataFrame with country column
+            
+        Returns:
+            DataFrame with standardized country values
+        """
+        if 'country' not in df.columns:
+            logging.warning("Country column not found, skipping country standardization")
+            return df
+            
+        df = df.copy()
+        
+        # Convert to uppercase for consistent matching
+        df['country'] = df['country'].str.upper()
+        
+        # Create country mapping dictionary
+        country_dict = dict(zip(
+            self.country_map['country'].str.upper(),
+            self.country_map['Country_Name']
+        ))
+        
+        # Apply standardization
+        df['country_st'] = df['country'].map(country_dict)
+        
+        # Log standardization results
+        total_countries = len(df['country'].dropna())
+        mapped_countries = len(df['country_st'].dropna())
+        logging.info(f"Country standardization: {mapped_countries}/{total_countries} countries mapped ({mapped_countries/total_countries*100:.1f}%)")
+        
+        # Log unmapped values
+        unmapped = df[df['country_st'].isna() & df['country'].notna()]['country'].unique()
+        if len(unmapped) > 0:
+            logging.warning(f"Unmapped countries: {', '.join(unmapped)}")
         
         return df
