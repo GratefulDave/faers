@@ -49,6 +49,10 @@ class FAERSProcessor:
         }
         start_time = time.time()
         
+        # Create clean data directory structure
+        clean_data_dir = output_dir / "data" / "clean"
+        clean_data_dir.mkdir(parents=True, exist_ok=True)
+        
         # Find all quarter directories
         quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
         total_quarters = len(quarter_dirs)
@@ -59,7 +63,6 @@ class FAERSProcessor:
             return
             
         logging.info(f"Found {total_quarters} quarters to process")
-        output_dir.mkdir(parents=True, exist_ok=True)
         
         # Create progress bar for total quarters
         pbar = tqdm(total=total_quarters, desc="Processing FAERS quarters", 
@@ -90,14 +93,15 @@ class FAERSProcessor:
                             
                         results_dict = future.result()
                         
-                        # Save results
-                        quarter_output_dir = output_dir / quarter
+                        # Save results in clean data directory
+                        quarter_output_dir = clean_data_dir / quarter
                         quarter_output_dir.mkdir(parents=True, exist_ok=True)
                         
                         for data_type, df in results_dict.items():
                             if not df.empty:
                                 output_file = quarter_output_dir / f"{data_type}.txt"
                                 df.to_csv(output_file, sep='$', index=False)
+                                logging.info(f"Saved cleaned {data_type} data to {output_file}")
                         
                         results['success'].append(quarter)
                         pbar.update(1)
@@ -121,14 +125,15 @@ class FAERSProcessor:
                     
                     results_dict = self.process_quarter(quarter_dir)
                     
-                    # Save results
-                    quarter_output_dir = output_dir / quarter
+                    # Save results in clean data directory
+                    quarter_output_dir = clean_data_dir / quarter
                     quarter_output_dir.mkdir(parents=True, exist_ok=True)
                     
                     for data_type, df in results_dict.items():
                         if not df.empty:
                             output_file = quarter_output_dir / f"{data_type}.txt"
                             df.to_csv(output_file, sep='$', index=False)
+                            logging.info(f"Saved cleaned {data_type} data to {output_file}")
                     
                     results['success'].append(quarter)
                     pbar.update(1)
