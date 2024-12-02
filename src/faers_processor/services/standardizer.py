@@ -79,7 +79,13 @@ class DataStandardizer:
             for col in date_columns:
                 if col in df.columns:
                     try:
-                        df[col] = pd.to_datetime(df[col], errors='coerce')
+                        # First try standard parsing
+                        temp_series = pd.to_datetime(df[col], errors='coerce')
+                        # Only assign if successful
+                        if isinstance(temp_series, pd.Series):
+                            df[col] = temp_series
+                        else:
+                            logging.warning(f"Skipping {col} - unexpected type after date parsing")
                     except Exception as e:
                         logging.warning(f"Error converting {col} to datetime: {str(e)}")
                         # Try custom date parsing for problematic formats

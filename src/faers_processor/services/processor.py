@@ -72,9 +72,11 @@ class FAERSProcessor:
                             continue
 
                         # Find ascii directory case-insensitively
+                        logging.info(f"Looking for ascii directory in {quarter_path}")
                         ascii_dir = None
                         for d in quarter_path.iterdir():
-                            if d.is_dir() and any(c.isalpha() for c in d.name) and d.name.lower() == 'ascii':
+                            logging.info(f"  Checking directory: {d.name}")
+                            if d.is_dir() and d.name.lower() == 'ascii':
                                 ascii_dir = d
                                 break
                         
@@ -84,19 +86,29 @@ class FAERSProcessor:
                             
                         logging.info(f"Processing quarter {quarter} from {ascii_dir}")
                         
-                        # List files in quarter directory for debugging
-                        logging.info(f"Files in {quarter}/{ascii_dir.name} directory:")
-                        txt_files = list(ascii_dir.glob("[Dd][Ee][Mm][Oo]*.txt")) + \
-                                  list(ascii_dir.glob("[Dd][Rr][Uu][Gg]*.txt")) + \
-                                  list(ascii_dir.glob("[Rr][Ee][Aa][Cc]*.txt"))
+                        # List all files in ascii directory
+                        logging.info(f"All files in {ascii_dir}:")
+                        for f in ascii_dir.iterdir():
+                            logging.info(f"  Found file: {f.name}")
                         
-                        for f in txt_files:
-                            logging.info(f"  {f.name}")
+                        # Look for files case-insensitively
+                        demo_files = []
+                        drug_files = []
+                        reac_files = []
                         
-                        # Look for files case-insensitively using character class patterns
-                        demo_files = list(ascii_dir.glob("[Dd][Ee][Mm][Oo]*.txt"))
-                        drug_files = list(ascii_dir.glob("[Dd][Rr][Uu][Gg]*.txt"))
-                        reac_files = list(ascii_dir.glob("[Rr][Ee][Aa][Cc]*.txt"))
+                        for f in ascii_dir.iterdir():
+                            if f.is_file() and f.suffix.lower() == '.txt':
+                                fname = f.name.lower()
+                                logging.info(f"  Checking file: {f.name} (lowercase: {fname})")
+                                if 'demo' in fname:
+                                    demo_files.append(f)
+                                    logging.info(f"    Added as demo file")
+                                elif 'drug' in fname:
+                                    drug_files.append(f)
+                                    logging.info(f"    Added as drug file")
+                                elif 'reac' in fname:
+                                    reac_files.append(f)
+                                    logging.info(f"    Added as reac file")
                         
                         demo_file = demo_files[0] if demo_files else None
                         drug_file = drug_files[0] if drug_files else None
