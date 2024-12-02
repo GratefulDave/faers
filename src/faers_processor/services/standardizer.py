@@ -139,227 +139,114 @@ class DataStandardizer:
             return None
 
     def standardize_sex(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Standardize sex values.
-        
-        Args:
-            data: Input DataFrame with sex column
-            
-        Returns:
-            DataFrame with standardized sex values
-        """
+        """Standardize sex values exactly as in R script."""
         df = data.copy()
         if 'sex' not in df.columns:
             return df
-
-        # Define standardization mapping
-        sex_map = {
-            'M': 'M',
-            'MALE': 'M',
-            '1': 'M',
-            'F': 'F',
-            'FEMALE': 'F',
-            '2': 'F',
-            'U': 'U',
-            'UNK': 'U',
-            'UNKNOWN': 'U',
-            '0': 'U'
-        }
-
-        # Apply standardization
-        df['sex'] = df['sex'].str.upper().map(sex_map)
-
-        # Log statistics
-        value_counts = df['sex'].value_counts()
-        logging.info("Sex value counts after standardization:")
-        for value, count in value_counts.items():
-            logging.info(f"  {value}: {count}")
-
+        
+        # Exact R script logic: Demo[!sex %in% c("F","M")]$sex<- NA
+        df.loc[~df['sex'].isin(['F', 'M']), 'sex'] = np.nan
         return df
 
     def standardize_age(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Standardize age values to years.
-        
-        Args:
-            data: Input DataFrame with age columns
-            
-        Returns:
-            DataFrame with standardized age values
-        """
+        """Standardize age values exactly as in R script."""
         df = data.copy()
-
-        # Check required columns
-        age_cols = ['age', 'age_cod']
-        if not all(col in df.columns for col in age_cols):
-            return df
-
-        try:
-            # Convert age codes
-            age_code_map = {
-                'DEC': 'DECADE',
-                'YR': 'YEAR',
-                'MON': 'MONTH',
-                'WK': 'WEEK',
-                'DY': 'DAY',
-                'HR': 'HOUR'
-            }
-            df['age_cod'] = df['age_cod'].str.upper().map(age_code_map)
-
-            # Convert to numeric, coercing errors to NaN
-            df['age'] = pd.to_numeric(df['age'], errors='coerce')
-
-            # Convert to years based on age code
-            conversions = {
-                'DECADE': 10,
-                'YEAR': 1,
-                'MONTH': 1 / 12,
-                'WEEK': 1 / 52,
-                'DAY': 1 / 365,
-                'HOUR': 1 / (365 * 24)
-            }
-
-            for code, factor in conversions.items():
-                mask = df['age_cod'] == code
-                df.loc[mask, 'age_in_years'] = df.loc[mask, 'age'] * factor
-
-            # Log statistics
-            logging.info(f"Age range: {df['age_in_years'].min():.1f} to {df['age_in_years'].max():.1f} years")
-            logging.info(f"Mean age: {df['age_in_years'].mean():.1f} years")
-
-            return df
-
-        except Exception as e:
-            logging.error(f"Error standardizing age: {str(e)}")
-            return data
+        
+        # Exact R age corrector mapping from R script
+        age_corrector_map = {
+            'DEC': 3650,
+            'YR': 365,
+            'MON': 30.41667,
+            'WK': 7,
+            'DY': 1,
+            'HR': 0.00011415525114155251,
+            'SEC': 3.1709791983764586e-08,
+            'MIN': 1.9025875190259e-06
+        }
+        
+        # Create age_corrector column
+        df['age_corrector'] = df['age_cod'].map(age_corrector_map)
+        
+        # Calculate age_in_days exactly as R script
+        df['age_in_days'] = np.abs(pd.to_numeric(df['age'], errors='coerce')) * df['age_corrector']
+        
+        # Apply R script's plausibility check
+        mask = (df['age_in_days'] > 122*365) & (df['age_cod'] != 'DEC')
+        df.loc[mask, 'age_in_days'] = np.nan
+        
+        # Calculate age in years
+        df['age_in_years'] = np.round(df['age_in_days'] / 365)
+        
+        # Create age groups exactly as R script
+        df['age_grp_st'] = np.nan
+        df.loc[df['age_in_years'].notna(), 'age_grp_st'] = 'E'
+        df.loc[df['age_in_years'] < 65, 'age_grp_st'] = 'A'
+        df.loc[df['age_in_years'] < 18, 'age_grp_st'] = 'T'
+        df.loc[df['age_in_years'] < 12, 'age_grp_st'] = 'C'
+        df.loc[df['age_in_years'] < 2, 'age_grp_st'] = 'I'
+        df.loc[df['age_in_days'] < 28, 'age_grp_st'] = 'N'
+        
+        # Clean up temporary columns
+        df = df.drop(['age_corrector', 'age', 'age_cod'], axis=1)
+        df = df.rename(columns={'age_grp_st': 'age_grp'})
+        
+        return df
 
     def standardize_weight(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Standardize weight values to kilograms.
-        
-        Args:
-            data: Input DataFrame with weight columns
-            
-        Returns:
-            DataFrame with standardized weight values
-        """
+        """Standardize weight values exactly as in R script."""
         df = data.copy()
-
-        # Check required columns
-        weight_cols = ['wt', 'wt_cod']
-        if not all(col in df.columns for col in weight_cols):
-            return df
-
-        try:
-            # Convert weight codes
-            weight_code_map = {
-                'KG': 'KG',
-                'LBS': 'LB',
-                'GMS': 'G',
-                'L': 'L'
-            }
-            df['wt_cod'] = df['wt_cod'].str.upper().map(weight_code_map)
-
-            # Convert to numeric, coercing errors to NaN
-            df['wt'] = pd.to_numeric(df['wt'], errors='coerce')
-
-            # Convert to kilograms based on weight code
-            conversions = {
-                'KG': 1,
-                'LB': 0.453592,
-                'G': 0.001,
-                'L': 1  # Assuming density of 1 kg/L
-            }
-
-            for code, factor in conversions.items():
-                mask = df['wt_cod'] == code
-                df.loc[mask, 'wt_in_kgs'] = df.loc[mask, 'wt'] * factor
-
-            # Log statistics
-            logging.info(f"Weight range: {df['wt_in_kgs'].min():.1f} to {df['wt_in_kgs'].max():.1f} kg")
-            logging.info(f"Mean weight: {df['wt_in_kgs'].mean():.1f} kg")
-
-            return df
-
-        except Exception as e:
-            logging.error(f"Error standardizing weight: {str(e)}")
-            return data
+        
+        # Exact R weight corrector mapping
+        wt_corrector_map = {
+            'LBS': 0.453592,
+            'IB': 0.453592,
+            'KG': 1,
+            'KGS': 1,
+            'GMS': 0.001,
+            'MG': 1e-06
+        }
+        
+        # Set default corrector to 1 for NA values as in R
+        df['wt_corrector'] = df['wt_cod'].map(wt_corrector_map).fillna(1)
+        
+        # Calculate weight in kgs exactly as R script
+        df['wt_in_kgs'] = np.round(np.abs(pd.to_numeric(df['wt'], errors='coerce')) * df['wt_corrector'])
+        
+        # Apply R script's plausibility check
+        df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = np.nan
+        
+        # Clean up temporary columns
+        df = df.drop(['wt_corrector', 'wt', 'wt_cod'], axis=1)
+        
+        return df
 
     def standardize_country(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Standardize country codes.
-        
-        Args:
-            data: Input DataFrame with country column
-            
-        Returns:
-            DataFrame with standardized country codes
-        """
+        """Standardize country codes exactly as in R script."""
         df = data.copy()
-        if 'reporter_country' not in df.columns:
-            return df
-
-        try:
-            # Load country mappings
-            if self.external_dir:
-                country_file = self.external_dir / 'country_codes.csv'
-                if country_file.exists():
-                    country_map = pd.read_csv(country_file, index_col=0)['code'].to_dict()
-                else:
-                    logging.warning(f"Country codes file not found: {country_file}")
-                    country_map = {}
-            else:
-                country_map = {}
-
-            # Apply standardization
-            df['reporter_country'] = df['reporter_country'].str.upper().map(country_map)
-
-            # Log statistics
-            value_counts = df['reporter_country'].value_counts()
-            logging.info("Top 10 reporter countries after standardization:")
-            for country, count in value_counts.head(10).items():
-                logging.info(f"  {country}: {count}")
-
-            return df
-
-        except Exception as e:
-            logging.error(f"Error standardizing countries: {str(e)}")
-            return data
+        
+        # Load country mappings
+        countries_df = pd.read_csv(self.external_dir / 'Manual_fix/countries.csv', sep=';')
+        countries_df.loc[countries_df['country'].isna(), 'country'] = 'NA'  # Handle Namibia case
+        
+        # Create mapping dictionary
+        country_map = dict(zip(countries_df['country'], countries_df['Country_Name']))
+        
+        # Apply mappings exactly as R script
+        for col in ['occr_country', 'reporter_country']:
+            if col in df.columns:
+                df[col] = df[col].map(country_map)
+        
+        return df
 
     def standardize_occupation(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Standardize occupation codes.
-        
-        Args:
-            data: Input DataFrame with occupation column
-            
-        Returns:
-            DataFrame with standardized occupation codes
-        """
+        """Standardize occupation codes exactly as in R script."""
         df = data.copy()
-        if 'occp_cod' not in df.columns:
-            return df
-
-        try:
-            # Define occupation mapping
-            occp_map = {
-                'MD': 'PHYSICIAN',
-                'PH': 'PHARMACIST',
-                'OT': 'OTHER',
-                'CN': 'CONSUMER',
-                'LW': 'LAWYER',
-                'HP': 'OTHER_HEALTH_PROFESSIONAL'
-            }
-
-            # Apply standardization
-            df['occp_cod'] = df['occp_cod'].str.upper().map(occp_map)
-
-            # Log statistics
-            value_counts = df['occp_cod'].value_counts()
-            logging.info("Occupation counts after standardization:")
-            for occ, count in value_counts.items():
-                logging.info(f"  {occ}: {count}")
-
-            return df
-
-        except Exception as e:
-            logging.error(f"Error standardizing occupations: {str(e)}")
-            return data
+        
+        # Exact R script logic for occupation codes
+        valid_codes = ['MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN']
+        df.loc[~df['occp_cod'].isin(valid_codes), 'occp_cod'] = np.nan
+        
+        return df
 
     def remove_special_chars(self, text: str) -> str:
         """Remove special characters from text.
@@ -837,58 +724,67 @@ class DataStandardizer:
             self.drug_map = {}
 
     def standardize_pt(self, df: pd.DataFrame, pt_variable: str) -> pd.DataFrame:
-        """Standardize Preferred Terms using MedDRA.
-        
-        Args:
-            df: DataFrame containing PT column
-            pt_variable: Name of PT column
-            
-        Returns:
-            DataFrame with standardized PTs
-        """
+        """Standardize PT terms exactly as in R script."""
         df = df.copy()
         
-        # Extract PTs and calculate frequencies
-        pt_series = df[pt_variable].str.lower().str.strip()
-        pt_freq = pt_series.value_counts().reset_index()
-        pt_freq.columns = ['pt', 'count']
+        # Load MedDRA PT list
+        meddra_df = pd.read_csv(self.external_dir / 'Dictionaries/MedDRA/meddra.csv', sep=';')
+        pt_list = pd.Series(meddra_df['pt'].unique()).str.lower().str.strip().unique()
         
-        # Check standardization status
-        pt_freq['standard_pt'] = pt_freq['pt'].map(lambda x: x if x in self.pt_data['pt_name'].str.lower().values else None)
+        # Calculate PT frequencies
+        df[pt_variable] = df[pt_variable].str.lower().str.strip()
+        pt_freq = (df[~df[pt_variable].isna()]
+                   .groupby(pt_variable).size()
+                   .reset_index(name='N')
+                   .sort_values('N', ascending=False))
         
-        # Try LLT translations for non-standard terms
-        non_standard = pt_freq[pt_freq['standard_pt'].isna()]
-        llt_translations = non_standard['pt'].map(self.pt_to_llt_map)
+        # Check if PTs are standardized
+        pt_freq['standard_pt'] = np.where(pt_freq[pt_variable].isin(pt_list), 
+                                         pt_freq[pt_variable], 
+                                         np.nan)
+        pt_freq['freq'] = np.round(pt_freq['N'] / pt_freq['N'].sum() * 100, 2)
         
-        # Update statistics
-        self.standardization_stats['total_terms'] = len(pt_series.dropna())
-        self.standardization_stats['direct_pt_matches'] = len(pt_freq[pt_freq['standard_pt'].notna()])
-        self.standardization_stats['llt_translations'] = len(llt_translations.dropna())
+        # Get unstandardized PTs
+        not_pts = pt_freq[pt_freq['standard_pt'].isna()][[pt_variable, 'N', 'freq']]
         
-        # Apply manual fixes for remaining terms
-        still_non_standard = non_standard[~non_standard['pt'].isin(llt_translations.dropna().index)]
-        manual_fixes = still_non_standard['pt'].map(self.manual_pt_fixes)
-        self.standardization_stats['manual_fixes'] = len(manual_fixes.dropna())
+        # Calculate initial non-standardized percentage
+        initial_nonstd_pct = np.round(not_pts['N'].sum() * 100 / len(df[~df[pt_variable].isna()]), 3)
+        logging.info(f"Initial non-standardized PT percentage: {initial_nonstd_pct}%")
         
-        # Combine all standardized terms
-        standardized_terms = pd.concat([
-            pt_freq[pt_freq['standard_pt'].notna()].set_index('pt')['standard_pt'],
-            llt_translations,
-            manual_fixes
-        ])
+        # Try to translate through LLTs
+        llt_mappings = meddra_df[['pt', 'llt']].copy()
+        llt_mappings.columns = ['standard_pt', pt_variable]
+        not_pts = not_pts.merge(llt_mappings, on=pt_variable, how='left')
+        not_llts = not_pts[not_pts['standard_pt'].isna()].drop('standard_pt', axis=1)
         
-        # Update original dataframe
-        df[pt_variable] = df[pt_variable].str.lower().str.strip().map(standardized_terms)
+        # Load and apply manual fixes
+        manual_fixes = pd.read_csv(self.external_dir / 'Manual_fix/pt_fixed.csv', sep=';')
+        manual_fixes = manual_fixes[[pt_variable, 'standard_pt']]
         
-        # Log statistics
-        unstandardized = len(pt_series.dropna()) - len(standardized_terms)
-        self.standardization_stats['unstandardized'] = unstandardized
-        logging.info(f"PT Standardization Results:")
-        logging.info(f"Total terms: {self.standardization_stats['total_terms']}")
-        logging.info(f"Direct matches: {self.standardization_stats['direct_pt_matches']}")
-        logging.info(f"LLT translations: {self.standardization_stats['llt_translations']}")
-        logging.info(f"Manual fixes: {self.standardization_stats['manual_fixes']}")
-        logging.info(f"Unstandardized: {unstandardized}")
+        not_llts = not_llts.merge(manual_fixes, on=pt_variable, how='left')
+        still_unstandardized = not_llts[not_llts['standard_pt'].isna()][[pt_variable, 'standard_pt']]
+        
+        # Combine all standardization sources
+        pt_fixed = pd.concat([
+            manual_fixes,
+            still_unstandardized,
+            not_pts[~not_pts['standard_pt'].isna()][[pt_variable, 'standard_pt']]
+        ]).drop_duplicates()
+        
+        # Check for duplicates
+        duplicates = pt_fixed[pt_fixed[pt_variable].duplicated()]
+        if not duplicates.empty:
+            logging.warning(f"Duplicate PT mappings found: {duplicates[pt_variable].tolist()}")
+        
+        # Apply standardization to original data
+        df['pt_temp'] = df[pt_variable].str.lower().str.strip()
+        df = df.merge(pt_fixed, left_on='pt_temp', right_on=pt_variable, how='left')
+        df[pt_variable] = df['standard_pt'].fillna(df['pt_temp'])
+        df = df.drop(['pt_temp', 'standard_pt'], axis=1)
+        
+        # Calculate final standardization percentage
+        final_std_pct = np.round(len(df[df[pt_variable].isin(pt_list)]) * 100 / len(df[~df[pt_variable].isna()]), 3)
+        logging.info(f"Final standardized PT percentage: {final_std_pct}%")
         
         return df
 
@@ -1687,3 +1583,240 @@ class DataStandardizer:
         df = df.rename(columns={'age_grp_st': 'age_grp'})
 
         return df
+
+    def standardize_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize drug names exactly as in R script."""
+        df = df.copy()
+        
+        # Clean drug names exactly as R script
+        df['drugname'] = (df['drugname']
+            .str.lower()
+            .str.strip()
+            .str.replace(r'\.$', '', regex=True)
+            .str.strip()
+            .str.replace(r'\s+', ' ', regex=True))
+        
+        # Apply R script's parentheses cleaning
+        df['drugname'] = (df['drugname']
+            .str.replace(r'[^)[:^punct:]]+$', '', regex=True).str.strip()
+            .str.replace(r'^[^([:^punct:]]+', '', regex=True).str.strip()
+            .str.replace(r'[^)[:^punct:]]+$', '', regex=True).str.strip()
+            .str.replace(r'^[^([:^punct:]]+', '', regex=True).str.strip())
+        
+        # Fix parentheses spacing as in R
+        df['drugname'] = (df['drugname']
+            .str.replace(r'\( ', '(', regex=True)
+            .str.replace(r' \)', ')', regex=True))
+        
+        # Load and apply DiAna dictionary
+        diana_dict = pd.read_csv(self.external_dir / 'Dictionaries/DiAna_dictionary/drugnames_standardized.csv', sep=';')
+        diana_dict = diana_dict[diana_dict['Substance'].notna() & (diana_dict['Substance'] != 'na')]
+        drug_map = dict(zip(diana_dict['drugname'], diana_dict['Substance']))
+        
+        # Map standardized names
+        df['Substance'] = df['drugname'].map(drug_map)
+        
+        # Handle multi-substance drugs
+        multi_drugs = df[df['Substance'].str.contains(';', na=False)].copy()
+        single_drugs = df[~df['Substance'].str.contains(';', na=False)].copy()
+        
+        # Split multi-substance drugs
+        if not multi_drugs.empty:
+            multi_drugs_expanded = []
+            for _, row in multi_drugs.iterrows():
+                substances = row['Substance'].split(';')
+                for substance in substances:
+                    new_row = row.copy()
+                    new_row['Substance'] = substance.strip()
+                    multi_drugs_expanded.append(new_row)
+            multi_drugs = pd.DataFrame(multi_drugs_expanded)
+        
+        # Combine single and multi drugs
+        df = pd.concat([single_drugs, multi_drugs], ignore_index=True)
+        
+        # Mark trial drugs
+        df['trial'] = df['Substance'].str.contains(', trial', na=False)
+        df['Substance'] = df['Substance'].str.replace(', trial', '')
+        
+        # Convert to categorical
+        df['drugname'] = df['drugname'].astype('category')
+        df['prod_ai'] = df['prod_ai'].astype('category')
+        df['Substance'] = df['Substance'].astype('category')
+        
+        return df
+
+    def standardize_dates(self, df: pd.DataFrame, current_quarter: str) -> pd.DataFrame:
+        """Standardize dates exactly as in R script."""
+        df = df.copy()
+        
+        # Calculate max date from current quarter
+        year = f"20{current_quarter[:2]}"
+        quarter = current_quarter[2:4]
+        month_day = {
+            'Q1': '0331',
+            'Q2': '0630',
+            'Q3': '0930',
+            'Q4': '1231'
+        }[quarter]
+        max_date = int(f"{year}{month_day}")
+        
+        def check_date(dt):
+            """Exact implementation of R script's check_date function."""
+            if pd.isna(dt):
+                return dt
+                
+            dt = str(dt)
+            n = len(dt)
+            
+            # Invalid conditions exactly as R script
+            invalid = (
+                (n == 4 and (int(dt) < 1985 or int(dt) > int(str(max_date)[:4]))) or
+                (n == 6 and (int(dt) < 198500 or int(dt) > int(str(max_date)[:6]))) or
+                (n == 8 and (int(dt) < 19850000 or int(dt) > max_date)) or
+                (n not in [4, 6, 8])
+            )
+            
+            return np.nan if invalid else dt
+        
+        # Apply to all date columns exactly as R script
+        date_columns = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = df[col].apply(check_date)
+        
+        return df
+
+    def standardize_therapy_dates(self, df: pd.DataFrame, current_quarter: str) -> pd.DataFrame:
+        """Standardize therapy dates and durations exactly as in R script."""
+        df = df.copy()
+        
+        # First standardize start_dt and end_dt
+        df = self.standardize_dates(df, current_quarter)
+        
+        # Convert duration codes exactly as R script
+        dur_corrector_map = {
+            'YR': 365,
+            'MON': 30.41667,
+            'WK': 7,
+            'DAY': 1,
+            'HR': 0.04166667,
+            'MIN': 0.0006944444,
+            'SEC': 1.157407e-05
+        }
+        
+        # Calculate duration in days
+        df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
+        df['dur_corrector'] = df['dur_cod'].map(dur_corrector_map)
+        df['dur_in_days'] = np.abs(df['dur']) * df['dur_corrector']
+        
+        # Apply 50-year plausibility check
+        df.loc[df['dur_in_days'] > 50*365, 'dur_in_days'] = np.nan
+        
+        # Calculate standardized duration from dates
+        def ymd(date_str):
+            if pd.isna(date_str) or len(str(date_str)) != 8:
+                return pd.NaT
+            return pd.to_datetime(str(date_str), format='%Y%m%d')
+        
+        df['dur_std'] = (
+            np.where(df['end_dt'].astype(str).str.len() == 8, 
+                    ymd(df['end_dt']), pd.NaT) - 
+            np.where(df['start_dt'].astype(str).str.len() == 8, 
+                    ymd(df['start_dt']), pd.NaT)
+        ).dt.days + 1
+        
+        # Handle negative durations
+        df.loc[df['dur_std'] < 0, 'dur_std'] = np.nan
+        
+        # Use calculated duration if date-based duration is NA
+        df.loc[df['dur_std'].isna(), 'dur_std'] = df.loc[df['dur_std'].isna(), 'dur_in_days']
+        
+        # Backfill missing dates using duration
+        mask_start = (df['start_dt'].isna() & 
+                     df['end_dt'].notna() & 
+                     df['dur_std'].notna())
+        df.loc[mask_start, 'start_dt'] = (
+            ymd(df.loc[mask_start, 'end_dt']) - 
+            pd.Timedelta(days=df.loc[mask_start, 'dur_std'] - 1)
+        ).dt.strftime('%Y%m%d').astype(float)
+        
+        mask_end = (df['end_dt'].isna() & 
+                   df['start_dt'].notna() & 
+                   df['dur_std'].notna())
+        df.loc[mask_end, 'end_dt'] = (
+            ymd(df.loc[mask_end, 'start_dt']) + 
+            pd.Timedelta(days=df.loc[mask_end, 'dur_std'] - 1)
+        ).dt.strftime('%Y%m%d').astype(float)
+        
+        # Calculate time to onset
+        df['time_to_onset'] = (
+            np.where(df['event_dt'].astype(str).str.len() == 8, 
+                    ymd(df['event_dt']), pd.NaT) - 
+            np.where(df['start_dt'].astype(str).str.len() == 8, 
+                    ymd(df['start_dt']), pd.NaT)
+        ).dt.days + 1
+        
+        # Clean up time to onset
+        mask = ((df['time_to_onset'] <= 0) & 
+               (df['event_dt'] <= 20121231)) | df['time_to_onset'].isna()
+        df.loc[mask, 'time_to_onset'] = np.nan
+        
+        # Clean up temporary columns
+        df = df.drop(['dur_corrector', 'dur', 'dur_cod'], axis=1)
+        
+        return df
+
+    def standardize_report_codes(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Standardize report codes exactly as in R script."""
+        df = data.copy()
+        
+        # Convert expedited reports exactly as R script
+        df.loc[df['rept_cod'].isin(['30DAY', '5DAY']), 'rept_cod'] = 'EXP'
+        
+        # Convert to categorical
+        df['rept_cod'] = df['rept_cod'].astype('category')
+        
+        # Mark premarketing and literature reports
+        df['premarketing'] = df['primaryid'].isin(df[df['trial'] == True]['primaryid'])
+        df['literature'] = ~df['lit_ref'].isna()
+        
+        return df
+
+    def standardize_demo(self, data: pd.DataFrame, current_quarter: str) -> pd.DataFrame:
+        """Standardize demographic data exactly as in R script."""
+        df = data.copy()
+        
+        # Apply all standardizations in exact R script order
+        df = self.standardize_sex(df)
+        df = self.standardize_age(df)
+        df = self.standardize_weight(df)
+        df = self.standardize_country(df)
+        df = self.standardize_occupation(df)
+        df = self.standardize_dates(df, current_quarter)
+        df = self.standardize_report_codes(df)
+        
+        # Split into main and supplementary data exactly as R script
+        demo_supp = df[[
+            'primaryid', 'caseid', 'caseversion', 'i_f_cod', 'auth_num', 'e_sub',
+            'lit_ref', 'rept_dt', 'to_mfr', 'mfr_sndr', 'mfr_num', 'mfr_dt', 'quarter'
+        ]]
+        
+        demo = df[[
+            'primaryid', 'sex', 'age_in_days', 'wt_in_kgs', 'occr_country', 'event_dt',
+            'occp_cod', 'reporter_country', 'rept_cod', 'init_fda_dt', 'fda_dt',
+            'premarketing', 'literature'
+        ]]
+        
+        # Convert categorical columns
+        categorical_cols = [
+            'caseversion', 'sex', 'quarter', 'i_f_cod', 'rept_cod',
+            'occp_cod', 'e_sub', 'age_grp', 'occr_country',
+            'reporter_country'
+        ]
+        for col in categorical_cols:
+            if col in demo.columns:
+                demo[col] = demo[col].astype('category')
+            if col in demo_supp.columns:
+                demo_supp[col] = demo_supp[col].astype('category')
+        
+        return demo, demo_supp
