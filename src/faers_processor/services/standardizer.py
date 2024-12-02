@@ -15,12 +15,121 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Tuple, Any
+from dataclasses import dataclass, field
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+import dask.dataframe as dd
+from dask.distributed import Client, LocalCluster
+from tabulate import tabulate
+
+@dataclass
+class TableSummary:
+    """Summary statistics for a single FAERS table."""
+    total_rows: int = 0
+    invalid_dates: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    missing_columns: List[str] = field(default_factory=list)
+    parsing_errors: List[str] = field(default_factory=list)
+    processing_time: float = 0.0
+
+@dataclass
+class QuarterSummary:
+    """Summary statistics for a FAERS quarter."""
+    quarter: str
+    demo_summary: TableSummary = field(default_factory=TableSummary)
+    drug_summary: TableSummary = field(default_factory=TableSummary)
+    reac_summary: TableSummary = field(default_factory=TableSummary)
+    processing_time: float = 0.0
+
+class FAERSProcessingSummary:
+    """Tracks and generates summary reports for FAERS data processing."""
+    
+    def __init__(self):
+        self.quarter_summaries: Dict[str, QuarterSummary] = {}
+        
+    def add_quarter_summary(self, quarter: str, summary: QuarterSummary):
+        """Add summary for a processed quarter."""
+        self.quarter_summaries[quarter] = summary
+        
+    def generate_markdown_report(self) -> str:
+        """Generate a detailed markdown report of all processing results."""
+        report = ["# FAERS Processing Summary Report\n"]
+        
+        # Individual quarter summaries
+        report.append("## Quarter-by-Quarter Summary\n")
+        for quarter, summary in sorted(self.quarter_summaries.items()):
+            report.append(f"### Quarter {quarter}\n")
+            
+            # Demographics table
+            demo_data = [
+                ["Total Rows", summary.demo_summary.total_rows],
+                *[f"Invalid {col}", count] 
+                for col, count in summary.demo_summary.invalid_dates.items()
+            ]
+            report.append("#### Demographics\n")
+            report.append(tabulate(demo_data, headers=["Metric", "Value"], 
+                                 tablefmt="pipe"))
+            report.append("\n")
+            
+            # Drug table
+            drug_data = [
+                ["Total Rows", summary.drug_summary.total_rows],
+                ["Parsing Errors", len(summary.drug_summary.parsing_errors)]
+            ]
+            report.append("#### Drug Data\n")
+            report.append(tabulate(drug_data, headers=["Metric", "Value"], 
+                                 tablefmt="pipe"))
+            report.append("\n")
+            
+            # Reaction table
+            reac_data = [
+                ["Total Rows", summary.reac_summary.total_rows],
+                ["Missing Columns", len(summary.reac_summary.missing_columns)]
+            ]
+            report.append("#### Reaction Data\n")
+            report.append(tabulate(reac_data, headers=["Metric", "Value"], 
+                                 tablefmt="pipe"))
+            report.append("\n")
+            
+        # Grand summary by table type
+        report.append("## Grand Summary\n")
+        
+        def table_totals(table_attr: str) -> List[List[Union[str, int]]]:
+            """Calculate totals for a specific table type."""
+            totals = defaultdict(int)
+            for summary in self.quarter_summaries.values():
+                table_summary = getattr(summary, table_attr)
+                totals["Total Rows"] += table_summary.total_rows
+                for date_col, count in table_summary.invalid_dates.items():
+                    totals[f"Invalid {date_col}"] += count
+            return [[k, v] for k, v in totals.items()]
+        
+        # Demographics totals
+        report.append("### Demographics Totals\n")
+        demo_totals = table_totals("demo_summary")
+        report.append(tabulate(demo_totals, headers=["Metric", "Value"], 
+                             tablefmt="pipe"))
+        report.append("\n")
+        
+        # Drug totals
+        report.append("### Drug Data Totals\n")
+        drug_totals = table_totals("drug_summary")
+        report.append(tabulate(drug_totals, headers=["Metric", "Value"], 
+                             tablefmt="pipe"))
+        report.append("\n")
+        
+        # Reaction totals
+        report.append("### Reaction Data Totals\n")
+        reac_totals = table_totals("reac_summary")
+        report.append(tabulate(reac_totals, headers=["Metric", "Value"], 
+                             tablefmt="pipe"))
+        report.append("\n")
+        
+        return "\n".join(report)
 
 class DataStandardizer:
     """Standardizes FAERS data fields."""
@@ -1906,3 +2015,100 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
             return pd.DataFrame()  # Return empty DataFrame on failure
+
+    def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
+        """Process all FAERS quarters with summary reporting.
+        
+        Args:
+            quarters_dir: Directory containing FAERS quarter data
+            parallel: If True, process quarters in parallel using dask
+            n_workers: Number of worker processes for parallel processing
+        
+        Returns:
+            Markdown formatted summary report
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Initialize summary
+        summary = FAERSProcessingSummary()
+        
+        # Get list of quarters
+        quarters = sorted([d for d in quarters_dir.iterdir() if d.is_dir()])
+        
+        def process_quarter(quarter_dir: Path) -> Tuple[str, QuarterSummary]:
+            """Process a single quarter."""
+            quarter_name = quarter_dir.name
+            quarter_summary = QuarterSummary(quarter=quarter_name)
+            start_time = time.time()
+            
+            try:
+                # Process demographics
+                demo_file = next(quarter_dir.glob("**/DEMO*.txt"))
+                demo_start = time.time()
+                demo_df = pd.read_csv(demo_file, low_memory=False)
+                demo_df = self.standardize_dates(demo_df)
+                quarter_summary.demo_summary.total_rows = len(demo_df)
+                quarter_summary.demo_summary.processing_time = time.time() - demo_start
+                
+                # Get invalid date counts
+                for col in ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']:
+                    if col in demo_df.columns:
+                        invalid_count = demo_df[col].isna().sum()
+                        quarter_summary.demo_summary.invalid_dates[col] = invalid_count
+                
+                # Process drug data
+                drug_file = next(quarter_dir.glob("**/DRUG*.txt"))
+                drug_start = time.time()
+                try:
+                    drug_df = self.process_drug_file(drug_file)
+                    quarter_summary.drug_summary.total_rows = len(drug_df)
+                except Exception as e:
+                    quarter_summary.drug_summary.parsing_errors.append(str(e))
+                quarter_summary.drug_summary.processing_time = time.time() - drug_start
+                
+                # Process reaction data
+                reac_file = next(quarter_dir.glob("**/REAC*.txt"))
+                reac_start = time.time()
+                reac_df = pd.read_csv(reac_file, low_memory=False)
+                quarter_summary.reac_summary.total_rows = len(reac_df)
+                quarter_summary.reac_summary.processing_time = time.time() - reac_start
+                
+            except Exception as e:
+                logging.error(f"Error processing quarter {quarter_name}: {str(e)}")
+                
+            quarter_summary.processing_time = time.time() - start_time
+            return quarter_name, quarter_summary
+        
+        if parallel:
+            # Setup dask cluster
+            if n_workers is None:
+                n_workers = os.cpu_count() // 2  # Use half of available cores
+            cluster = LocalCluster(n_workers=n_workers)
+            client = Client(cluster)
+            
+            try:
+                # Convert process_quarter to dask computation
+                futures = []
+                for quarter_dir in tqdm(quarters, desc="Submitting quarters"):
+                    future = client.submit(process_quarter, quarter_dir)
+                    futures.append(future)
+                
+                # Collect results
+                for future in tqdm(as_completed(futures), total=len(futures), 
+                                 desc="Processing quarters"):
+                    quarter_name, quarter_summary = future.result()
+                    summary.add_quarter_summary(quarter_name, quarter_summary)
+                    
+            finally:
+                client.close()
+                cluster.close()
+                
+        else:
+            # Process sequentially
+            for quarter_dir in tqdm(quarters, desc="Processing quarters"):
+                quarter_name, quarter_summary = process_quarter(quarter_dir)
+                summary.add_quarter_summary(quarter_name, quarter_summary)
+        
+        # Generate and return report
+        return summary.generate_markdown_report()
