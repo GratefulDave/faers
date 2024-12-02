@@ -31,6 +31,68 @@ class FAERSProcessor:
         self.standardizer = standardizer
         self.use_dask = use_dask
 
+    def process_all(self, input_dir: Path, output_dir: Path) -> None:
+        """Process all quarters in the input directory.
+        
+        Args:
+            input_dir: Directory containing quarter subdirectories
+            output_dir: Directory to save processed files
+        """
+        # Find all quarter directories
+        quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name)]
+        
+        if not quarter_dirs:
+            logging.error(f"No quarter directories found in {input_dir}")
+            return
+            
+        logging.info(f"Found {len(quarter_dirs)} quarters to process")
+        
+        if self.use_dask:
+            import dask.bag as db
+            from distributed import get_client
+            
+            # Get the dask client
+            client = get_client()
+            
+            # Create a dask bag from quarter directories
+            quarters_bag = db.from_sequence(quarter_dirs)
+            
+            # Process quarters in parallel
+            results = quarters_bag.map(lambda d: self.process_quarter(d)).compute()
+            
+            # Combine results
+            all_results = {}
+            for quarter_result in results:
+                for data_type, df in quarter_result.items():
+                    if data_type not in all_results:
+                        all_results[data_type] = []
+                    all_results[data_type].append(df)
+            
+            # Concatenate and save results
+            for data_type, dfs in all_results.items():
+                if dfs:
+                    combined_df = pd.concat(dfs, ignore_index=True)
+                    output_file = output_dir / f"combined_{data_type}.txt"
+                    combined_df.to_csv(output_file, sep='$', index=False)
+                    logging.info(f"Saved combined {data_type} data to {output_file}")
+        else:
+            # Sequential processing
+            for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
+                try:
+                    results = self.process_quarter(quarter_dir)
+                    
+                    # Save results for this quarter
+                    quarter = quarter_dir.name
+                    for data_type, df in results.items():
+                        if not df.empty:
+                            output_file = output_dir / f"{quarter}_{data_type}.txt"
+                            df.to_csv(output_file, sep='$', index=False)
+                            logging.info(f"Saved {data_type} data for {quarter} to {output_file}")
+                            
+                except Exception as e:
+                    logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
+                    continue
+
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
         """Process a single quarter's worth of FAERS data.
         
@@ -43,6 +105,10 @@ class FAERSProcessor:
         results = {}
         ascii_dir = quarter_dir / 'ascii'
         
+        if not ascii_dir.exists():
+            logging.error(f"ASCII directory not found in {quarter_dir}")
+            return results
+        
         # Find relevant files (case-insensitive)
         demo_file = next((f for f in ascii_dir.glob('[Dd][Ee][Mm][Oo]*.[Tt][Xx][Tt]')), None)
         drug_file = next((f for f in ascii_dir.glob('[Dd][Rr][Uu][Gg]*.[Tt][Xx][Tt]')), None)
@@ -53,26 +119,54 @@ class FAERSProcessor:
             return results
             
         try:
-            # Process demographics
-            logging.info(f"Processing demographics from {demo_file}")
-            demo_df = self.process_file(demo_file, 'demographics')
-            if not demo_df.empty:
-                demo_df = self.standardizer.standardize_demographics(demo_df)
-                results['demographics'] = demo_df
-            
-            # Process drugs
-            logging.info(f"Processing drugs from {drug_file}")
-            drug_df = self.process_file(drug_file, 'drugs')
-            if not drug_df.empty:
-                drug_df = self.standardizer.standardize_drugs(drug_df)
-                results['drugs'] = drug_df
-            
-            # Process reactions
-            logging.info(f"Processing reactions from {reac_file}")
-            reac_df = self.process_file(reac_file, 'reactions')
-            if not reac_df.empty:
-                reac_df = self.standardizer.standardize_reactions(reac_df)
-                results['reactions'] = reac_df
+            if self.use_dask:
+                # Process files in parallel using dask
+                import dask.delayed as delayed
+                
+                # Create delayed objects for each file processing task
+                demo_task = delayed(self.process_file)(demo_file, 'demographics')
+                drug_task = delayed(self.process_file)(drug_file, 'drugs')
+                reac_task = delayed(self.process_file)(reac_file, 'reactions')
+                
+                # Compute all tasks in parallel
+                demo_df, drug_df, reac_df = delayed(lambda x, y, z: (x, y, z))(
+                    demo_task, drug_task, reac_task
+                ).compute()
+                
+                # Standardize results
+                if not demo_df.empty:
+                    demo_df = self.standardizer.standardize_demographics(demo_df)
+                    results['demographics'] = demo_df
+                
+                if not drug_df.empty:
+                    drug_df = self.standardizer.standardize_drugs(drug_df)
+                    results['drugs'] = drug_df
+                
+                if not reac_df.empty:
+                    reac_df = self.standardizer.standardize_reactions(reac_df)
+                    results['reactions'] = reac_df
+            else:
+                # Sequential processing
+                # Process demographics
+                logging.info(f"Processing demographics from {demo_file}")
+                demo_df = self.process_file(demo_file, 'demographics')
+                if not demo_df.empty:
+                    demo_df = self.standardizer.standardize_demographics(demo_df)
+                    results['demographics'] = demo_df
+                
+                # Process drugs
+                logging.info(f"Processing drugs from {drug_file}")
+                drug_df = self.process_file(drug_file, 'drugs')
+                if not drug_df.empty:
+                    drug_df = self.standardizer.standardize_drugs(drug_df)
+                    results['drugs'] = drug_df
+                
+                # Process reactions
+                logging.info(f"Processing reactions from {reac_file}")
+                reac_df = self.process_file(reac_file, 'reactions')
+                if not reac_df.empty:
+                    reac_df = self.standardizer.standardize_reactions(reac_df)
+                    results['reactions'] = reac_df
                 
         except Exception as e:
             logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
@@ -146,44 +240,6 @@ class FAERSProcessor:
                 
             except Exception as e:
                 logging.error(f"Error merging {data_type}: {str(e)}")
-
-    def process_all(self, input_dir: Path, output_dir: Path) -> None:
-        """Process all FAERS quarters and merge results.
-        
-        Args:
-            input_dir: Directory containing raw FAERS data
-            output_dir: Directory to save processed files
-        """
-        # Create output directory if needed
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Find all quarter directories
-        quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}q[1-4]', d.name)]
-        quarter_dirs.sort()  # Process in chronological order
-        
-        logging.info(f"Found {len(quarter_dirs)} quarters to process")
-        
-        # Process each quarter
-        for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
-            try:
-                quarter_results = self.process_quarter(quarter_dir)
-                
-                if not quarter_results:
-                    logging.warning(f"No results for quarter {quarter_dir}")
-                    continue
-                
-                # Save quarterly results
-                quarter_prefix = quarter_dir.name
-                for data_type, df in quarter_results.items():
-                    output_file = output_dir / f"{quarter_prefix}_{data_type}.txt"
-                    df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
-                    logging.info(f"Saved {data_type} to {output_file}")
-                
-            except Exception as e:
-                logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
-        
-        # Merge all quarters
-        self.merge_quarters(output_dir)
 
     def _fix_known_data_issues(self, file_path: Path, content: str) -> str:
         """Fix known data formatting issues in specific FAERS files.
