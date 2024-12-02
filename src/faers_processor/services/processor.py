@@ -2,7 +2,7 @@
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -99,42 +99,78 @@ class FAERSProcessor:
                     logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
                     continue
 
-    def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
-        """Process a single quarter directory.
+    def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
+        """Find the ASCII directory using multiple search strategies."""
+        # Common ASCII directory names
+        ascii_names = ['ascii', 'ASCII', 'Ascii']
         
-        Args:
-            quarter_dir: Path to quarter directory
-        """
+        # Strategy 1: Direct subdirectory
+        for name in ascii_names:
+            ascii_dir = quarter_dir / name
+            if ascii_dir.is_dir():
+                return ascii_dir
+        
+        # Strategy 2: Case-insensitive search in immediate subdirectories
+        for subdir in quarter_dir.iterdir():
+            if subdir.is_dir() and 'ascii' in subdir.name.lower():
+                return subdir
+        
+        # Strategy 3: Look for .txt files directly in quarter directory
+        txt_files = list(quarter_dir.glob('*.txt'))
+        if txt_files:
+            return quarter_dir
+            
+        # Strategy 4: Search one level deeper
+        for subdir in quarter_dir.iterdir():
+            if not subdir.is_dir():
+                continue
+            # Check for ASCII subdirectory
+            for name in ascii_names:
+                ascii_dir = subdir / name
+                if ascii_dir.is_dir():
+                    return ascii_dir
+            # Check for .txt files
+            txt_files = list(subdir.glob('*.txt'))
+            if txt_files:
+                return subdir
+        
+        return None
+
+    def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
+        """Process a single quarter directory."""
         results = {}
         
         try:
-            # Find ASCII directory (case-insensitive)
-            ascii_dir = None
-            for subdir in quarter_dir.iterdir():
-                if subdir.is_dir() and 'ascii' in subdir.name.lower():
-                    ascii_dir = subdir
-                    break
+            # Find ASCII directory using multiple strategies
+            ascii_dir = self._find_ascii_directory(quarter_dir)
             
             if not ascii_dir:
                 logging.error(f"No valid ASCII directory found in {quarter_dir}")
+                logging.info(f"Searched in: {[d.name for d in quarter_dir.iterdir() if d.is_dir()]}")
                 return results
                 
+            logging.info(f"Found ASCII directory: {ascii_dir}")
+            
             # Find required files (case-insensitive)
             demo_file = None
             drug_file = None
             reac_file = None
             
-            for file in ascii_dir.iterdir():
-                if not file.is_file() or not file.name.lower().endswith('.txt'):
+            # Look for files in ASCII directory and its subdirectories
+            for file in ascii_dir.rglob('*.txt'):
+                if not file.is_file():
                     continue
                     
                 name_lower = file.name.lower()
-                if 'demo' in name_lower and name_lower.endswith('.txt'):
+                if 'demo' in name_lower:
                     demo_file = file
-                elif 'drug' in name_lower and name_lower.endswith('.txt'):
+                    logging.info(f"Found demographics file: {file}")
+                elif 'drug' in name_lower:
                     drug_file = file
-                elif 'reac' in name_lower and name_lower.endswith('.txt'):
+                    logging.info(f"Found drug file: {file}")
+                elif 'reac' in name_lower:
                     reac_file = file
+                    logging.info(f"Found reactions file: {file}")
             
             # Check if all required files are found
             missing_files = []
@@ -146,7 +182,8 @@ class FAERSProcessor:
                 missing_files.append('reactions')
                 
             if missing_files:
-                logging.error(f"Missing files in {quarter_dir}: {', '.join(missing_files)}")
+                logging.error(f"Missing files in {ascii_dir}: {', '.join(missing_files)}")
+                logging.info(f"Found files: {[f.name for f in ascii_dir.rglob('*.txt')]}")
                 return results
             
             # Process each file type
