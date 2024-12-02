@@ -103,12 +103,6 @@ class FAERSProcessor:
                     quarter_dir = futures[future]
                     quarter = quarter_dir.name
                     try:
-                        if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
-                            results['skipped'].append(quarter)
-                            pbar.update(1)
-                            pbar.set_postfix({"quarter": quarter, "status": "skipped"}, refresh=True)
-                            continue
-                            
                         results_dict = future.result()
                         
                         # Add quarter column and append to all_data
@@ -131,12 +125,6 @@ class FAERSProcessor:
             for quarter_dir in quarter_dirs:
                 quarter = quarter_dir.name
                 try:
-                    if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
-                        results['skipped'].append(quarter)
-                        pbar.update(1)
-                        pbar.set_postfix({"quarter": quarter, "status": "skipped"}, refresh=True)
-                        continue
-                    
                     results_dict = self.process_quarter(quarter_dir)
                     
                     # Add quarter column and append to all_data
@@ -277,78 +265,56 @@ class FAERSProcessor:
 
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
         """Process a single quarter directory."""
-        results = {}
+        quarter_dir = self._normalize_quarter_path(quarter_dir)
+        ascii_dir = self._find_ascii_directory(quarter_dir)
         
-        try:
-            # Find ASCII directory - simple and direct
-            ascii_dir = self._find_ascii_directory(quarter_dir)
+        if not ascii_dir:
+            raise ValueError(f"No ASCII directory found in {quarter_dir}")
             
-            if not ascii_dir:
-                logging.error(f"No ASCII directory found in {quarter_dir}")
-                return results
+        logging.info(f"Processing quarter directory: {quarter_dir}")
+        logging.info(f"Using ASCII directory: {ascii_dir}")
+        
+        # Initialize results dictionary
+        results = {
+            'demographics': pd.DataFrame(),
+            'drugs': pd.DataFrame(),
+            'reactions': pd.DataFrame()
+        }
+        
+        # Process each file type
+        file_types = {
+            'DEMO': ('demographics', ['demo', 'demog']),
+            'DRUG': ('drugs', ['drug']),
+            'REAC': ('reactions', ['reac', 'reaction'])
+        }
+        
+        for base_name, (data_type, patterns) in file_types.items():
+            try:
+                # Find matching files
+                matched_files = []
+                for pattern in patterns:
+                    matched_files.extend(ascii_dir.glob(f'*{pattern}*.txt'))
                 
-            logging.info(f"Found ASCII directory: {ascii_dir}")
-            
-            # Find required files (case-insensitive)
-            demo_file = None
-            drug_file = None
-            reac_file = None
-            
-            # Look for files in ASCII directory
-            for file in ascii_dir.iterdir():
-                if not file.is_file():
+                if not matched_files:
+                    logging.warning(f"No {data_type} files found in {ascii_dir}")
                     continue
                     
-                name_lower = file.name.lower()
-                if name_lower.endswith('.txt'):
-                    if 'demo' in name_lower:
-                        demo_file = file
-                        logging.info(f"Found demographics file: {file}")
-                    elif 'drug' in name_lower:
-                        drug_file = file
-                        logging.info(f"Found drug file: {file}")
-                    elif 'reac' in name_lower:
-                        reac_file = file
-                        logging.info(f"Found reactions file: {file}")
-            
-            # Log what we found
-            logging.info(f"Files in {ascii_dir}:")
-            for file in ascii_dir.iterdir():
-                if file.is_file():
-                    logging.info(f"  - {file.name}")
-            
-            # Check if all required files are found
-            missing_files = []
-            if not demo_file:
-                missing_files.append('demographics')
-            if not drug_file:
-                missing_files.append('drugs')
-            if not reac_file:
-                missing_files.append('reactions')
+                # Use the first matching file
+                file_path = matched_files[0]
+                logging.info(f"Processing {data_type} file: {file_path}")
                 
-            if missing_files:
-                logging.error(f"Missing files in {ascii_dir}: {', '.join(missing_files)}")
-                return results
-            
-            # Process each file type
-            logging.info(f"Processing demographics from {demo_file}")
-            demo_df = self.process_file(demo_file, 'demographics')
-            if not demo_df.empty:
-                results['demographics'] = demo_df
-            
-            logging.info(f"Processing drugs from {drug_file}")
-            drug_df = self.process_file(drug_file, 'drugs')
-            if not drug_df.empty:
-                results['drugs'] = drug_df
-            
-            logging.info(f"Processing reactions from {reac_file}")
-            reac_df = self.process_file(reac_file, 'reactions')
-            if not reac_df.empty:
-                results['reactions'] = reac_df
-                
-        except Exception as e:
-            logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
-            
+                # Process the file
+                df = self.process_file(file_path, data_type)
+                if not df.empty:
+                    results[data_type] = df
+                    logging.info(f"Successfully processed {data_type} file. Shape: {df.shape}")
+                else:
+                    logging.warning(f"Empty DataFrame returned for {data_type}")
+                    
+            except Exception as e:
+                logging.error(f"Error processing {data_type} in {quarter_dir}: {str(e)}")
+                raise
+        
         return results
 
     def _fix_known_data_issues(self, file_path: Path, content: str) -> str:
