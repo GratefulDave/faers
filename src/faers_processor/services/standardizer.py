@@ -1819,25 +1819,24 @@ class DataStandardizer:
         """Process drug file exactly as in R script."""
         # Read drug file with exact column names from R script
         drug_cols = {
-            'primaryid': np.int64,
-            'caseid': np.int64,
-            'drug_seq': np.int64,
-            'role_cod': str,
-            'drugname': str,
-            'val_vbm': str,
-            'route': str,
-            'dose_vbm': str,
-            'cum_dose_chr': str,
-            'cum_dose_unit': str,
-            'dechal': str,
-            'rechal': str,
-            'lot_num': str,
-            'exp_dt': str,
-            'nda_num': str,
-            'dose_amt': str,
-            'dose_unit': str,
-            'dose_form': str,
-            'dose_freq': str,
+            'ISR': np.int64,
+            'DRUG_SEQ': np.int64,
+            'ROLE_COD': str,
+            'DRUGNAME': str,
+            'VAL_VBM': str,
+            'ROUTE': str,
+            'DOSE_VBM': str,
+            'CUM_DOSE_CHR': str,
+            'CUM_DOSE_UNIT': str,
+            'DECHAL': str,
+            'RECHAL': str,
+            'LOT_NUM': str,
+            'EXP_DT': str,
+            'NDA_NUM': str,
+            'DOSE_AMT': str,
+            'DOSE_UNIT': str,
+            'DOSE_FORM': str,
+            'DOSE_FREQ': str,
         }
         
         try:
@@ -1857,6 +1856,13 @@ class DataStandardizer:
             
             # Convert empty strings to NA
             df = df.replace('', pd.NA)
+            
+            # Rename columns to lowercase to match rest of processing
+            df.columns = df.columns.str.lower()
+            
+            # Map ISR to primaryid and add caseid
+            df = df.rename(columns={'isr': 'primaryid'})
+            df['caseid'] = df['primaryid']
             
             # Add quarter information
             df['quarter'] = quarter
