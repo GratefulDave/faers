@@ -125,15 +125,15 @@ class FAERSProcessor:
             reac_file = None
             
             for file in ascii_dir.iterdir():
-                if not file.is_file():
+                if not file.is_file() or not file.name.lower().endswith('.txt'):
                     continue
                     
                 name_lower = file.name.lower()
-                if 'demo' in name_lower:
+                if 'demo' in name_lower and name_lower.endswith('.txt'):
                     demo_file = file
-                elif 'drug' in name_lower:
+                elif 'drug' in name_lower and name_lower.endswith('.txt'):
                     drug_file = file
-                elif 'reac' in name_lower:
+                elif 'reac' in name_lower and name_lower.endswith('.txt'):
                     reac_file = file
             
             # Check if all required files are found
@@ -337,68 +337,51 @@ class FAERSProcessor:
             chunks = []
             total_chunks = 0
             
-            try:
-                # Read and process in chunks
-                for chunk in pd.read_csv(
-                    file_path,
-                    sep='$',
-                    dtype=str,  # Read all columns as strings
-                    na_values=['', 'NA', 'NULL'],
-                    keep_default_na=True,
-                    header=0,
-                    chunksize=chunk_size,
-                    low_memory=False,
-                    encoding='utf-8'
-                ):
-                    # Process each chunk immediately
-                    processed_chunk = self._process_dataframe(chunk, data_type)
-                    if not processed_chunk.empty:
-                        chunks.append(processed_chunk)
-                        total_chunks += 1
-                        
-                    # Log progress
-                    if total_chunks % 10 == 0:
-                        logging.info(f"Processed {total_chunks} chunks from {file_path}")
-                
-                if chunks:
-                    # Combine processed chunks
-                    return pd.concat(chunks, ignore_index=True)
-                return pd.DataFrame()
-                
-            except Exception as e:
-                logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
-                
-                # Manual fix attempt
+            # Try different encodings
+            encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']
+            last_error = None
+            
+            for encoding in encodings:
                 try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    fixed_content = self._fix_known_data_issues(file_path, content)
-                    chunks = []
-                    
-                    # Process fixed content in chunks
+                    # Read and process in chunks
                     for chunk in pd.read_csv(
-                        io.StringIO(fixed_content),
+                        file_path,
                         sep='$',
                         dtype=str,  # Read all columns as strings
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True,
                         header=0,
                         chunksize=chunk_size,
-                        low_memory=False
+                        low_memory=False,
+                        encoding=encoding,
+                        on_bad_lines='warn'  # More permissive line parsing
                     ):
+                        # Process each chunk immediately
                         processed_chunk = self._process_dataframe(chunk, data_type)
                         if not processed_chunk.empty:
                             chunks.append(processed_chunk)
+                            total_chunks += 1
+                            
+                        # Log progress
+                        if total_chunks % 10 == 0:
+                            logging.info(f"Processed {total_chunks} chunks from {file_path}")
                     
-                    if chunks:
-                        return pd.concat(chunks, ignore_index=True)
-                    return pd.DataFrame()
+                    # If we get here, reading succeeded
+                    break
                     
-                except Exception as e2:
-                    logging.error(f"Failed to process {file_path} even after fixes: {str(e2)}")
-                    return pd.DataFrame()
-        
+                except Exception as e:
+                    last_error = e
+                    logging.warning(f"Failed to read with {encoding} encoding: {str(e)}")
+                    continue
+            
+            if chunks:
+                # Combine processed chunks
+                return pd.concat(chunks, ignore_index=True)
+            
+            if last_error:
+                logging.error(f"Failed to process {file_path} with any encoding: {str(last_error)}")
+            return pd.DataFrame()
+                
         except Exception as e:
             logging.error(f"Error processing file {file_path}: {str(e)}")
             return pd.DataFrame()
