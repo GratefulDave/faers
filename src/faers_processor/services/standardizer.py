@@ -606,7 +606,49 @@ class DataStandardizer:
             DataFrame with standardized sex values
         """
         df = df.copy()
+        
+        # Handle column name variations (both upper and lower case)
+        sex_cols = ['sex', 'SEX', 'gndr_cod']
+        for col in sex_cols:
+            if col in df.columns:
+                df = df.rename(columns={col: 'sex'})
+                break
+        
+        if 'sex' not in df.columns:
+            logging.warning("Sex column not found in DataFrame")
+            return df
+        
+        # Convert to string and uppercase for standardization
+        df['sex'] = df['sex'].astype(str).str.upper()
+        
+        # Map values
+        sex_map = {
+            'M': 'M',     # Male
+            'F': 'F',     # Female
+            'U': pd.NA,   # Unknown
+            'UNK': pd.NA, # Unknown
+            'NS': pd.NA,  # Not Specified
+            'NAN': pd.NA, # Missing
+            'NA': pd.NA,  # Missing
+            'NR': pd.NA,  # Not Reported
+            'UNKNOWN': pd.NA # Unknown
+        }
+        
+        # Apply mapping and set non-mapped values to NA
+        df['sex'] = df['sex'].map(sex_map)
         df.loc[~df['sex'].isin(['F', 'M']), 'sex'] = pd.NA
+        
+        # Log distribution
+        sex_dist = df['sex'].value_counts(dropna=False)
+        total = len(df)
+        logging.info("Sex distribution:")
+        for sex, count in sex_dist.items():
+            percent = round(100 * count / total, 2)
+            logging.info(f"  {sex if pd.notna(sex) else 'Unknown'}: {count} ({percent}%)")
+        
+        # Convert to category
+        df['sex'] = df['sex'].astype('category')
+        
         return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
