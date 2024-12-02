@@ -180,6 +180,70 @@ class FAERSProcessor:
         # Merge all quarters
         self.merge_quarters(output_dir)
 
+    def _fix_known_data_issues(self, file_path: Path, content: str) -> str:
+        """Fix known data formatting issues in specific FAERS files.
+        
+        Args:
+            file_path: Path to the file being processed
+            content: Current content of the file
+            
+        Returns:
+            Fixed content with proper line breaks
+        """
+        # Known problematic files and their fixes
+        known_issues = {
+            "DRUG11Q2.TXT": (322966, "$$$$$$7475791"),
+            "DRUG11Q3.TXT": (247895, "$$$$$$7652730"),
+            "DRUG11Q4.TXT": (446737, "021487$7941354"),
+            "DEMO12Q1.TXT": (105916, None)  # Will handle generically if no specific pattern
+        }
+        
+        filename = os.path.basename(file_path)
+        if filename.upper() in known_issues:
+            problem_line, pattern = known_issues[filename.upper()]
+            
+            # Split content into lines
+            lines = content.splitlines()
+            
+            # If we have a specific pattern to fix
+            if pattern:
+                if len(lines) > problem_line:
+                    # Find the problematic line
+                    if pattern in lines[problem_line]:
+                        # Split the line properly
+                        parts = lines[problem_line].split(pattern)
+                        if len(parts) == 2:
+                            lines[problem_line] = parts[0] + pattern + "\n" + parts[1]
+                            
+            # For generic field count issues
+            else:
+                if len(lines) > problem_line:
+                    fields = lines[problem_line].split("$")
+                    if len(fields) > 13:  # Expected number of fields
+                        # Try to split at logical boundaries
+                        new_lines = []
+                        current_line = []
+                        field_count = 0
+                        
+                        for field in fields:
+                            current_line.append(field)
+                            field_count += 1
+                            
+                            if field_count == 13:  # Expected number of fields
+                                new_lines.append("$".join(current_line))
+                                current_line = []
+                                field_count = 0
+                                
+                        if current_line:
+                            new_lines.append("$".join(current_line))
+                            
+                        lines[problem_line:problem_line+1] = new_lines
+            
+            # Rejoin the lines
+            content = "\n".join(lines)
+            
+        return content
+
     def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
         """Process a single FAERS file.
         
@@ -196,6 +260,13 @@ class FAERSProcessor:
             if not file_path.exists():
                 logging.error(f"File does not exist: {file_path}")
                 return pd.DataFrame()
+            
+            # Read the file content
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            # Fix known data issues
+            content = self._fix_known_data_issues(file_path, content)
             
             # Define expected columns based on data type (matching R script column names)
             expected_columns = {
@@ -229,85 +300,70 @@ class FAERSProcessor:
                 }
             }
             
-            # Read file with pandas
-            try:
-                # Read file with $ delimiter and first row as header
-                try:
-                    df = pd.read_csv(
-                        file_path,
-                        sep='$',
-                        dtype=str,
-                        na_values=['', 'NA', 'NULL'],
-                        keep_default_na=True,
-                        header=0,
-                        low_memory=False,
-                        encoding='utf-8'
-                    )
-                    logging.debug(f"File {file_path.name}")
-                    logging.debug(f"Original columns: {df.columns.tolist()}")
-                except UnicodeDecodeError:
-                    # If UTF-8 fails, try with latin1 encoding
-                    df = pd.read_csv(
-                        file_path,
-                        sep='$',
-                        dtype=str,
-                        na_values=['', 'NA', 'NULL'],
-                        keep_default_na=True,
-                        header=0,
-                        low_memory=False,
-                        encoding='latin1'
-                    )
-                    logging.debug(f"File {file_path.name} (latin1)")
-                    logging.debug(f"Original columns: {df.columns.tolist()}")
-                
-                # Rename columns according to mapping
-                if data_type in column_mapping:
-                    logging.debug(f"Before mapping: {df.columns.tolist()}")
-                    df = df.rename(columns=column_mapping[data_type])
-                    logging.debug(f"After mapping: {df.columns.tolist()}")
-                    logging.debug(f"Has 'drugname': {'drugname' in df.columns}")
-                
-                # Convert numeric columns
-                if 'primaryid' in df.columns:
-                    df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
-                if data_type == 'demographics':
-                    if 'caseid' in df.columns:
-                        df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
-                    if 'age' in df.columns:
-                        df['age'] = pd.to_numeric(df['age'], errors='coerce')
-                elif data_type == 'drugs' and 'drug_seq' in df.columns:
-                    df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
-                
-                # Process based on data type
-                if data_type == 'demographics':
-                    result = self.standardizer.process_demographics(df)
-                elif data_type == 'drugs':
-                    # First clean and standardize drug names (like R script)
-                    drugname_col = 'DRUGNAME' if 'DRUGNAME' in df.columns else 'drugname'
-                    if drugname_col in df.columns:
-                        df[drugname_col] = df[drugname_col].str.lower().str.strip()
-                        df[drugname_col] = df[drugname_col].str.replace(r'\s+', ' ', regex=True)
-                        df[drugname_col] = df[drugname_col].str.replace(r'\.$', '', regex=True)
-                        df[drugname_col] = df[drugname_col].str.replace(r'\( ', '(', regex=True)
-                        df[drugname_col] = df[drugname_col].str.replace(r' \)', ')', regex=True)
-                        # Rename to lowercase after cleaning if needed
-                        if drugname_col == 'DRUGNAME':
-                            df = df.rename(columns={'DRUGNAME': 'drugname'})
-                    else:
-                        logging.error(f"Required column '{drugname_col}' not found in columns: {df.columns.tolist()}")
-                        return pd.DataFrame()
-                    
-                    # Then process through standardizer
-                    result = self.standardizer.process_drugs(df)
-                else:  # reactions
-                    result = self.standardizer.process_reactions(df)
-
-                return result
-                
-            except Exception as e:
-                logging.error(f"Error processing file {file_path}: {str(e)}")
+            # Process the fixed content
+            lines = content.splitlines()
+            if not lines:
                 return pd.DataFrame()
+                
+            # Extract header
+            header = lines[0].strip().split('$')
+            
+            # Process data lines
+            data = []
+            for line in lines[1:]:
+                if line.strip():
+                    fields = line.strip().split('$')
+                    # Pad or truncate fields to match header length
+                    if len(fields) > len(header):
+                        fields = fields[:len(header)]
+                    elif len(fields) < len(header):
+                        fields.extend([''] * (len(header) - len(fields)))
+                    data.append(fields)
+            
+            # Create DataFrame
+            df = pd.DataFrame(data, columns=header)
+            
+            # Rename columns according to mapping
+            if data_type in column_mapping:
+                df = df.rename(columns=column_mapping[data_type])
+            
+            # Convert numeric columns
+            if 'primaryid' in df.columns:
+                df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
+            if data_type == 'demographics':
+                if 'caseid' in df.columns:
+                    df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
+                if 'age' in df.columns:
+                    df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            elif data_type == 'drugs' and 'drug_seq' in df.columns:
+                df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
+            
+            # Process based on data type
+            if data_type == 'demographics':
+                result = self.standardizer.process_demographics(df)
+            elif data_type == 'drugs':
+                # First clean and standardize drug names (like R script)
+                drugname_col = 'DRUGNAME' if 'DRUGNAME' in df.columns else 'drugname'
+                if drugname_col in df.columns:
+                    df[drugname_col] = df[drugname_col].str.lower().str.strip()
+                    df[drugname_col] = df[drugname_col].str.replace(r'\s+', ' ', regex=True)
+                    df[drugname_col] = df[drugname_col].str.replace(r'\.$', '', regex=True)
+                    df[drugname_col] = df[drugname_col].str.replace(r'\( ', '(', regex=True)
+                    df[drugname_col] = df[drugname_col].str.replace(r' \)', ')', regex=True)
+                    # Rename to lowercase after cleaning if needed
+                    if drugname_col == 'DRUGNAME':
+                        df = df.rename(columns={'DRUGNAME': 'drugname'})
+                else:
+                    logging.error(f"Required column '{drugname_col}' not found in columns: {df.columns.tolist()}")
+                    return pd.DataFrame()
+                
+                # Then process through standardizer
+                result = self.standardizer.process_drugs(df)
+            else:  # reactions
+                result = self.standardizer.process_reactions(df)
 
+            return result
+            
         except Exception as e:
             logging.error(f"Error processing file {file_path}: {str(e)}")
             return pd.DataFrame()
