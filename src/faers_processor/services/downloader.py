@@ -111,23 +111,42 @@ class FAERSDownloader(DataDownloader):
             total_size = int(response.headers.get('content-length', 0))
             block_size = 8192
 
-            with open(zip_path, 'wb') as f:
-                with tqdm(
-                        total=total_size,
-                        unit='iB',
-                        unit_scale=True,
-                        desc=f"Downloading {quarter}"
-                ) as pbar:
-                    for data in response.iter_content(block_size):
-                        size = f.write(data)
-                        pbar.update(size)
+            # Only download if file doesn't exist or is incomplete
+            if not zip_path.exists() or zip_path.stat().st_size != total_size:
+                logging.info(f"Downloading {quarter} to {zip_path}")
+                with open(zip_path, 'wb') as f:
+                    with tqdm(
+                            total=total_size,
+                            unit='iB',
+                            unit_scale=True,
+                            desc=f"Downloading {quarter}"
+                    ) as pbar:
+                        for data in response.iter_content(block_size):
+                            size = f.write(data)
+                            pbar.update(size)
+            else:
+                logging.info(f"Zip file for {quarter} already exists and is complete")
+
+            # Check if files are already extracted
+            ascii_dir = quarter_dir / 'ASCII'
+            if not ascii_dir.exists():
+                ascii_dir = quarter_dir / 'ascii'
+            
+            if ascii_dir.exists() and any(ascii_dir.iterdir()):
+                logging.info(f"Files for {quarter} already extracted in {ascii_dir}")
+                return
 
             # Extract files
+            logging.info(f"Extracting {zip_path} to {quarter_dir}")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(quarter_dir)
 
-            # Clean up zip file
-            zip_path.unlink()
+            # Only delete zip file if extraction was successful
+            if ascii_dir.exists() and any(ascii_dir.iterdir()):
+                logging.info(f"Extraction successful, removing {zip_path}")
+                zip_path.unlink()
+            else:
+                logging.error(f"Extraction may have failed - keeping {zip_path}")
 
             # Handle special case for 2018Q1
             demo_file = quarter_dir / 'ascii' / 'DEMO18Q1_new.txt'
@@ -135,7 +154,8 @@ class FAERSDownloader(DataDownloader):
                 demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
 
         except Exception as e:
-            logging.error(f"Error downloading {quarter}: {str(e)}")
+            logging.error(f"Error downloading/extracting {quarter}: {str(e)}")
+            # Don't delete zip file on error
             raise
 
     async def __aenter__(self):
@@ -244,6 +264,14 @@ class FAERSDownloader(DataDownloader):
                     except Exception as e:
                         logging.error(f"Error downloading quarter {quarter}: {str(e)}")
                     pbar.update(1)
+
+    def download_all(self, max_workers: int = 4) -> None:
+        """Download all available FAERS quarters.
+        
+        Args:
+            max_workers: Maximum number of parallel downloads
+        """
+        return self.download_all_quarters(max_workers=max_workers)
 
 
 class FAERSDataDownloader:
