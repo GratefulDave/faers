@@ -50,65 +50,70 @@ class FAERSProcessor:
         
         # Find all quarter directories
         quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
-        results['total_quarters'] = len(quarter_dirs)
+        total_quarters = len(quarter_dirs)
+        results['total_quarters'] = total_quarters
         
         if not quarter_dirs:
             logging.error(f"No quarter directories found in {input_dir}")
             return
             
-        logging.info(f"Found {len(quarter_dirs)} quarters to process")
+        logging.info(f"Found {total_quarters} quarters to process")
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create progress bar for total quarters
+        pbar = tqdm(total=total_quarters, desc="Processing FAERS quarters", 
+                   unit="quarter", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} quarters "
+                   "[{elapsed}<{remaining}, {rate_fmt}]")
         
         if self.use_parallel:
             if max_workers is None:
                 max_workers = max(1, multiprocessing.cpu_count() - 1)
             
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                batch_size = 4
-                total_batches = (len(quarter_dirs) + batch_size - 1) // batch_size
+                # Process all quarters with futures
+                futures = {
+                    executor.submit(self.process_quarter, quarter_dir): quarter_dir 
+                    for quarter_dir in quarter_dirs
+                }
                 
-                for i in range(0, len(quarter_dirs), batch_size):
-                    batch = quarter_dirs[i:i + batch_size]
-                    current_batch = i//batch_size + 1
-                    sys.stdout.write(f"\nBatch {current_batch}/{total_batches} ({len(batch)} quarters)\n")
-                    sys.stdout.flush()
-                    
-                    futures = {executor.submit(self.process_quarter, quarter_dir): quarter_dir for quarter_dir in batch}
-                    
-                    for future in concurrent.futures.as_completed(futures):
-                        quarter_dir = futures[future]
-                        quarter = quarter_dir.name
-                        try:
-                            if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
-                                results['skipped'].append(quarter)
-                                continue
-                                
-                            results_dict = future.result()
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(futures):
+                    quarter_dir = futures[future]
+                    quarter = quarter_dir.name
+                    try:
+                        if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
+                            results['skipped'].append(quarter)
+                            pbar.update(1)
+                            pbar.set_postfix({"quarter": quarter, "status": "skipped"}, refresh=True)
+                            continue
                             
-                            # Save results
-                            for data_type, df in results_dict.items():
-                                if not df.empty:
-                                    output_file = output_dir / f"{quarter}_{data_type}.txt"
-                                    df.to_csv(output_file, sep='$', index=False)
-                            
-                            results['success'].append(quarter)
-                            progress = len(results['success']) + len(results['failed'])
-                            sys.stdout.write(f"\rProgress: {progress}/{results['total_quarters']} - Current: {quarter}")
-                            sys.stdout.flush()
-                            
-                        except Exception as e:
-                            results['failed'].append((quarter, str(e)))
-                            logging.error(f"Error processing {quarter}: {str(e)}")
+                        results_dict = future.result()
+                        
+                        # Save results
+                        for data_type, df in results_dict.items():
+                            if not df.empty:
+                                output_file = output_dir / f"{quarter}_{data_type}.txt"
+                                df.to_csv(output_file, sep='$', index=False)
+                        
+                        results['success'].append(quarter)
+                        pbar.update(1)
+                        pbar.set_postfix({"quarter": quarter, "status": "success"}, refresh=True)
+                        
+                    except Exception as e:
+                        results['failed'].append((quarter, str(e)))
+                        logging.error(f"Error processing {quarter}: {str(e)}")
+                        pbar.update(1)
+                        pbar.set_postfix({"quarter": quarter, "status": "failed"}, refresh=True)
         else:
+            # Sequential processing
             for quarter_dir in quarter_dirs:
                 quarter = quarter_dir.name
                 try:
                     if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
                         results['skipped'].append(quarter)
+                        pbar.update(1)
+                        pbar.set_postfix({"quarter": quarter, "status": "skipped"}, refresh=True)
                         continue
-                        
-                    sys.stdout.write(f"\rProcessing: {quarter}")
-                    sys.stdout.flush()
                     
                     results_dict = self.process_quarter(quarter_dir)
                     
@@ -119,10 +124,16 @@ class FAERSProcessor:
                             df.to_csv(output_file, sep='$', index=False)
                     
                     results['success'].append(quarter)
+                    pbar.update(1)
+                    pbar.set_postfix({"quarter": quarter, "status": "success"}, refresh=True)
                     
                 except Exception as e:
                     results['failed'].append((quarter, str(e)))
                     logging.error(f"Error processing {quarter}: {str(e)}")
+                    pbar.update(1)
+                    pbar.set_postfix({"quarter": quarter, "status": "failed"}, refresh=True)
+        
+        pbar.close()
         
         # Record end time and duration
         results['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -132,8 +143,7 @@ class FAERSProcessor:
         self.generate_summary_report(output_dir, results)
         
         # Print final summary
-        sys.stdout.write("\n\n")  # Clear progress line
-        print(f"Processing completed in {results['duration']:.2f} seconds")
+        print(f"\nProcessing completed in {results['duration']:.2f} seconds")
         print(f"See detailed report at: {output_dir}/processing_report.md")
 
     def generate_summary_report(self, output_dir: Path, results: Dict) -> None:
