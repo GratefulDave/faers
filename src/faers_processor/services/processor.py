@@ -108,84 +108,69 @@ class FAERSProcessingSummary:
     def generate_markdown_report(self) -> str:
         """Generate a detailed markdown report of all processing results."""
         report = ["# FAERS Processing Summary Report\n"]
+        
+        # Sort quarters for consistent reporting
+        sorted_quarters = sorted(self.quarter_summaries.keys())
+        
+        for quarter in sorted_quarters:
+            summary = self.quarter_summaries[quarter]
+            report.append(f"\n## Quarter: {quarter}")
+            report.append(f"Processing Time: {summary.processing_time:.2f} seconds\n")
+            
+            # Process each file type
+            for data_type in ['demo', 'drug', 'reac', 'outc', 'rpsr', 'ther', 'indi']:
+                table_summary = getattr(summary, f"{data_type}_summary")
+                if table_summary.total_rows > 0:
+                    report.append(f"\n### {data_type.upper()} File")
+                    
+                    # Basic statistics
+                    report.append("#### Processing Statistics")
+                    report.append(f"- Total Rows: {table_summary.total_rows:,}")
+                    report.append(f"- Processed Rows: {table_summary.processed_rows:,}")
+                    report.append(f"- Success Rate: {(table_summary.processed_rows/table_summary.total_rows*100):.1f}%")
+                    report.append(f"- Processing Time: {table_summary.processing_time:.2f} seconds")
+                    
+                    # Missing Columns
+                    if table_summary.missing_columns:
+                        report.append("\n#### Missing Columns")
+                        report.append("| Column | Default Value |")
+                        report.append("|--------|---------------|")
+                        for col, default in table_summary.missing_columns.items():
+                            report.append(f"| {col} | {default} |")
+                    
+                    # Invalid Dates
+                    if table_summary.invalid_dates:
+                        report.append("\n#### Invalid Dates")
+                        report.append("| Field | Invalid Count | Percentage |")
+                        report.append("|-------|---------------|------------|")
+                        for field, count in table_summary.invalid_dates.items():
+                            pct = (count/table_summary.total_rows*100)
+                            report.append(f"| {field} | {count:,}/{table_summary.total_rows:,} | {pct:.1f}% |")
+                    
+                    # Data Errors
+                    if table_summary.data_errors:
+                        report.append("\n#### Data Validation Errors")
+                        report.append("| Error Type | Count |")
+                        report.append("|------------|--------|")
+                        for error_type, count in table_summary.data_errors.items():
+                            report.append(f"| {error_type} | {count:,} |")
+                    
+                    # Parsing Errors
+                    if table_summary.parsing_errors:
+                        report.append("\n#### Parsing Errors")
+                        for error in table_summary.parsing_errors:
+                            report.append(f"- {error}")
+                            
+        return "\n".join(report)
 
-        # Individual quarter summaries
-        report.append("## Quarter-by-Quarter Summary\n")
-        for quarter, summary in sorted(self.quarter_summaries.items()):
-            report.append(f"### Quarter {quarter}\n")
-
-            # Create summary table for all file types
-            file_types = {
-                'Demographics (DEMO)': summary.demo_summary,
-                'Drug Data (DRUG)': summary.drug_summary,
-                'Reactions (REAC)': summary.reac_summary,
-                'Outcomes (OUTC)': summary.outc_summary,
-                'Report Sources (RPSR)': summary.rpsr_summary,
-                'Therapies (THER)': summary.ther_summary,
-                'Indications (INDI)': summary.indi_summary
-            }
-
-            table_data = []
-            for file_type, stats in file_types.items():
-                row = [
-                    file_type,
-                    f"{stats.total_rows:,}",
-                    f"{stats.processed_rows:,}",
-                    f"{stats.success_rate:.1f}%",
-                    len(stats.parsing_errors)
-                ]
-                table_data.append(row)
-
-            # Add summary table
-            report.append("| File Type | Total Rows | Processed Rows | Success Rate | Errors |\n")
-            report.append("|-----------|------------|----------------|--------------|--------|\n")
-            for row in table_data:
-                report.append(f"| {' | '.join(str(x) for x in row)} |\n")
-            report.append("\n")
-
-            # Add error details if any exist
-            has_errors = False
-            error_report = ["#### Processing Errors\n"]
-            for file_type, stats in file_types.items():
-                if stats.parsing_errors:
-                    has_errors = True
-                    error_report.append(f"\n**{file_type}**\n")
-                    for error in stats.parsing_errors:
-                        error_report.append(f"- {error}\n")
-
-            if has_errors:
-                report.extend(error_report)
-                report.append("\n")
-
-            # Add processing time
-            report.append(f"Processing time: {summary.processing_time:.2f} seconds\n\n")
-
-        # Grand summary
-        report.append("## Grand Summary\n")
-        grand_totals = defaultdict(lambda: {'total': 0, 'processed': 0, 'errors': 0})
-
-        for summary in self.quarter_summaries.values():
-            for file_type, stats in file_types.items():
-                grand_totals[file_type]['total'] += stats.total_rows
-                grand_totals[file_type]['processed'] += stats.processed_rows
-                grand_totals[file_type]['errors'] += len(stats.parsing_errors)
-
-        # Add grand totals table
-        report.append("| File Type | Total Rows | Processed Rows | Success Rate | Total Errors |\n")
-        report.append("|-----------|------------|----------------|--------------|--------------|\n")
-
-        for file_type, totals in grand_totals.items():
-            success_rate = (totals['processed'] / totals['total'] * 100) if totals['total'] > 0 else 0
-            row = [
-                file_type,
-                f"{totals['total']:,}",
-                f"{totals['processed']:,}",
-                f"{success_rate:.1f}%",
-                totals['errors']
-            ]
-            report.append(f"| {' | '.join(str(x) for x in row)} |\n")
-
-        return ''.join(report)
+    def save_report(self, output_dir: Path):
+        """Save the processing report to a markdown file."""
+        report = self.generate_markdown_report()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = output_dir / f"faers_processing_report_{timestamp}.md"
+        
+        report_path.write_text(report)
+        logging.info(f"Saved processing report to: {report_path}")
 
 
 class FAERSProcessor:
@@ -372,8 +357,7 @@ class FAERSProcessor:
         for quarter in results['success']:
             summary.add_quarter_summary(quarter, QuarterSummary(quarter))
 
-        with open(report_path, "w") as f:
-            f.write(summary.generate_markdown_report())
+        summary.save_report(output_dir)
 
         logging.info(f"Generated processing report: {report_path}")
 
