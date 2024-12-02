@@ -34,7 +34,7 @@ class FAERSProcessor:
         self.use_parallel = use_parallel
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
-        """Process all quarters in the input directory."""
+        """Process all quarters in the input directory and save merged results in data/clean."""
         import time
         from datetime import datetime
         
@@ -49,9 +49,9 @@ class FAERSProcessor:
         }
         start_time = time.time()
         
-        # Create clean data directory structure
-        clean_data_dir = output_dir / "data" / "clean"
-        clean_data_dir.mkdir(parents=True, exist_ok=True)
+        # Create data/clean directory
+        clean_dir = Path('data') / 'clean'
+        clean_dir.mkdir(parents=True, exist_ok=True)
         
         # Find all quarter directories
         quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
@@ -63,6 +63,13 @@ class FAERSProcessor:
             return
             
         logging.info(f"Found {total_quarters} quarters to process")
+        
+        # Initialize dictionaries to store DataFrames for each data type
+        all_data = {
+            'demographics': [],
+            'drugs': [],
+            'reactions': []
+        }
         
         # Create progress bar for total quarters
         pbar = tqdm(total=total_quarters, desc="Processing FAERS quarters", 
@@ -93,15 +100,11 @@ class FAERSProcessor:
                             
                         results_dict = future.result()
                         
-                        # Save results in clean data directory
-                        quarter_output_dir = clean_data_dir / quarter
-                        quarter_output_dir.mkdir(parents=True, exist_ok=True)
-                        
+                        # Add quarter column and append to all_data
                         for data_type, df in results_dict.items():
                             if not df.empty:
-                                output_file = quarter_output_dir / f"{data_type}.txt"
-                                df.to_csv(output_file, sep='$', index=False)
-                                logging.info(f"Saved cleaned {data_type} data to {output_file}")
+                                df['quarter'] = quarter
+                                all_data[data_type].append(df)
                         
                         results['success'].append(quarter)
                         pbar.update(1)
@@ -125,15 +128,11 @@ class FAERSProcessor:
                     
                     results_dict = self.process_quarter(quarter_dir)
                     
-                    # Save results in clean data directory
-                    quarter_output_dir = clean_data_dir / quarter
-                    quarter_output_dir.mkdir(parents=True, exist_ok=True)
-                    
+                    # Add quarter column and append to all_data
                     for data_type, df in results_dict.items():
                         if not df.empty:
-                            output_file = quarter_output_dir / f"{data_type}.txt"
-                            df.to_csv(output_file, sep='$', index=False)
-                            logging.info(f"Saved cleaned {data_type} data to {output_file}")
+                            df['quarter'] = quarter
+                            all_data[data_type].append(df)
                     
                     results['success'].append(quarter)
                     pbar.update(1)
@@ -147,16 +146,45 @@ class FAERSProcessor:
         
         pbar.close()
         
+        # Merge and save all data types
+        for data_type, dfs in all_data.items():
+            if dfs:
+                try:
+                    logging.info(f"Merging {len(dfs)} quarters for {data_type}")
+                    merged_df = pd.concat(dfs, ignore_index=True)
+                    
+                    # Convert numeric columns
+                    if 'primaryid' in merged_df.columns:
+                        merged_df['primaryid'] = pd.to_numeric(merged_df['primaryid'], errors='coerce')
+                    if data_type == 'demographics':
+                        if 'caseid' in merged_df.columns:
+                            merged_df['caseid'] = pd.to_numeric(merged_df['caseid'], errors='coerce')
+                        if 'age' in merged_df.columns:
+                            merged_df['age'] = pd.to_numeric(merged_df['age'], errors='coerce')
+                    elif data_type == 'drugs' and 'drug_seq' in merged_df.columns:
+                        merged_df['drug_seq'] = pd.to_numeric(merged_df['drug_seq'], errors='coerce')
+                    
+                    # Sort by primaryid and quarter
+                    merged_df = merged_df.sort_values(['primaryid', 'quarter'])
+                    
+                    # Save merged file in data/clean
+                    output_file = clean_dir / f'{data_type}.txt'
+                    merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
+                    logging.info(f"Saved merged {data_type} to {output_file}")
+                    logging.info(f"Shape: {merged_df.shape}")
+                except Exception as e:
+                    logging.error(f"Error merging {data_type}: {str(e)}")
+        
         # Record end time and duration
         results['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         results['duration'] = time.time() - start_time
         
-        # Generate summary report
-        self.generate_summary_report(output_dir, results)
+        # Generate summary report in data/clean
+        self.generate_summary_report(clean_dir, results)
         
         # Print final summary
         print(f"\nProcessing completed in {results['duration']:.2f} seconds")
-        print(f"See detailed report at: {output_dir}/processing_report.md")
+        print(f"See detailed report at: {clean_dir}/processing_report.md")
 
     def generate_summary_report(self, output_dir: Path, results: Dict) -> None:
         """Generate a markdown summary report of processing results.
@@ -310,74 +338,6 @@ class FAERSProcessor:
             logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
             
         return results
-
-    def merge_quarters(self, output_dir: Path) -> None:
-        """Merge all processed quarterly files into final datasets.
-        
-        Args:
-            output_dir: Directory containing processed quarterly files
-        """
-        for data_type in ['demographics', 'drugs', 'reactions']:
-            try:
-                # Find all quarterly files for this type
-                pattern = f'*_{data_type}.txt'
-                quarter_files = list(output_dir.glob(pattern))
-                
-                if not quarter_files:
-                    logging.warning(f"No quarterly files found for {data_type}")
-                    continue
-                
-                logging.info(f"Merging {len(quarter_files)} files for {data_type}")
-                
-                # Read and concatenate all quarters
-                dfs = []
-                for file in quarter_files:
-                    try:
-                        quarter = file.name.split('_')[0]  # Extract quarter from filename
-                        df = pd.read_csv(
-                            file,
-                            sep='$',
-                            dtype=str,
-                            na_values=['', 'NA', 'NULL'],
-                            keep_default_na=True,
-                            header=0,
-                            encoding='utf-8'
-                        )
-                        df['quarter'] = quarter
-                        dfs.append(df)
-                    except Exception as e:
-                        logging.error(f"Error reading {file}: {str(e)}")
-                
-                if not dfs:
-                    logging.error(f"No valid data found for {data_type}")
-                    continue
-                
-                # Merge all quarters
-                merged_df = pd.concat(dfs, ignore_index=True)
-                
-                # Convert numeric columns
-                if 'primaryid' in merged_df.columns:
-                    merged_df['primaryid'] = pd.to_numeric(merged_df['primaryid'], errors='coerce')
-                if data_type == 'demographics':
-                    if 'caseid' in merged_df.columns:
-                        merged_df['caseid'] = pd.to_numeric(merged_df['caseid'], errors='coerce')
-                    if 'age' in merged_df.columns:
-                        merged_df['age'] = pd.to_numeric(merged_df['age'], errors='coerce')
-                elif data_type == 'drugs' and 'drug_seq' in merged_df.columns:
-                    merged_df['drug_seq'] = pd.to_numeric(merged_df['drug_seq'], errors='coerce')
-                
-                # Sort by primaryid and quarter
-                merged_df = merged_df.sort_values(['primaryid', 'quarter'])
-                
-                # Save merged file
-                output_file = output_dir / f'merged_{data_type}.txt'
-                merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
-                
-                logging.info(f"Saved merged {data_type} to {output_file}")
-                logging.info(f"Shape: {merged_df.shape}")
-                
-            except Exception as e:
-                logging.error(f"Error merging {data_type}: {str(e)}")
 
     def _fix_known_data_issues(self, file_path: Path, content: str) -> str:
         """Fix known data formatting issues in specific FAERS files.
