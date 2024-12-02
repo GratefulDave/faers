@@ -28,14 +28,34 @@ class TableSummary:
     total_rows: int = 0
     processed_rows: int = 0
     invalid_dates: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    missing_columns: List[str] = field(default_factory=list)
+    missing_columns: Dict[str, str] = field(default_factory=dict)  # column -> default value
     parsing_errors: List[str] = field(default_factory=list)
+    data_errors: Dict[str, int] = field(default_factory=lambda: defaultdict(int))  # error type -> count
     processing_time: float = 0.0
 
     @property
     def success_rate(self) -> float:
         """Calculate percentage of successfully processed rows."""
         return (self.processed_rows / self.total_rows * 100) if self.total_rows > 0 else 0.0
+
+    def add_missing_column(self, col: str, default_value: str):
+        """Track missing column and its default value."""
+        self.missing_columns[col] = default_value
+        logging.warning(f"Required column '{col}' not found, adding with default value: {default_value}")
+
+    def add_invalid_date(self, field: str, count: int):
+        """Track invalid dates by field."""
+        self.invalid_dates[field] = count
+        logging.warning(f"{count}/{self.total_rows} rows ({count/self.total_rows*100:.1f}%) had invalid dates in {field}")
+
+    def add_data_error(self, error_type: str):
+        """Track data validation errors."""
+        self.data_errors[error_type] += 1
+        
+    def add_parsing_error(self, error: str):
+        """Track parsing errors."""
+        self.parsing_errors.append(error)
+        logging.error(f"Parsing error: {error}")
 
 
 @dataclass
@@ -335,7 +355,10 @@ class FAERSProcessor:
         logging.info(f"Generated processing report: {report_path}")
 
     def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
-        """Find the ASCII directory - it's always ASCII or ascii."""
+        """Find the ASCII directory - it's always ASCII or ascii.
+        
+        NOTE: DO NOT MODIFY THIS METHOD - case insensitive directory finding is working as intended.
+        """
         # Log current directory for debugging
         logging.info(f"Searching for ASCII directory in: {quarter_dir}")
         
@@ -437,12 +460,59 @@ class FAERSProcessor:
         
         return results
 
-    def _fix_known_data_issues(self, file_path: Path, content: str) -> str:
+    def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
+        """Process a single FAERS file with enhanced error tracking.
+        
+        NOTE: DO NOT MODIFY FILE FINDING LOGIC - case insensitive file matching is working as intended.
+        """
+        table_summary = TableSummary()
+        start_time = time.time()
+        
+        try:
+            # Attempt standard parsing first
+            df = pd.read_csv(file_path, delimiter='$', dtype=str, encoding='latin1')
+            table_summary.total_rows = len(df)
+            
+            # Process the DataFrame based on type
+            df = self._process_dataframe(df, data_type, table_summary)
+            
+            if df is not None:
+                table_summary.processed_rows = len(df)
+                
+        except pd.errors.ParserError as e:
+            error_msg = f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}"
+            table_summary.add_parsing_error(error_msg)
+            
+            try:
+                # Try manual fix for parsing errors
+                content = self._fix_known_data_issues(file_path)
+                df = pd.read_csv(io.StringIO(content), delimiter='$', dtype=str, encoding='latin1')
+                table_summary.total_rows = len(df)
+                
+                df = self._process_dataframe(df, data_type, table_summary)
+                if df is not None:
+                    table_summary.processed_rows = len(df)
+                    
+            except Exception as e:
+                error_msg = f"Manual fix failed for {file_path}: {str(e)}"
+                table_summary.add_parsing_error(error_msg)
+                return pd.DataFrame()
+                
+        except Exception as e:
+            error_msg = f"Error processing {file_path}: {str(e)}"
+            table_summary.add_parsing_error(error_msg)
+            return pd.DataFrame()
+            
+        finally:
+            table_summary.processing_time = time.time() - start_time
+            
+        return df
+
+    def _fix_known_data_issues(self, file_path: Path) -> str:
         """Fix known data formatting issues in specific FAERS files.
 
         Args:
             file_path: Path to the file being processed
-            content: Current content of the file
 
         Returns:
             Fixed content with proper line breaks
@@ -474,8 +544,10 @@ class FAERSProcessor:
         filename = os.path.basename(file_path).upper()
         if filename in known_issues:
             issue = known_issues[filename]
-            lines = content.splitlines()
-
+            lines = []
+            with open(file_path, 'r') as f:
+                for line in f:
+                    lines.append(line.strip())
             # Check surrounding lines for the issue
             problem_line = issue["line"]
             for offset in [-1, 0, 1]:  # Check the line before, the line itself, and the line after
@@ -521,171 +593,61 @@ class FAERSProcessor:
 
         return content
 
-    def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
-        """Process a single FAERS file with enhanced encoding detection and error handling."""
-        logging.info(f"Processing {data_type} file: {file_path}")
-
-        def detect_encoding(file_path: Path) -> str:
-            """Detect file encoding using chardet."""
-            try:
-                # Read a sample (first 1MB) for encoding detection
-                with open(file_path, 'rb') as f:
-                    raw = f.read(1024 * 1024)
-                result = chardet.detect(raw)
-                confidence = result.get('confidence', 0)
-                encoding = result.get('encoding', 'utf-8')
-
-                logging.info(f"Detected encoding for {file_path.name}: {encoding} (confidence: {confidence:.2%})")
-                return encoding
-            except Exception as e:
-                logging.warning(f"Error detecting encoding for {file_path.name}: {str(e)}")
-                return None
-
-        def read_problematic_line(line_num: int, encoding: str) -> str:
-            """Read a specific line from the file using given encoding."""
-            try:
-                with open(file_path, 'rb') as f:  # Open in binary mode
-                    for i, line in enumerate(f, 1):
-                        if i == line_num:
-                            try:
-                                return line.decode(encoding).strip()
-                            except UnicodeDecodeError:
-                                # If specific line fails to decode, try to show hex
-                                return f"[Binary data: {line.hex()}]"
-            except Exception as e:
-                logging.warning(f"Could not read line {line_num} with {encoding} encoding: {str(e)}")
-                return None
-
-        def log_bad_row(line_num: int, expected: int, actual: int, encoding: str):
-            """Log detailed information about problematic rows."""
-            row_data = read_problematic_line(line_num, encoding)
-            if row_data:
-                logging.warning(
-                    f"\nProblematic row in {file_path.name}:\n"
-                    f"Line {line_num}: Expected {expected} fields but got {actual}\n"
-                    f"Encoding: {encoding}\n"
-                    f"Data: {row_data}"
-                )
-
-        # Set up warning handler for pandas
-        def warning_handler(message, category, filename, lineno, file=None, line=None):
-            if category == pd.errors.ParserWarning:
-                match = re.search(r'Skipping line (\d+): expected (\d+) fields, saw (\d+)', str(message))
-                if match:
-                    line_num, expected, actual = map(int, match.groups())
-                    log_bad_row(line_num, expected, actual, current_encoding)
-
-        import warnings
-        original_handler = warnings.showwarning
-        warnings.showwarning = warning_handler
-
-        try:
-            # Special handling for known problematic files
-            if "DRUG19Q3" in str(file_path):
-                logging.info(f"Using special handling for known problematic file: {file_path.name}")
-                try:
-                    # Try reading with error_bad_lines=False first
-                    df = pd.read_csv(
-                        file_path,
-                        delimiter='$',
-                        dtype=str,
-                        na_values=['', 'NULL', 'null'],
-                        keep_default_na=False,
-                        encoding='latin1',  # Try latin1 first for DRUG files
-                        on_bad_lines='skip',  # Skip bad lines
-                        engine='python',
-                        quoting=3,  # QUOTE_NONE
-                        escapechar=None
-                    )
-                    logging.info(f"Successfully read {file_path.name} with special handling")
-                    logging.info(f"Read {len(df)} rows from {file_path.name}")
-                    return df
-                except Exception as e:
-                    logging.error(f"Special handling failed for {file_path.name}: {str(e)}")
-                    # Fall through to normal processing
-
-            # Normal processing with encoding detection
-            detected = detect_encoding(file_path)
-            encodings = []
-            if detected and detected.lower() not in ['utf-8', 'ascii', 'latin1', 'cp1252', 'iso-8859-1']:
-                encodings.append(detected)
-
-            # For DRUG files, try latin1 first as it's often correct
-            if "DRUG" in str(file_path):
-                encodings = ['latin1', 'utf-8', 'cp1252', 'iso-8859-1']
-            else:
-                encodings.extend(['utf-8', 'latin1', 'cp1252', 'iso-8859-1'])
-
-            # Try each encoding
-            last_error = None
-            for encoding in encodings:
-                try:
-                    current_encoding = encoding
-                    logging.info(f"Attempting to read {file_path.name} with {encoding} encoding")
-
-                    df = pd.read_csv(
-                        file_path,
-                        delimiter='$',
-                        dtype=str,
-                        na_values=['', 'NULL', 'null'],
-                        keep_default_na=False,
-                        encoding=encoding,
-                        on_bad_lines='warn',
-                        engine='python',
-                        quoting=3,  # QUOTE_NONE
-                        escapechar=None
-                    )
-
-                    logging.info(f"Successfully read {file_path.name} with {encoding} encoding")
-                    logging.info(f"Read {len(df)} rows from {file_path.name}")
-
-                    return df
-
-                except UnicodeDecodeError as e:
-                    last_error = e
-                    logging.warning(f"Failed to read {file_path.name} with {encoding} encoding: {str(e)}")
-                    continue
-                except Exception as e:
-                    last_error = e
-                    logging.error(f"Error processing {file_path.name} with {encoding} encoding: {str(e)}")
-                    if encoding == encodings[-1]:
-                        raise
-                    continue
-
-        finally:
-            # Restore original warning handler
-            warnings.showwarning = original_handler
-
-        # If we get here, all encodings failed
-        raise ValueError(f"Failed to read {file_path.name} with any encoding. Last error: {str(last_error)}")
-
-    def _process_dataframe(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
+    def _process_dataframe(self, df: pd.DataFrame, data_type: str, table_summary: TableSummary) -> pd.DataFrame:
         """Process a DataFrame based on its type."""
         if df.empty:
             return df
 
         try:
-            # Ensure we have a DataFrame
-            if isinstance(df, pd.Series):
-                df = df.to_frame().T
-
-            # Convert dtypes to string to avoid issues
-            df = df.astype(str)
-
-            # Standardize based on type
+            # Common processing for all types
+            df = df.fillna('')  # Replace NaN with empty string
+            
+            # Type-specific processing
             if data_type == 'demo':
-                return self.standardizer.standardize_demographics(df)
+                # Check required columns
+                if 'i_f_code' not in df.columns:
+                    table_summary.add_missing_column('i_f_code', 'I')
+                    df['i_f_code'] = 'I'
+                    
+                if 'sex' not in df.columns:
+                    table_summary.add_missing_column('sex', '<NA>')
+                    df['sex'] = '<NA>'
+                
+                # Validate dates
+                date_fields = ['event_dt', 'fda_dt', 'rept_dt']
+                for field in date_fields:
+                    if field in df.columns:
+                        invalid_dates = df[field].str.match(r'^\d{8}$').sum()
+                        if invalid_dates > 0:
+                            table_summary.add_invalid_date(field, invalid_dates)
+                
+                # Check country standardization
+                if 'country' not in df.columns:
+                    logging.warning("Country column not found, skipping country standardization")
+                    table_summary.add_missing_column('country', '<NA>')
+                
             elif data_type == 'drug':
-                return self.standardizer.standardize_drugs(df)
-            elif data_type == 'reac':
-                return self.standardizer.standardize_reactions(df)
-            else:
-                logging.warning(f"Unknown data type: {data_type}")
-                return df
-
+                # Check for required drug fields
+                required_fields = ['drugname', 'prod_ai', 'route', 'dose_amt', 'dose_unit', 'dose_form']
+                for field in required_fields:
+                    if field not in df.columns:
+                        table_summary.add_missing_column(field, '<NA>')
+                        df[field] = '<NA>'
+                
+                # Track invalid ages
+                if 'age' in df.columns:
+                    invalid_ages = df[~df['age'].str.match(r'^\d+$', na=True)].shape[0]
+                    if invalid_ages > 0:
+                        table_summary.add_data_error(f'invalid_age_format')
+                
+            # Add more type-specific processing and error tracking as needed
+            
         except Exception as e:
-            logging.error(f"Error processing DataFrame: {str(e)}")
+            error_msg = f"Error processing DataFrame: {str(e)}"
+            table_summary.add_parsing_error(error_msg)
             return pd.DataFrame()
+            
+        return df
 
     def _normalize_quarter_path(self, quarter_dir: Path) -> Path:
         """Normalize quarter directory path to handle case sensitivity.
