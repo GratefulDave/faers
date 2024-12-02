@@ -19,8 +19,17 @@ from .services.deduplicator import Deduplicator
 from .services.downloader import FAERSDownloader
 from .services.processor import FAERSProcessor
 
+# Set up logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
 # Check if running on Apple Silicon
-IS_APPLE_SILICON = platform.machine() == 'arm64'
+machine = platform.machine()
+logging.info(f"Detected machine architecture: {machine}")
+IS_APPLE_SILICON = machine == 'arm64'
+
 if IS_APPLE_SILICON:
     logging.info("Running on Apple Silicon - enabling optimizations")
     # Enable Apple Silicon optimizations
@@ -28,8 +37,9 @@ if IS_APPLE_SILICON:
     os.environ['OPENBLAS_NUM_THREADS'] = str(multiprocessing.cpu_count())
     os.environ['MKL_NUM_THREADS'] = str(multiprocessing.cpu_count())
     os.environ['VECLIB_MAXIMUM_THREADS'] = str(multiprocessing.cpu_count())
+    logging.info(f"Set thread count to {multiprocessing.cpu_count()} for optimized libraries")
 else:
-    logging.info(f"Running on {platform.machine()} architecture")
+    logging.info(f"Running on {machine} architecture - using standard optimizations")
 
 # Configure pandas for better performance
 pd.set_option('compute.use_numexpr', True)
@@ -46,75 +56,6 @@ def setup_logging(log_level: str = "INFO") -> None:
         level=numeric_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description='Process FAERS data with optimizations for Apple Silicon'
-    )
-
-    parser.add_argument(
-        '--data-dir',
-        type=Path,
-        required=True,
-        help='Base directory for data storage'
-    )
-
-    parser.add_argument(
-        '--external-dir',
-        type=Path,
-        required=True,
-        help='Directory for external reference data'
-    )
-
-    parser.add_argument(
-        '--download',
-        action='store_true',
-        help='Download latest FAERS data'
-    )
-
-    parser.add_argument(
-        '--process',
-        action='store_true',
-        help='Process downloaded data'
-    )
-
-    parser.add_argument(
-        '--deduplicate',
-        action='store_true',
-        help='Remove duplicate entries'
-    )
-
-    parser.add_argument(
-        '--max-workers',
-        type=int,
-        default=multiprocessing.cpu_count(),
-        help='Maximum number of parallel workers'
-    )
-
-    parser.add_argument(
-        '--chunk-size',
-        type=int,
-        default=100000,
-        help='Size of data chunks for processing'
-    )
-
-    parser.add_argument(
-        '--use-dask',
-        action='store_true',
-        help='Use Dask for out-of-core processing'
-    )
-
-    parser.add_argument(
-        '--log-level',
-        type=str,
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
-        help='Set logging level'
-    )
-
-    return parser.parse_args()
 
 
 def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
@@ -316,6 +257,75 @@ def deduplicate_data(data_dir: Path) -> None:
     except Exception as e:
         logging.error(f"Error during deduplication: {str(e)}")
         raise
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Process FAERS data with optimizations for Apple Silicon'
+    )
+
+    parser.add_argument(
+        '--data-dir',
+        type=Path,
+        required=True,
+        help='Base directory for data storage'
+    )
+
+    parser.add_argument(
+        '--external-dir',
+        type=Path,
+        required=True,
+        help='Directory for external reference data'
+    )
+
+    parser.add_argument(
+        '--download',
+        action='store_true',
+        help='Download latest FAERS data'
+    )
+
+    parser.add_argument(
+        '--process',
+        action='store_true',
+        help='Process downloaded data'
+    )
+
+    parser.add_argument(
+        '--deduplicate',
+        action='store_true',
+        help='Remove duplicate entries'
+    )
+
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=multiprocessing.cpu_count(),
+        help='Maximum number of parallel workers'
+    )
+
+    parser.add_argument(
+        '--chunk-size',
+        type=int,
+        default=100000,
+        help='Size of data chunks for processing'
+    )
+
+    parser.add_argument(
+        '--use-dask',
+        action='store_true',
+        help='Use Dask for out-of-core processing'
+    )
+
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Set logging level'
+    )
+
+    return parser.parse_args()
 
 
 def main() -> None:
