@@ -12,6 +12,9 @@ import os
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
+import time
+from datetime import datetime
+import sys
 
 from .standardizer import DataStandardizer
 
@@ -30,75 +33,168 @@ class FAERSProcessor:
         self.use_parallel = use_parallel
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
-        """Process all quarters in the input directory.
+        """Process all quarters in the input directory."""
+        import time
+        from datetime import datetime
         
-        Args:
-            input_dir: Directory containing quarter subdirectories
-            output_dir: Directory to save processed files
-            max_workers: Maximum number of worker processes to use
-        """
+        # Initialize results tracking
+        results = {
+            'total_quarters': 0,
+            'success': [],
+            'failed': [],
+            'skipped': [],
+            'start_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'max_workers': max_workers
+        }
+        start_time = time.time()
+        
         # Find all quarter directories
         quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
+        results['total_quarters'] = len(quarter_dirs)
         
         if not quarter_dirs:
             logging.error(f"No quarter directories found in {input_dir}")
             return
             
         logging.info(f"Found {len(quarter_dirs)} quarters to process")
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         if self.use_parallel:
-            # Use ProcessPoolExecutor for parallel processing
             if max_workers is None:
-                max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
+                max_workers = max(1, multiprocessing.cpu_count() - 1)
             
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                # Process quarters in batches to control memory
                 batch_size = 4
+                total_batches = (len(quarter_dirs) + batch_size - 1) // batch_size
+                
                 for i in range(0, len(quarter_dirs), batch_size):
                     batch = quarter_dirs[i:i + batch_size]
-                    logging.info(f"Processing batch of {len(batch)} quarters")
+                    current_batch = i//batch_size + 1
+                    sys.stdout.write(f"\nBatch {current_batch}/{total_batches} ({len(batch)} quarters)\n")
+                    sys.stdout.flush()
                     
-                    # Submit batch for processing
-                    futures = {
-                        executor.submit(self.process_quarter, quarter_dir): quarter_dir 
-                        for quarter_dir in batch
-                    }
+                    futures = {executor.submit(self.process_quarter, quarter_dir): quarter_dir for quarter_dir in batch}
                     
-                    # Process results as they complete
                     for future in concurrent.futures.as_completed(futures):
                         quarter_dir = futures[future]
+                        quarter = quarter_dir.name
                         try:
-                            results = future.result()
-                            quarter = quarter_dir.name
+                            if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
+                                results['skipped'].append(quarter)
+                                continue
+                                
+                            results_dict = future.result()
                             
-                            # Save results for this quarter
-                            for data_type, df in results.items():
+                            # Save results
+                            for data_type, df in results_dict.items():
                                 if not df.empty:
                                     output_file = output_dir / f"{quarter}_{data_type}.txt"
                                     df.to_csv(output_file, sep='$', index=False)
-                                    logging.info(f"Saved {data_type} data for {quarter} to {output_file}")
-                        
+                            
+                            results['success'].append(quarter)
+                            progress = len(results['success']) + len(results['failed'])
+                            sys.stdout.write(f"\rProgress: {progress}/{results['total_quarters']} - Current: {quarter}")
+                            sys.stdout.flush()
+                            
                         except Exception as e:
-                            logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
-                            continue
+                            results['failed'].append((quarter, str(e)))
+                            logging.error(f"Error processing {quarter}: {str(e)}")
         else:
-            # Sequential processing
-            for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
+            for quarter_dir in quarter_dirs:
+                quarter = quarter_dir.name
                 try:
-                    results = self.process_quarter(quarter_dir)
+                    if (quarter_dir / "ascii").exists() and any((quarter_dir / "ascii").iterdir()):
+                        results['skipped'].append(quarter)
+                        continue
+                        
+                    sys.stdout.write(f"\rProcessing: {quarter}")
+                    sys.stdout.flush()
                     
-                    # Save results for this quarter
-                    quarter = quarter_dir.name
-                    for data_type, df in results.items():
+                    results_dict = self.process_quarter(quarter_dir)
+                    
+                    # Save results
+                    for data_type, df in results_dict.items():
                         if not df.empty:
                             output_file = output_dir / f"{quarter}_{data_type}.txt"
                             df.to_csv(output_file, sep='$', index=False)
-                            logging.info(f"Saved {data_type} data for {quarter} to {output_file}")
-                            
+                    
+                    results['success'].append(quarter)
+                    
                 except Exception as e:
-                    logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
-                    continue
+                    results['failed'].append((quarter, str(e)))
+                    logging.error(f"Error processing {quarter}: {str(e)}")
+        
+        # Record end time and duration
+        results['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        results['duration'] = time.time() - start_time
+        
+        # Generate summary report
+        self.generate_summary_report(output_dir, results)
+        
+        # Print final summary
+        sys.stdout.write("\n\n")  # Clear progress line
+        print(f"Processing completed in {results['duration']:.2f} seconds")
+        print(f"See detailed report at: {output_dir}/processing_report.md")
 
+    def generate_summary_report(self, output_dir: Path, results: Dict) -> None:
+        """Generate a markdown summary report of processing results.
+        
+        Args:
+            output_dir: Directory where processed files are saved
+            results: Dictionary containing processing results
+        """
+        report_path = output_dir / "processing_report.md"
+        
+        with open(report_path, "w") as f:
+            # Header
+            f.write("# FAERS Data Processing Report\n\n")
+            
+            # Processing Statistics
+            f.write("## Processing Statistics\n")
+            f.write(f"- Total Quarters Processed: {results['total_quarters']}\n")
+            f.write(f"- Successfully Processed: {len(results['success'])}\n")
+            f.write(f"- Failed: {len(results['failed'])}\n")
+            f.write(f"- Skipped: {len(results['skipped'])}\n\n")
+            
+            # Successful Quarters
+            if results['success']:
+                f.write("## Successfully Processed Quarters\n")
+                for quarter in sorted(results['success']):
+                    f.write(f"- {quarter}\n")
+                f.write("\n")
+            
+            # Failed Quarters
+            if results['failed']:
+                f.write("## Failed Quarters\n")
+                for quarter, error in results['failed']:
+                    f.write(f"- {quarter}: {error}\n")
+                f.write("\n")
+            
+            # Skipped Quarters
+            if results['skipped']:
+                f.write("## Skipped Quarters\n")
+                for quarter in sorted(results['skipped']):
+                    f.write(f"- {quarter} (already processed)\n")
+                f.write("\n")
+            
+            # Data Statistics
+            f.write("## Data Statistics\n")
+            total_size = sum(f.stat().st_size for f in output_dir.glob("*.txt"))
+            f.write(f"- Total Output Size: {total_size / (1024*1024):.2f} MB\n")
+            f.write(f"- Output Directory: {output_dir}\n\n")
+            
+            # Processing Details
+            f.write("## Processing Details\n")
+            f.write(f"- Parallel Processing: {self.use_parallel}\n")
+            if self.use_parallel:
+                f.write(f"- Worker Processes: {results.get('max_workers', 'auto')}\n")
+            f.write(f"- Start Time: {results.get('start_time', 'Not recorded')}\n")
+            f.write(f"- End Time: {results.get('end_time', 'Not recorded')}\n")
+            if 'duration' in results:
+                f.write(f"- Total Duration: {results['duration']:.2f} seconds\n")
+                
+        logging.info(f"Generated processing report: {report_path}")
+        
     def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
         """Find the ASCII directory - it's always ASCII or ascii."""
         # Just check for ASCII or ascii - that's all we need
