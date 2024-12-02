@@ -1603,6 +1603,11 @@ class DataStandardizer:
         Returns:
             Standardized demographics DataFrame
         """
+        if df.empty:
+            return df
+            
+        df = df.copy()
+        
         # Convert columns to lowercase
         df.columns = df.columns.str.lower()
         
@@ -1621,17 +1626,18 @@ class DataStandardizer:
             'reporter_country': 'reporter_country',
             'occr_country': 'occurrence_country',
             'event_dt': 'event_date',
-            'rept_dt': 'report_date'
+            'rept_dt': 'report_date',
+            'fda_dt': 'fda_date',
+            'mfr_dt': 'manufacturer_date',
+            'init_fda_dt': 'initial_fda_date'
         }
         df = df.rename(columns=column_map)
         
-        # Convert dates
-        for date_col in ['event_date', 'report_date']:
-            if date_col in df.columns:
-                df[date_col] = pd.to_datetime(df[date_col], format='%Y%m%d', errors='coerce')
+        # Note: Date standardization is already done in process_demographics
+        # Just rename the columns here
         
         return df
-        
+
     def standardize_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize drug data.
         
