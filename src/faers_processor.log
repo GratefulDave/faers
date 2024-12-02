@@ -1,0 +1,8 @@
+2024-12-01 17:12:23,373 - root - ERROR - Error in download process: 'str' object has no attribute 'mkdir'
+2024-12-01 17:12:23,373 - root - INFO - Starting FAERS data processing
+2024-12-01 17:12:23,373 - root - ERROR - Error in data processing: __init__() missing 1 required positional argument: 'external_dir'
+2024-12-01 17:12:23,373 - root - INFO - Starting data deduplication
+2024-12-01 17:12:23,390 - root - ERROR - Error during deduplication: unsupported operand type(s) for /: 'str' and 'str'
+2024-12-01 17:12:23,391 - root - ERROR - Pipeline failed: unsupported operand type(s) for /: 'str' and 'str'
+2024-12-01 17:16:48,599 - root - ERROR - Error in download process: 'FAERSDownloader' object has no attribute 'download_all_quarters'
+2024-12-01 17:16:48,599 - root - ERROR - Pipeline failed: 'FAERSDownloader' object has no attribute 'download_all_quarters'
