@@ -240,14 +240,18 @@ class FAERSProcessor:
                     result = self.standardizer.process_demographics(df)
                 elif data_type == 'drugs':
                     # First clean and standardize drug names (like R script)
-                    if 'drugname' in df.columns:
-                        df['drugname'] = df['drugname'].str.lower().str.strip()
-                        df['drugname'] = df['drugname'].str.replace(r'\s+', ' ', regex=True)
-                        df['drugname'] = df['drugname'].str.replace(r'\.$', '', regex=True)
-                        df['drugname'] = df['drugname'].str.replace(r'\( ', '(', regex=True)
-                        df['drugname'] = df['drugname'].str.replace(r' \)', ')', regex=True)
+                    drugname_col = 'DRUGNAME' if 'DRUGNAME' in df.columns else 'drugname'
+                    if drugname_col in df.columns:
+                        df[drugname_col] = df[drugname_col].str.lower().str.strip()
+                        df[drugname_col] = df[drugname_col].str.replace(r'\s+', ' ', regex=True)
+                        df[drugname_col] = df[drugname_col].str.replace(r'\.$', '', regex=True)
+                        df[drugname_col] = df[drugname_col].str.replace(r'\( ', '(', regex=True)
+                        df[drugname_col] = df[drugname_col].str.replace(r' \)', ')', regex=True)
+                        # Rename to lowercase after cleaning if needed
+                        if drugname_col == 'DRUGNAME':
+                            df = df.rename(columns={'DRUGNAME': 'drugname'})
                     else:
-                        logging.error(f"Required column 'drugname' not found in columns: {df.columns.tolist()}")
+                        logging.error(f"Required column '{drugname_col}' not found in columns: {df.columns.tolist()}")
                         return pd.DataFrame()
                     
                     # Then process through standardizer
