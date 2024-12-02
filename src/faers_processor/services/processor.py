@@ -65,24 +65,27 @@ class FAERSProcessor:
             with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
                 for quarter in quarters:
                     try:
-                        quarter_dir = self.data_dir / quarter / 'ascii'
-                        if not quarter_dir.exists():
+                        # Check for ascii directory case-insensitively
+                        ascii_dir = next((d for d in (self.data_dir / quarter).iterdir() 
+                                        if d.is_dir() and d.name.lower() == 'ascii'), None)
+                        
+                        if not ascii_dir:
                             logging.warning(f"No ascii directory found for quarter {quarter}")
                             continue
                             
-                        logging.info(f"Processing quarter {quarter} from {quarter_dir}")
+                        logging.info(f"Processing quarter {quarter} from {ascii_dir}")
                         
                         # List files in quarter directory for debugging
                         logging.info(f"Files in {quarter}/ascii directory:")
-                        for f in quarter_dir.glob("*.txt"):
+                        for f in ascii_dir.glob("*.txt"):
                             logging.info(f"  {f.name}")
                         
                         # Look for files case-insensitively
-                        demo_file = next((f for f in quarter_dir.glob("*.txt") 
+                        demo_file = next((f for f in ascii_dir.glob("*.txt") 
                                         if "DEMO" in f.name.upper()), None)
-                        drug_file = next((f for f in quarter_dir.glob("*.txt") 
+                        drug_file = next((f for f in ascii_dir.glob("*.txt") 
                                         if "DRUG" in f.name.upper()), None)
-                        reac_file = next((f for f in quarter_dir.glob("*.txt") 
+                        reac_file = next((f for f in ascii_dir.glob("*.txt") 
                                         if "REAC" in f.name.upper()), None)
                         
                         if not all([demo_file, drug_file, reac_file]):
