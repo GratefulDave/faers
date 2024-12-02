@@ -813,16 +813,28 @@ class DataStandardizer:
                 logging.error(f"DiAna dictionary not found at {dict_path}")
                 return
             
-            self.diana_dict = pd.read_csv(dict_path, dtype={'drugname': str, 'Substance': str})
+            # Read with error_bad_lines=False to skip problematic rows
+            self.diana_dict = pd.read_csv(dict_path, 
+                                        dtype={'drugname': str, 'Substance': str},
+                                        on_bad_lines='skip',  # Skip problematic lines
+                                        delimiter=';')  # Use semicolon delimiter
             
             # Clean dictionary entries (matching R script)
             self.diana_dict['drugname'] = self.diana_dict['drugname'].apply(self._clean_drugname)
             self.diana_dict['Substance'] = self.diana_dict['Substance'].fillna('UNKNOWN')
             
+            # Create mapping dictionary
+            self.drug_map = dict(zip(
+                self.diana_dict['drugname'].str.lower().str.strip(),
+                self.diana_dict['Substance']
+            ))
+            
             logging.info(f"Loaded DiAna dictionary with {len(self.diana_dict)} entries")
             
         except Exception as e:
             logging.error(f"Error loading DiAna dictionary: {str(e)}")
+            self.diana_dict = pd.DataFrame(columns=['drugname', 'Substance'])
+            self.drug_map = {}
 
     def standardize_pt(self, df: pd.DataFrame, pt_variable: str) -> pd.DataFrame:
         """Standardize Preferred Terms using MedDRA.
@@ -891,12 +903,19 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Clean drug names
-        df['drugname'] = df['drugname'].apply(self._clean_drugname)
+        # Ensure drugname column exists
+        if 'drugname' not in df.columns and 'drug_name' in df.columns:
+            df = df.rename(columns={'drug_name': 'drugname'})
         
-        # Map to standardized substances
-        drug_substance_map = dict(zip(self.diana_dict['drugname'], self.diana_dict['Substance']))
-        df['Substance'] = df['drugname'].map(drug_substance_map)
+        if 'drugname' not in df.columns:
+            logging.error("No drugname or drug_name column found in DataFrame")
+            return df
+        
+        # Clean drug names
+        df['drugname'] = df['drugname'].fillna('').astype(str).apply(self._clean_drugname)
+        
+        # Map to standardized substances using the precomputed mapping
+        df['Substance'] = df['drugname'].str.lower().str.strip().map(self.drug_map).fillna('UNKNOWN')
         
         # Handle multi-substance drugs
         multi_substance = df[df['Substance'].str.contains(';', na=False)]
@@ -914,11 +933,11 @@ class DataStandardizer:
             multi_substance_df = pd.DataFrame(split_substances)
             
             # Combine back with single substance drugs
-            df = pd.concat([single_substance, multi_substance_df])
+            df = pd.concat([single_substance, multi_substance_df], ignore_index=True)
         
         # Mark trial drugs
         df['trial'] = df['Substance'].str.contains(', trial', na=False)
-        df['Substance'] = df['Substance'].str.replace(', trial', '')
+        df['Substance'] = df['Substance'].str.replace(', trial', '', regex=False)
         
         # Convert to categorical for memory efficiency
         df['drugname'] = df['drugname'].astype('category')
