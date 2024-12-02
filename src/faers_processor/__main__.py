@@ -213,7 +213,7 @@ def process_data(
     """
     try:
         # Get absolute paths from project root
-        root_dir = Path(__file__).parent.parent.parent
+        root_dir = Path(__file__).parent.parent.parent.resolve()  # Ensure absolute path
         input_dir = root_dir / 'data' / 'raw'
         output_dir = root_dir / 'data' / 'clean'
         external_dir = root_dir / 'external_data'

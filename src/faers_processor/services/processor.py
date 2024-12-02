@@ -100,73 +100,71 @@ class FAERSProcessor:
                     continue
 
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
-        """Process a single quarter's worth of FAERS data.
+        """Process a single quarter directory.
         
         Args:
-            quarter_dir: Path to quarter directory containing ASCII files
-            
-        Returns:
-            Dictionary of processed DataFrames for demographics, drugs, and reactions
+            quarter_dir: Path to quarter directory
         """
-        # Normalize quarter path first
-        quarter_dir = self._normalize_quarter_path(quarter_dir)
         results = {}
         
-        # Look for ASCII files in both quarter_dir and ascii subdirectory
-        ascii_paths = [
-            quarter_dir,  # Try root directory first
-            quarter_dir / 'ascii',  # Then try ascii subdirectory
-            quarter_dir / 'ASCII',  # Then try ASCII subdirectory (case sensitive)
-            quarter_dir.parent / quarter_dir.name.lower() / 'ascii',  # Try lowercase path
-            quarter_dir.parent / quarter_dir.name.upper() / 'ASCII'   # Try uppercase path
-        ]
-        
-        # Find the first valid path that contains our files
-        ascii_dir = None
-        for path in ascii_paths:
-            if path.exists() and any(path.glob('*.[Tt][Xx][Tt]')):
-                ascii_dir = path
-                break
-        
-        if not ascii_dir:
-            logging.error(f"No valid ASCII directory found in {quarter_dir}")
-            return results
-            
-        logging.info(f"Using ASCII directory: {ascii_dir}")
-        
-        # Find relevant files (case-insensitive)
-        demo_file = next((f for f in ascii_dir.glob('[Dd][Ee][Mm][Oo]*.[Tt][Xx][Tt]')), None)
-        drug_file = next((f for f in ascii_dir.glob('[Dd][Rr][Uu][Gg]*.[Tt][Xx][Tt]')), None)
-        reac_file = next((f for f in ascii_dir.glob('[Rr][Ee][Aa][Cc]*.[Tt][Xx][Tt]')), None)
-        
-        if not all([demo_file, drug_file, reac_file]):
-            missing = []
-            if not demo_file: missing.append("demographics")
-            if not drug_file: missing.append("drugs")
-            if not reac_file: missing.append("reactions")
-            logging.error(f"Missing files in {quarter_dir}: {', '.join(missing)}")
-            return results
-            
         try:
-            # Process files sequentially
+            # Find ASCII directory (case-insensitive)
+            ascii_dir = None
+            for subdir in quarter_dir.iterdir():
+                if subdir.is_dir() and 'ascii' in subdir.name.lower():
+                    ascii_dir = subdir
+                    break
+            
+            if not ascii_dir:
+                logging.error(f"No valid ASCII directory found in {quarter_dir}")
+                return results
+                
+            # Find required files (case-insensitive)
+            demo_file = None
+            drug_file = None
+            reac_file = None
+            
+            for file in ascii_dir.iterdir():
+                if not file.is_file():
+                    continue
+                    
+                name_lower = file.name.lower()
+                if 'demo' in name_lower:
+                    demo_file = file
+                elif 'drug' in name_lower:
+                    drug_file = file
+                elif 'reac' in name_lower:
+                    reac_file = file
+            
+            # Check if all required files are found
+            missing_files = []
+            if not demo_file:
+                missing_files.append('demographics')
+            if not drug_file:
+                missing_files.append('drugs')
+            if not reac_file:
+                missing_files.append('reactions')
+                
+            if missing_files:
+                logging.error(f"Missing files in {quarter_dir}: {', '.join(missing_files)}")
+                return results
+            
+            # Process each file type
             logging.info(f"Processing demographics from {demo_file}")
             demo_df = self.process_file(demo_file, 'demographics')
             if not demo_df.empty:
-                demo_df = self.standardizer.standardize_demographics(demo_df)
                 results['demographics'] = demo_df
             
             logging.info(f"Processing drugs from {drug_file}")
             drug_df = self.process_file(drug_file, 'drugs')
             if not drug_df.empty:
-                drug_df = self.standardizer.standardize_drugs(drug_df)
                 results['drugs'] = drug_df
             
             logging.info(f"Processing reactions from {reac_file}")
             reac_df = self.process_file(reac_file, 'reactions')
             if not reac_df.empty:
-                reac_df = self.standardizer.standardize_reactions(reac_df)
                 results['reactions'] = reac_df
-        
+                
         except Exception as e:
             logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
             
@@ -334,17 +332,17 @@ class FAERSProcessor:
             
             # Calculate chunk size based on file size
             file_size = file_path.stat().st_size
-            chunk_size = min(50_000, max(10_000, file_size // (100 * 1024 * 1024)))  # Smaller chunks
+            chunk_size = min(50_000, max(10_000, file_size // (100 * 1024 * 1024)))
             
-            # Read and process in chunks
             chunks = []
             total_chunks = 0
             
             try:
+                # Read and process in chunks
                 for chunk in pd.read_csv(
                     file_path,
                     sep='$',
-                    dtype=str,
+                    dtype=str,  # Read all columns as strings
                     na_values=['', 'NA', 'NULL'],
                     keep_default_na=True,
                     header=0,
@@ -382,7 +380,7 @@ class FAERSProcessor:
                     for chunk in pd.read_csv(
                         io.StringIO(fixed_content),
                         sep='$',
-                        dtype=str,
+                        dtype=str,  # Read all columns as strings
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True,
                         header=0,
@@ -406,34 +404,29 @@ class FAERSProcessor:
             return pd.DataFrame()
 
     def _process_dataframe(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
-        """Process a DataFrame after it has been loaded.
-        
-        Args:
-            df: DataFrame to process
-            data_type: Type of data being processed
-            
-        Returns:
-            Processed DataFrame
-        """
-        try:
-            # First process the data through the standardizer
-            if data_type == 'demographics':
-                df = self.standardizer.process_demographics(df)
-            elif data_type == 'drugs':
-                df = self.standardizer.process_drugs(df)
-            else:  # reactions
-                df = self.standardizer.process_reactions(df)
-                
-            # Then apply any additional standardization
-            if data_type == 'demographics':
-                df = self.standardizer.standardize_demographics(df)
-            elif data_type == 'drugs':
-                df = self.standardizer.standardize_drugs(df)
-            else:  # reactions
-                df = self.standardizer.standardize_reactions(df)
-                
+        """Process a DataFrame based on its type."""
+        if df.empty:
             return df
             
+        try:
+            # Ensure we have a DataFrame
+            if isinstance(df, pd.Series):
+                df = df.to_frame().T
+                
+            # Convert dtypes to string to avoid issues
+            df = df.astype(str)
+            
+            # Standardize based on type
+            if data_type == 'demographics':
+                return self.standardizer.standardize_demographics(df)
+            elif data_type == 'drugs':
+                return self.standardizer.standardize_drugs(df)
+            elif data_type == 'reactions':
+                return self.standardizer.standardize_reactions(df)
+            else:
+                logging.warning(f"Unknown data type: {data_type}")
+                return df
+                
         except Exception as e:
             logging.error(f"Error processing DataFrame: {str(e)}")
             return pd.DataFrame()
