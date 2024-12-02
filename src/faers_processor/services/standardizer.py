@@ -113,6 +113,12 @@ class DataStandardizer:
             '%m/%d/%Y',    # MM/DD/YYYY
             '%Y-%m-%d',    # YYYY-MM-DD
             '%Y%m%d.0',    # YYYYMMDD.0 (from float conversion)
+            '%Y-%m-%dT%H:%M:%S',  # ISO8601
+            '%Y-%m-%d %H:%M:%S',  # ISO8601 without T
+            '%Y-%m',       # YYYY-MM
+            '%m/%Y',       # MM/YYYY
+            '%Y%m.0',      # YYYYMM.0 (from float conversion)
+            '%y%m%d',      # YYMMDD (2-digit year)
         ]
         
         def try_parse_date(date_str):
@@ -131,18 +137,36 @@ class DataStandardizer:
             if date_str.endswith('.0'):
                 date_str = date_str[:-2]
                 
+            # Handle quarter format (e.g., 2011Q1)
+            quarter_match = re.match(r'(\d{4})Q(\d)', date_str)
+            if quarter_match:
+                year, quarter = quarter_match.groups()
+                month = (int(quarter) - 1) * 3 + 1
+                return pd.Timestamp(f"{year}-{month:02d}-01")
+                
             # Try each format
             for fmt in date_formats:
                 try:
-                    return pd.to_datetime(date_str, format=fmt)
+                    parsed_date = pd.to_datetime(date_str, format=fmt)
+                    # Handle 2-digit years
+                    if fmt.startswith('%y'):
+                        if parsed_date.year > datetime.now().year:
+                            parsed_date = parsed_date.replace(year=parsed_date.year - 100)
+                    return parsed_date
                 except (ValueError, TypeError):
                     continue
                     
-            # If all formats fail, try dateutil parser
+            # If all formats fail, try dateutil parser with error handling
             try:
-                return pd.to_datetime(date_str)
+                parsed_date = pd.to_datetime(date_str, errors='coerce')
+                if pd.notna(parsed_date):
+                    # Validate year is reasonable
+                    if 1900 <= parsed_date.year <= datetime.now().year:
+                        return parsed_date
             except (ValueError, TypeError):
-                return pd.NaT
+                pass
+                
+            return pd.NaT
         
         # Valid date range
         min_date = pd.Timestamp('1960-01-01')
@@ -150,6 +174,8 @@ class DataStandardizer:
         
         for col in date_columns:
             if col not in df.columns:
+                logging.warning(f"Required date column '{col}' not found, adding with default value: <NA>")
+                df[col] = pd.NaT
                 continue
                 
             try:
@@ -165,6 +191,7 @@ class DataStandardizer:
                     (df[col] < min_date) | 
                     (df[col] > max_date)
                 )
+                invalid_count = (mask & invalid_dates).sum()
                 df.loc[mask & invalid_dates, col] = pd.NaT
                 
                 # Log statistics
@@ -175,6 +202,11 @@ class DataStandardizer:
                         f"{na_count}/{total_rows} rows ({na_count/total_rows*100:.1f}%) "
                         f"had invalid dates in {col}"
                     )
+                    if invalid_count > 0:
+                        logging.warning(
+                            f"  - {invalid_count} dates were outside valid range "
+                            f"({min_date.date()} to {max_date.date()})"
+                        )
                     
             except Exception as e:
                 logging.error(f"Error processing {col}: {str(e)}")
@@ -1788,3 +1820,89 @@ class DataStandardizer:
             logging.warning(f"Unmapped countries: {', '.join(unmapped)}")
         
         return df
+
+    def process_drug_file(self, file_path: Path) -> pd.DataFrame:
+        """Process FAERS drug data file with robust error handling.
+        
+        Args:
+            file_path: Path to drug data file
+        
+        Returns:
+            Processed DataFrame
+        """
+        def detect_delimiter(sample_lines: List[str]) -> str:
+            """Detect the most likely delimiter in the file."""
+            delimiters = ['$', '|', '\t', ',']
+            max_consistent_cols = 0
+            best_delimiter = ','
+            
+            for delimiter in delimiters:
+                cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
+                # Get most common column count
+                from collections import Counter
+                col_counts = Counter(cols_per_row)
+                if col_counts:
+                    most_common_count = col_counts.most_common(1)[0][1]
+                    if most_common_count > max_consistent_cols:
+                        max_consistent_cols = most_common_count
+                        best_delimiter = delimiter
+                        
+            return best_delimiter
+        
+        def clean_line(line: str) -> str:
+            """Clean problematic characters from a line."""
+            # Remove null bytes
+            line = line.replace('\0', '')
+            # Normalize line endings
+            line = line.strip('\r\n')
+            # Handle escaped quotes
+            line = re.sub(r'(?<!\\)"', '\\"', line)
+            return line
+        
+        def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
+            """Read and clean the file, detecting delimiter."""
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                # Read sample for delimiter detection
+                sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
+                
+            # Detect delimiter
+            delimiter = detect_delimiter(sample_lines)
+            
+            # Clean all lines
+            cleaned_lines = [clean_line(line) for line in sample_lines]
+            
+            return cleaned_lines, delimiter
+        
+        try:
+            # First try standard parsing
+            df = pd.read_csv(file_path, low_memory=False)
+            logging.info(f"Successfully parsed {file_path} using standard method")
+            return df
+        except Exception as e:
+            logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
+        
+        try:
+            # Read and clean file
+            cleaned_lines, delimiter = read_and_clean_file(file_path)
+            
+            # Get header
+            header = cleaned_lines[0].split(delimiter)
+            header = [col.strip() for col in header]
+            
+            # Process data rows
+            data = []
+            for line in cleaned_lines[1:]:
+                fields = line.split(delimiter)
+                # Skip malformed rows
+                if len(fields) != len(header):
+                    continue
+                data.append([field.strip() for field in fields])
+            
+            # Create DataFrame
+            df = pd.DataFrame(data, columns=header)
+            logging.info(f"Successfully parsed {file_path} using manual method")
+            return df
+        
+        except Exception as e:
+            logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
+            return pd.DataFrame()  # Return empty DataFrame on failure
