@@ -251,15 +251,27 @@ def process_data(
         logging.info(f"Using external data from: {external_dir}")
         logging.info(f"Saving processed data to: {output_dir}")
         
+        if use_dask:
+            logging.info("Using Dask for parallel processing")
+            # Configure dask to use multiple workers
+            from distributed import Client, LocalCluster
+            cluster = LocalCluster()
+            client = Client(cluster)
+            logging.info(f"Dask dashboard available at: {client.dashboard_link}")
+        
         # Initialize processor with standardizer
         standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
-        processor = FAERSProcessor(standardizer)
+        processor = FAERSProcessor(standardizer, use_dask=use_dask)
         
         # Process all quarters
         processor.process_all(
             input_dir=input_dir,
             output_dir=output_dir
         )
+        
+        if use_dask:
+            client.close()
+            cluster.close()
         
         logging.info("Data processing completed successfully")
         

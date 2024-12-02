@@ -19,14 +19,17 @@ class FAERSProcessor:
 
     def __init__(
             self,
-            standardizer: DataStandardizer
+            standardizer: DataStandardizer,
+            use_dask: bool = False
     ):
         """Initialize processor with standardizer.
         
         Args:
             standardizer: DataStandardizer instance initialized with external data
+            use_dask: Whether to use Dask for parallel processing
         """
         self.standardizer = standardizer
+        self.use_dask = use_dask
 
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
         """Process a single quarter's worth of FAERS data.
@@ -281,7 +284,25 @@ class FAERSProcessor:
                 logging.error(f"File does not exist: {file_path}")
                 return pd.DataFrame()
             
-            # First try to read with pandas directly
+            # Use dask if enabled
+            if self.use_dask:
+                try:
+                    df = dd.read_csv(
+                        file_path,
+                        sep='$',
+                        dtype=str,
+                        na_values=['', 'NA', 'NULL'],
+                        keep_default_na=True,
+                        header=0,
+                        assume_missing=True,
+                        encoding='utf-8'
+                    )
+                    # Convert dask DataFrame to pandas DataFrame after processing
+                    return self._process_dataframe(df.compute(), data_type)
+                except Exception as e:
+                    logging.warning(f"Dask parsing failed for {file_path}, falling back to pandas: {str(e)}")
+            
+            # Standard pandas processing
             try:
                 df = pd.read_csv(
                     file_path,
@@ -323,7 +344,7 @@ class FAERSProcessor:
         except Exception as e:
             logging.error(f"Error processing file {file_path}: {str(e)}")
             return pd.DataFrame()
-            
+
     def _process_dataframe(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
         """Process a DataFrame after it has been loaded.
         
