@@ -170,97 +170,103 @@ class FAERSProcessor:
         try:
             logging.info(f"Reading {data_type} file: {file_path}")
             
+            if not file_path.exists():
+                logging.error(f"File does not exist: {file_path}")
+                return pd.DataFrame()
+            
+            # Try to read first few lines to determine structure
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    header = f.readline().strip()
+                    first_line = f.readline().strip() if f.readline() else ""
+                logging.info(f"Header: {header}")
+                logging.info(f"First line: {first_line}")
+            except Exception as e:
+                logging.error(f"Error reading file header: {str(e)}")
+                return pd.DataFrame()
+            
             # Convert Path to string for compatibility
             file_path_str = str(file_path)
             
-            # Define dtypes based on data type
-            if data_type == 'demographics':
-                dtypes = {
-                    'primaryid': 'str',  # Convert to int later
-                    'caseid': 'str',     # Convert to float later
-                    'age': 'str',        # Convert to float later
-                    'age_cod': 'str',
-                    'sex': 'str',
-                    'reporter_country': 'str',
-                    'occr_country': 'str'
-                }
-            elif data_type == 'drugs':
-                dtypes = {
-                    'primaryid': 'str',  # Convert to int later
-                    'drug_seq': 'str',   # Convert to int later
-                    'drugname': 'str',
-                    'prod_ai': 'str',
-                    'route': 'str',
-                    'dose_amt': 'str',
-                    'dose_unit': 'str',
-                    'dose_form': 'str'
-                }
-            else:  # reactions
-                dtypes = {
-                    'primaryid': 'str',  # Convert to int later
-                    'pt': 'str',
-                    'drug_rec_act': 'str'
-                }
+            # First try pandas to determine column names
+            try:
+                sample_df = pd.read_csv(file_path_str, sep='$', nrows=5)
+                columns = list(sample_df.columns)
+                logging.info(f"Detected columns: {columns}")
+                
+                # Define dtypes based on actual columns
+                dtypes = {col: 'str' for col in columns}
+                
+            except Exception as e:
+                logging.error(f"Error reading sample data: {str(e)}")
+                return pd.DataFrame()
             
-            # Read data with optimized settings
-            if self.use_dask:
-                try:
-                    df = dd.read_csv(
+            # Read full data
+            try:
+                if self.use_dask:
+                    try:
+                        df = dd.read_csv(
+                            file_path_str,
+                            sep='$',
+                            dtype=dtypes,
+                            na_values=['', 'NA', 'NULL'],
+                            keep_default_na=True,
+                            blocksize=self.chunk_size * 1024,
+                            assume_missing=True
+                        )
+                        
+                        # Convert numeric columns after reading
+                        if 'primaryid' in df.columns:
+                            df['primaryid'] = dd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
+                        if data_type == 'demographics':
+                            if 'caseid' in df.columns:
+                                df['caseid'] = dd.to_numeric(df['caseid'], errors='coerce')
+                            if 'age' in df.columns:
+                                df['age'] = dd.to_numeric(df['age'], errors='coerce')
+                        elif data_type == 'drugs' and 'drug_seq' in df.columns:
+                            df['drug_seq'] = dd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
+                            
+                    except Exception as e:
+                        logging.warning(f"Dask read failed, falling back to pandas: {str(e)}")
+                        df = None
+                
+                if df is None:  # If Dask failed or not used
+                    df = pd.read_csv(
                         file_path_str,
                         sep='$',
                         dtype=dtypes,
                         na_values=['', 'NA', 'NULL'],
-                        keep_default_na=True,
-                        blocksize=self.chunk_size * 1024,
-                        assume_missing=True
+                        keep_default_na=True
                     )
                     
-                    # Convert numeric columns after reading
+                    # Convert numeric columns
+                    if 'primaryid' in df.columns:
+                        df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
                     if data_type == 'demographics':
-                        df['primaryid'] = df['primaryid'].astype('int64')
-                        df['caseid'] = dd.to_numeric(df['caseid'], errors='coerce')
-                        df['age'] = dd.to_numeric(df['age'], errors='coerce')
-                    elif data_type == 'drugs':
-                        df['primaryid'] = df['primaryid'].astype('int64')
-                        df['drug_seq'] = df['drug_seq'].astype('int64')
-                    else:  # reactions
-                        df['primaryid'] = df['primaryid'].astype('int64')
-                        
-                except Exception as e:
-                    logging.warning(f"Dask read failed, falling back to pandas: {str(e)}")
-                    df = None
-            else:
-                df = None
+                        if 'caseid' in df.columns:
+                            df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
+                        if 'age' in df.columns:
+                            df['age'] = pd.to_numeric(df['age'], errors='coerce')
+                    elif data_type == 'drugs' and 'drug_seq' in df.columns:
+                        df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
                 
-            # Fall back to pandas if dask fails or not used
-            if df is None:
-                chunks = []
-                for chunk in pd.read_csv(
-                    file_path_str,
-                    sep='$',
-                    dtype=str,
-                    na_values=['', 'NA', 'NULL'],
-                    keep_default_na=True,
-                    chunksize=self.chunk_size
-                ):
-                    chunks.append(chunk)
-                df = pd.concat(chunks, ignore_index=True)
+                # Process based on data type
+                if data_type == 'demographics':
+                    result = self.standardizer.process_demographics(df)
+                elif data_type == 'drugs':
+                    result = self.standardizer.process_drugs(df)
+                else:  # reactions
+                    result = self.standardizer.process_reactions(df)
 
-            logging.info(f"Successfully read {len(df)} rows from {data_type} file")
+                # Compute if using Dask
+                if isinstance(df, dd.DataFrame):
+                    result = result.compute()
 
-            # Process based on data type
-            if data_type == 'demographics':
-                result = self.standardizer.process_demographics(df)
-            elif data_type == 'drugs':
-                result = self.standardizer.process_drugs(df)
-            else:  # reactions
-                result = self.standardizer.process_reactions(df)
-
-            # Compute if using Dask
-            if isinstance(df, dd.DataFrame):
-                result = result.compute()
-
-            return result
+                return result
+                
+            except Exception as e:
+                logging.error(f"Error processing file {file_path}: {str(e)}")
+                return pd.DataFrame()
 
         except Exception as e:
             logging.error(f"Error processing file {file_path}: {str(e)}")
