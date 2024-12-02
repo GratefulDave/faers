@@ -85,13 +85,12 @@ class DataStandardizer:
                 self._drug_dictionary = {}
         return self._drug_dictionary
 
-    def standardize_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """Standardize date columns in the dataframe.
+    def standardize_dates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize date columns in demographics data.
         
         Args:
-            df: DataFrame with date columns
-            max_date: Maximum allowed date (YYYYMMDD format)
-        
+            df: DataFrame containing date columns
+            
         Returns:
             DataFrame with standardized dates
         """
@@ -99,20 +98,28 @@ class DataStandardizer:
             return df
             
         df = df.copy()
-
-        # Date columns to process
-        date_columns = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
-
-        # Process each date column if it exists
+        
+        # Process date columns in order matching R script
+        date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
+        
         for col in date_columns:
-            if col in df.columns:
-                try:
-                    df[col] = self._check_date(df[col], max_date)
-                except Exception as e:
-                    logging.warning(f"Error standardizing {col}: {str(e)}")
-                    # Keep original values if standardization fails
-                    pass
-
+            if col not in df.columns:
+                continue
+                
+            try:
+                # Convert to datetime, coercing errors to NaT
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+                
+                # Log any rows where conversion failed
+                na_count = df[col].isna().sum()
+                if na_count > 0:
+                    logging.warning(f"{na_count} rows had invalid dates in {col}")
+                    
+            except Exception as e:
+                logging.error(f"Error processing {col}: {str(e)}")
+                # Keep original values if conversion fails
+                continue
+        
         return df
 
     def standardize_therapy_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
@@ -1263,6 +1270,9 @@ class DataStandardizer:
         Returns:
             Processed demographics DataFrame
         """
+        if df.empty:
+            return df
+            
         df = df.copy()
         
         # Basic column mapping (handle both upper and lower case)
@@ -1270,7 +1280,15 @@ class DataStandardizer:
             'isr': 'primaryid',
             'case': 'caseid',
             'i_f_code': 'i_f_code',
+            'i_f_cod': 'i_f_code',
             'event_dt': 'event_dt',
+            'EVENT_DT': 'event_dt',
+            'mfr_dt': 'mfr_dt',
+            'MFR_DT': 'mfr_dt',
+            'fda_dt': 'fda_dt',
+            'FDA_DT': 'fda_dt',
+            'rept_dt': 'rept_dt',
+            'REPT_DT': 'rept_dt',
             'sex': 'sex',
             'SEX': 'sex',
             'gndr_cod': 'sex',
@@ -1316,8 +1334,9 @@ class DataStandardizer:
                 logging.info(f"Added missing column '{col}' with default value: {default}")
         
         # Process in exact R script order
-        # 1. Standardize dates
-        if 'event_dt' in df.columns:
+        # 1. Standardize dates - only if the columns exist
+        date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
+        if any(col in df.columns for col in date_columns):
             df = self.standardize_dates(df)
         
         # 2. Standardize sex
