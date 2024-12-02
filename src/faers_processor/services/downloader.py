@@ -59,18 +59,51 @@ class FAERSDownloader(DataDownloader):
             soup = BeautifulSoup(response.text, 'html.parser')
             links = soup.find_all('a', href=True)
 
-            # Filter for ASCII zip files
-            quarters = []
+            # Filter for ASCII zip files and extract quarters
+            quarters = set()  # Use set to avoid duplicates
             for link in links:
-                href = link['href']
-                if '.zip' in href and 'ascii' in href.lower():
-                    # Extract quarter from filename (e.g., faers_ascii_2023q1.zip -> 2023q1)
-                    filename = os.path.basename(href)
-                    if '_ascii_' in filename:
-                        quarter = filename.split('_ascii_')[1].replace('.zip', '')
-                        quarters.append(quarter)
+                href = link['href'].lower()  # Convert to lowercase for consistent matching
+                if '.zip' not in href:
+                    continue
+                    
+                if 'ascii' not in href:
+                    continue
+                    
+                # Try different patterns to extract quarter
+                filename = os.path.basename(href)
+                
+                # Pattern 1: faers_ascii_2023q1.zip
+                if '_ascii_' in filename:
+                    quarter = filename.split('_ascii_')[1].replace('.zip', '')
+                    quarters.add(quarter)
+                    continue
+                
+                # Pattern 2: ascii_2023q1.zip
+                if filename.startswith('ascii_'):
+                    quarter = filename.replace('ascii_', '').replace('.zip', '')
+                    quarters.add(quarter)
+                    continue
+                    
+                # Pattern 3: Extract year and quarter using regex
+                match = re.search(r'(19|20)\d{2}q[1-4]', filename)
+                if match:
+                    quarters.add(match.group(0))
+                    continue
+                    
+                logging.debug(f"Could not extract quarter from filename: {filename}")
 
-            return sorted(quarters)
+            # Sort quarters chronologically
+            sorted_quarters = sorted(list(quarters), key=lambda x: (x[:4], x[4:]))  # Sort by year then quarter
+            
+            if not sorted_quarters:
+                logging.error("No quarters found in webpage")
+                logging.info("Available links:")
+                for link in links:
+                    logging.info(f"  - {link['href']}")
+            else:
+                logging.info(f"Found {len(sorted_quarters)} quarters: {sorted_quarters}")
+                
+            return sorted_quarters
 
         except Exception as e:
             logging.error(f"Error getting quarters list: {str(e)}")
