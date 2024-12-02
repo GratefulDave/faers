@@ -829,6 +829,200 @@ class DataStandardizer:
         
         return df
 
+    def standardize_route(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize medication administration routes.
+        
+        Args:
+            df: DataFrame with route information
+            
+        Returns:
+            DataFrame with standardized routes
+        """
+        df = df.copy()
+        
+        if 'route' not in df.columns:
+            return df
+        
+        # Clean route strings
+        df['route'] = df['route'].str.lower().str.strip()
+        
+        # Load route standardization mapping
+        route_st = pd.read_csv(
+            self.external_dir / 'Manual_fix/route_st.csv',
+            sep=';',
+            usecols=['route', 'route_st']
+        ).drop_duplicates()
+        
+        # Create mapping dictionary
+        route_map = dict(zip(route_st['route'], route_st['route_st']))
+        
+        # Apply standardization
+        df['route_st'] = df['route'].map(route_map)
+        
+        # Log unmapped routes
+        unmapped = df[~df['route'].isna() & df['route_st'].isna()]['route'].unique()
+        if len(unmapped) > 0:
+            logging.warning(f"Unmapped routes: {unmapped}")
+        
+        # Convert to categorical
+        df['route_st'] = df['route_st'].astype('category')
+        
+        # Update column name
+        df = df.drop(columns=['route']).rename(columns={'route_st': 'route'})
+        
+        return df
+
+    def standardize_dose_form(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize medication dose forms.
+        
+        Args:
+            df: DataFrame with dose form information
+            
+        Returns:
+            DataFrame with standardized dose forms
+        """
+        df = df.copy()
+        
+        if 'dose_form' not in df.columns:
+            return df
+        
+        # Clean dose form strings
+        df['dose_form'] = df['dose_form'].str.lower().str.strip()
+        
+        # Load dose form standardization mapping
+        dose_form_st = pd.read_csv(
+            self.external_dir / 'Manual_fix/dose_form_st.csv',
+            sep=';',
+            usecols=['dose_form', 'dose_form_st']
+        ).drop_duplicates()
+        
+        # Create mapping dictionary
+        form_map = dict(zip(dose_form_st['dose_form'], dose_form_st['dose_form_st']))
+        
+        # Apply standardization
+        df['dose_form_st'] = df['dose_form'].map(form_map)
+        
+        # Log unmapped forms
+        unmapped = df[~df['dose_form'].isna() & df['dose_form_st'].isna()]['dose_form'].unique()
+        if len(unmapped) > 0:
+            logging.warning(f"Unmapped dose forms: {unmapped}")
+        
+        # Convert to categorical
+        df['dose_form_st'] = df['dose_form_st'].astype('category')
+        
+        # Update column name
+        df = df.drop(columns=['dose_form']).rename(columns={'dose_form_st': 'dose_form'})
+        
+        return df
+
+    def standardize_dose(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize medication doses and units.
+        
+        Args:
+            df: DataFrame with dose information
+            
+        Returns:
+            DataFrame with standardized doses
+        """
+        df = df.copy()
+        
+        # Load unit standardization mapping
+        unit_st = pd.read_csv(
+            self.external_dir / 'Manual_fix/unit_st.csv',
+            sep=';',
+            usecols=['unit', 'unit_st', 'conversion_factor']
+        ).drop_duplicates()
+        
+        # Create unit mapping dictionary
+        unit_map = dict(zip(unit_st['unit'], unit_st['unit_st']))
+        factor_map = dict(zip(unit_st['unit'], unit_st['conversion_factor']))
+        
+        # Standardize dose units
+        if 'dose_unit' in df.columns:
+            df['dose_unit'] = df['dose_unit'].str.lower().str.strip()
+            df['dose_unit_st'] = df['dose_unit'].map(unit_map)
+            df['conversion_factor'] = df['dose_unit'].map(factor_map).fillna(1.0)
+            
+            # Log unmapped units
+            unmapped = df[~df['dose_unit'].isna() & df['dose_unit_st'].isna()]['dose_unit'].unique()
+            if len(unmapped) > 0:
+                logging.warning(f"Unmapped dose units: {unmapped}")
+            
+            # Convert dose amounts
+            if 'dose_amt' in df.columns:
+                df['dose_amt'] = pd.to_numeric(df['dose_amt'], errors='coerce')
+                df['dose_amt'] = df['dose_amt'] * df['conversion_factor']
+            
+            # Clean up columns
+            df = df.drop(columns=['dose_unit', 'conversion_factor'])
+            df = df.rename(columns={'dose_unit_st': 'dose_unit'})
+            df['dose_unit'] = df['dose_unit'].astype('category')
+        
+        # Standardize cumulative dose units
+        if 'cum_dose_unit' in df.columns:
+            df['cum_dose_unit'] = df['cum_dose_unit'].str.lower().str.strip()
+            df['cum_dose_unit_st'] = df['cum_dose_unit'].map(unit_map)
+            df['conversion_factor'] = df['cum_dose_unit'].map(factor_map).fillna(1.0)
+            
+            # Log unmapped units
+            unmapped = df[~df['cum_dose_unit'].isna() & df['cum_dose_unit_st'].isna()]['cum_dose_unit'].unique()
+            if len(unmapped) > 0:
+                logging.warning(f"Unmapped cumulative dose units: {unmapped}")
+            
+            # Convert cumulative dose amounts
+            if 'cum_dose_chr' in df.columns:
+                df['cum_dose_chr'] = pd.to_numeric(df['cum_dose_chr'], errors='coerce')
+                df['cum_dose_chr'] = df['cum_dose_chr'] * df['conversion_factor']
+            
+            # Clean up columns
+            df = df.drop(columns=['cum_dose_unit', 'conversion_factor'])
+            df = df.rename(columns={'cum_dose_unit_st': 'cum_dose_unit'})
+            df['cum_dose_unit'] = df['cum_dose_unit'].astype('category')
+        
+        return df
+
+    def standardize_outcome(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize adverse event outcomes.
+        
+        Args:
+            df: DataFrame with outcome information
+            
+        Returns:
+            DataFrame with standardized outcomes
+        """
+        df = df.copy()
+        
+        if 'outc_cod' not in df.columns:
+            return df
+        
+        # Valid outcome codes and their descriptions
+        valid_outcomes = {
+            'DE': 'Death',
+            'LT': 'Life-Threatening',
+            'HO': 'Hospitalization',
+            'DS': 'Disability',
+            'CA': 'Congenital Anomaly',
+            'RI': 'Required Intervention',
+            'OT': 'Other'
+        }
+        
+        # Standardize codes
+        df.loc[~df['outc_cod'].isin(valid_outcomes.keys()), 'outc_cod'] = pd.NA
+        
+        # Convert to categorical
+        df['outc_cod'] = df['outc_cod'].astype('category')
+        
+        # Log outcome distribution
+        outcome_dist = df['outc_cod'].value_counts(dropna=False)
+        total = len(df)
+        logging.info("Outcome distribution:")
+        for code, count in outcome_dist.items():
+            pct = round(100 * count / total, 2)
+            desc = valid_outcomes.get(code, 'Unknown/NA')
+            logging.info(f"  {code} ({desc}): {count} ({pct}%)")
+        
+        return df
+
     def _clean_drugname(self, name: str) -> str:
         """Clean drug name by removing special characters and standardizing format.
         
