@@ -802,15 +802,26 @@ class DataStandardizer:
                                             manual_fixes['standardized']))
 
     def _load_diana_dictionary(self):
-        """Load DiAna drug name dictionary."""
-        diana_dict_file = self.external_dir / 'DiAna_dictionary' / 'drugnames_standardized.csv'
-        if diana_dict_file.exists():
-            self.diana_dict = pd.read_csv(diana_dict_file, sep=';')
-            # Filter out invalid entries
-            self.diana_dict = self.diana_dict[
-                (self.diana_dict['Substance'] != 'na') &
-                (~self.diana_dict['Substance'].isna())
-                ][['drugname', 'Substance']]
+        """Load and prepare the DiAna drug dictionary."""
+        try:
+            # Try to load the dictionary
+            dict_path = os.path.join(self.external_dir, 'DiAna_dictionary', 'drugnames_standardized.csv')
+            if not os.path.exists(dict_path):
+                logging.error(f"DiAna dictionary not found at {dict_path}")
+                return
+            
+            self.diana_dict = pd.read_csv(dict_path, 
+                                        dtype={'drugname': str, 'Substance': str},
+                                        encoding='utf-8')
+            
+            # Clean dictionary entries
+            self.diana_dict['drugname'] = self.diana_dict['drugname'].apply(self._clean_drugname)
+            self.diana_dict['Substance'] = self.diana_dict['Substance'].fillna('UNKNOWN')
+            
+            logging.info(f"Loaded DiAna dictionary with {len(self.diana_dict)} entries")
+            
+        except Exception as e:
+            logging.error(f"Error loading DiAna dictionary: {str(e)}")
 
     def _clean_drugname(self, name: str) -> str:
         """Clean and standardize drug names.
@@ -894,9 +905,19 @@ class DataStandardizer:
         # Load DiAna dictionary if not already loaded
         if not hasattr(self, 'diana_dict'):
             self._load_diana_dictionary()
-            
-        # Apply standardization
-        df['standard_name'] = df[drugname_col].map(self.diana_dict)
+        
+        # Create mapping dictionary
+        if hasattr(self, 'diana_dict'):
+            drug_map = dict(zip(
+                self.diana_dict['drugname'].str.lower(),
+                self.diana_dict['Substance']
+            ))
+            # Apply standardization
+            df['standard_name'] = df[drugname_col].str.lower().map(drug_map)
+        else:
+            # If dictionary not available, use cleaned names
+            logging.warning("DiAna dictionary not available. Using cleaned drug names.")
+            df['standard_name'] = df[drugname_col]
         
         # Log statistics
         total_drugs = len(df)
