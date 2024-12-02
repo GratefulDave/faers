@@ -25,14 +25,24 @@ from tqdm import tqdm
 class DataStandardizer:
     """Standardizes FAERS data fields."""
     
-    def __init__(self, external_dir: Path):
-        """Initialize standardizer with reference data directory.
+    def __init__(self, external_dir: Path, output_dir: Path):
+        """Initialize the standardizer.
         
         Args:
-            external_dir: Path to external reference data
+            external_dir: Path to external data directory
+            output_dir: Path to output directory
         """
-        self.external_dir = Path(external_dir)
-        self._init_logging()
+        self.external_dir = external_dir
+        self.output_dir = output_dir
+        
+        # Create output directory if it doesn't exist
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize logging
+        logging.info(f"Using external data from: {self.external_dir}")
+        logging.info(f"Saving processed data to: {self.output_dir}")
+        
+        # Load reference data
         self._load_reference_data()
         self._load_meddra_data()
         self._load_diana_dictionary()
@@ -348,33 +358,48 @@ class DataStandardizer:
             # Manual fix files are under external_data/manual_fixes
             manual_fix_dir = self.external_dir / 'manual_fixes'
             
+            if not manual_fix_dir.exists():
+                raise FileNotFoundError(f"Manual fix directory not found at {manual_fix_dir}")
+            
             # Load country mappings
             countries_file = manual_fix_dir / 'countries.csv'
+            if not countries_file.exists():
+                raise FileNotFoundError(f"Countries file not found at {countries_file}")
             self.country_map = pd.read_csv(countries_file, sep=';', low_memory=False)
             logging.info(f"Loaded {len(self.country_map)} country mappings")
             
             # Load route standardization
             route_file = manual_fix_dir / 'route_st.csv'
+            if not route_file.exists():
+                raise FileNotFoundError(f"Route file not found at {route_file}")
             self.route_map = pd.read_csv(route_file, sep=';', low_memory=False)
             logging.info(f"Loaded {len(self.route_map)} route mappings")
             
             # Load dose form standardization
             dose_form_file = manual_fix_dir / 'dose_form_st.csv'
+            if not dose_form_file.exists():
+                raise FileNotFoundError(f"Dose form file not found at {dose_form_file}")
             self.dose_form_map = pd.read_csv(dose_form_file, sep=';', low_memory=False)
             logging.info(f"Loaded {len(self.dose_form_map)} dose form mappings")
             
             # Load dose frequency standardization
             dose_freq_file = manual_fix_dir / 'dose_freq_st.csv'
+            if not dose_freq_file.exists():
+                raise FileNotFoundError(f"Dose frequency file not found at {dose_freq_file}")
             self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', low_memory=False)
             logging.info(f"Loaded {len(self.dose_freq_map)} dose frequency mappings")
             
             # Load PT fixes
             pt_file = manual_fix_dir / 'pt_fixed.csv'
+            if not pt_file.exists():
+                raise FileNotFoundError(f"PT file not found at {pt_file}")
             self.pt_fixes = pd.read_csv(pt_file, sep=';', low_memory=False)
             logging.info(f"Loaded {len(self.pt_fixes)} PT fixes")
             
             # Load route form standardization
             route_form_file = manual_fix_dir / 'route_form_st.csv'
+            if not route_form_file.exists():
+                raise FileNotFoundError(f"Route form file not found at {route_form_file}")
             self.route_form_map = pd.read_csv(route_form_file, sep=';', low_memory=False)
             logging.info(f"Loaded {len(self.route_form_map)} route form mappings")
             
