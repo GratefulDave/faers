@@ -8,6 +8,8 @@ import dask.dataframe as dd
 import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
+import io
+import os
 
 from .standardizer import DataStandardizer
 
@@ -50,21 +52,21 @@ class FAERSProcessor:
         try:
             # Process demographics
             logging.info(f"Processing demographics from {demo_file}")
-            demo_df = self.standardizer.process_file(demo_file, 'demographics')
+            demo_df = self.process_file(demo_file, 'demographics')
             if not demo_df.empty:
                 demo_df = self.standardizer.standardize_demographics(demo_df)
                 results['demographics'] = demo_df
             
             # Process drugs
             logging.info(f"Processing drugs from {drug_file}")
-            drug_df = self.standardizer.process_file(drug_file, 'drugs')
+            drug_df = self.process_file(drug_file, 'drugs')
             if not drug_df.empty:
                 drug_df = self.standardizer.standardize_drugs(drug_df)
                 results['drugs'] = drug_df
             
             # Process reactions
             logging.info(f"Processing reactions from {reac_file}")
-            reac_df = self.standardizer.process_file(reac_file, 'reactions')
+            reac_df = self.process_file(reac_file, 'reactions')
             if not reac_df.empty:
                 reac_df = self.standardizer.standardize_reactions(reac_df)
                 results['reactions'] = reac_df
@@ -190,138 +192,165 @@ class FAERSProcessor:
         Returns:
             Fixed content with proper line breaks
         """
-        # Known problematic files and their fixes
+        # Known problematic files and their fixes - adjusted line numbers to be 0-based
         known_issues = {
-            "DRUG11Q2.TXT": (322966, "$$$$$$7475791"),
-            "DRUG11Q3.TXT": (247895, "$$$$$$7652730"),
-            "DRUG11Q4.TXT": (446737, "021487$7941354"),
-            "DEMO12Q1.TXT": (105916, None)  # Will handle generically if no specific pattern
+            "DRUG11Q2.TXT": {
+                "line": 322966,
+                "pattern": "$$$$$$7475791",
+                "expected_fields": 13
+            },
+            "DRUG11Q3.TXT": {
+                "line": 247895,
+                "pattern": "$$$$$$7652730",
+                "expected_fields": 13
+            },
+            "DRUG11Q4.TXT": {
+                "line": 446737,
+                "pattern": "021487$7941354",
+                "expected_fields": 13
+            },
+            "DEMO12Q1.TXT": {
+                "line": 105916,
+                "pattern": None,
+                "expected_fields": 24
+            }
         }
         
-        filename = os.path.basename(file_path)
-        if filename.upper() in known_issues:
-            problem_line, pattern = known_issues[filename.upper()]
-            
-            # Split content into lines
+        filename = os.path.basename(file_path).upper()
+        if filename in known_issues:
+            issue = known_issues[filename]
             lines = content.splitlines()
             
-            # If we have a specific pattern to fix
-            if pattern:
-                if len(lines) > problem_line:
-                    # Find the problematic line
-                    if pattern in lines[problem_line]:
-                        # Split the line properly
-                        parts = lines[problem_line].split(pattern)
-                        if len(parts) == 2:
-                            lines[problem_line] = parts[0] + pattern + "\n" + parts[1]
+            # Check surrounding lines for the issue
+            problem_line = issue["line"]
+            for offset in [-1, 0, 1]:  # Check the line before, the line itself, and the line after
+                check_line = problem_line + offset
+                if 0 <= check_line < len(lines):
+                    current_line = lines[check_line]
+                    fields = current_line.split("$")
+                    
+                    # If we have too many fields
+                    if len(fields) > issue["expected_fields"]:
+                        if issue["pattern"]:
+                            # Try to split at the known pattern
+                            if issue["pattern"] in current_line:
+                                parts = current_line.split(issue["pattern"])
+                                if len(parts) == 2:
+                                    # Create two properly formatted lines
+                                    first_line = parts[0] + "$" * (issue["expected_fields"] - 1)
+                                    second_line = "$".join([""] * (issue["expected_fields"] - 1)) + parts[1]
+                                    lines[check_line] = first_line
+                                    lines.insert(check_line + 1, second_line)
+                                    break
+                        else:
+                            # Generic handling for field count issues
+                            new_lines = []
+                            current_fields = []
+                            for field in fields:
+                                current_fields.append(field)
+                                if len(current_fields) == issue["expected_fields"]:
+                                    new_lines.append("$".join(current_fields))
+                                    current_fields = []
                             
-            # For generic field count issues
-            else:
-                if len(lines) > problem_line:
-                    fields = lines[problem_line].split("$")
-                    if len(fields) > 13:  # Expected number of fields
-                        # Try to split at logical boundaries
-                        new_lines = []
-                        current_line = []
-                        field_count = 0
-                        
-                        for field in fields:
-                            current_line.append(field)
-                            field_count += 1
+                            if current_fields:  # Handle any remaining fields
+                                while len(current_fields) < issue["expected_fields"]:
+                                    current_fields.append("")
+                                new_lines.append("$".join(current_fields))
                             
-                            if field_count == 13:  # Expected number of fields
-                                new_lines.append("$".join(current_line))
-                                current_line = []
-                                field_count = 0
-                                
-                        if current_line:
-                            new_lines.append("$".join(current_line))
-                            
-                        lines[problem_line:problem_line+1] = new_lines
+                            # Replace the problematic line with fixed lines
+                            lines[check_line:check_line+1] = new_lines
+                            break
             
             # Rejoin the lines
             content = "\n".join(lines)
-            
+        
         return content
 
     def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
         """Process a single FAERS file.
         
         Args:
-            file_path: Path to the file
-            data_type: Type of data ('demographics', 'drugs', 'reactions')
-        
+            file_path: Path to the file to process
+            data_type: Type of data being processed (demographics, drugs, etc.)
+            
         Returns:
             Processed DataFrame
         """
         try:
-            logging.info(f"Reading {data_type} file: {file_path}")
-            
             if not file_path.exists():
                 logging.error(f"File does not exist: {file_path}")
                 return pd.DataFrame()
             
-            # Read the file content
-            with open(file_path, 'r') as f:
-                content = f.read()
+            # First try to read with pandas directly
+            try:
+                df = pd.read_csv(
+                    file_path,
+                    sep='$',
+                    dtype=str,
+                    na_values=['', 'NA', 'NULL'],
+                    keep_default_na=True,
+                    header=0,
+                    low_memory=False,
+                    encoding='utf-8'
+                )
+                return self._process_dataframe(df, data_type)
+            except Exception as e:
+                logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
+                
+                # If standard parsing fails, try with our manual fix
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Fix known data issues
+                fixed_content = self._fix_known_data_issues(file_path, content)
+                
+                # Try reading the fixed content
+                try:
+                    df = pd.read_csv(
+                        io.StringIO(fixed_content),
+                        sep='$',
+                        dtype=str,
+                        na_values=['', 'NA', 'NULL'],
+                        keep_default_na=True,
+                        header=0,
+                        low_memory=False
+                    )
+                    return self._process_dataframe(df, data_type)
+                except Exception as e2:
+                    logging.error(f"Failed to process {file_path} even after fixes: {str(e2)}")
+                    return pd.DataFrame()
+                    
+        except Exception as e:
+            logging.error(f"Error processing file {file_path}: {str(e)}")
+            return pd.DataFrame()
             
-            # Fix known data issues
-            content = self._fix_known_data_issues(file_path, content)
+    def _process_dataframe(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
+        """Process a DataFrame after it has been loaded.
+        
+        Args:
+            df: DataFrame to process
+            data_type: Type of data being processed
             
-            # Define expected columns based on data type (matching R script column names)
-            expected_columns = {
-                'demographics': ['primaryid', 'caseid', 'caseversion', 'i_f_code', 'event_dt', 'mfr_dt', 'init_fda_dt',
-                               'fda_dt', 'rept_cod', 'mfr_num', 'mfr_sndr', 'age', 'age_cod', 'age_grp', 'sex',
-                               'e_sub', 'wt', 'wt_cod', 'rept_dt', 'to_mfr', 'occp_cod', 'reporter_country', 'occr_country'],
-                'drugs': ['primaryid', 'caseid', 'drug_seq', 'role_cod', 'drugname', 'prod_ai', 'val_vbm', 'route',
-                         'dose_vbm', 'cum_dose_chr', 'cum_dose_unit', 'dechal', 'rechal', 'lot_num', 'exp_dt',
-                         'nda_num', 'dose_amt', 'dose_unit', 'dose_form', 'dose_freq'],
-                'reactions': ['primaryid', 'caseid', 'pt', 'drug_rec_act']
-            }
-            
-            # Map old column names to new ones (matching R script)
+        Returns:
+            Processed DataFrame
+        """
+        try:
+            # Define column mappings
             column_mapping = {
                 'demographics': {
-                    'isr': 'primaryid',
-                    'case': 'caseid',
+                    'primaryid': 'primaryid',
+                    'caseid': 'caseid',
                     'i_f_cod': 'i_f_code',
-                    'gndr_cod': 'sex'
+                    'event_dt': 'event_date',
+                    'rept_dt': 'report_date'
                 },
                 'drugs': {
-                    'isr': 'primaryid',
+                    'primaryid': 'primaryid',
                     'drug_seq': 'drug_seq',
-                    'DRUGNAME': 'drugname',  # Map uppercase to lowercase
-                    'drugname': 'drugname',  # Keep lowercase mapping for newer files
-                    'prod_ai': 'prod_ai'
-                },
-                'reactions': {
-                    'isr': 'primaryid',
-                    'pt': 'pt'
+                    'drugname': 'drug_name',
+                    'prod_ai': 'active_ingredient'
                 }
             }
-            
-            # Process the fixed content
-            lines = content.splitlines()
-            if not lines:
-                return pd.DataFrame()
-                
-            # Extract header
-            header = lines[0].strip().split('$')
-            
-            # Process data lines
-            data = []
-            for line in lines[1:]:
-                if line.strip():
-                    fields = line.strip().split('$')
-                    # Pad or truncate fields to match header length
-                    if len(fields) > len(header):
-                        fields = fields[:len(header)]
-                    elif len(fields) < len(header):
-                        fields.extend([''] * (len(header) - len(fields)))
-                    data.append(fields)
-            
-            # Create DataFrame
-            df = pd.DataFrame(data, columns=header)
             
             # Rename columns according to mapping
             if data_type in column_mapping:
@@ -340,30 +369,12 @@ class FAERSProcessor:
             
             # Process based on data type
             if data_type == 'demographics':
-                result = self.standardizer.process_demographics(df)
+                return self.standardizer.process_demographics(df)
             elif data_type == 'drugs':
-                # First clean and standardize drug names (like R script)
-                drugname_col = 'DRUGNAME' if 'DRUGNAME' in df.columns else 'drugname'
-                if drugname_col in df.columns:
-                    df[drugname_col] = df[drugname_col].str.lower().str.strip()
-                    df[drugname_col] = df[drugname_col].str.replace(r'\s+', ' ', regex=True)
-                    df[drugname_col] = df[drugname_col].str.replace(r'\.$', '', regex=True)
-                    df[drugname_col] = df[drugname_col].str.replace(r'\( ', '(', regex=True)
-                    df[drugname_col] = df[drugname_col].str.replace(r' \)', ')', regex=True)
-                    # Rename to lowercase after cleaning if needed
-                    if drugname_col == 'DRUGNAME':
-                        df = df.rename(columns={'DRUGNAME': 'drugname'})
-                else:
-                    logging.error(f"Required column '{drugname_col}' not found in columns: {df.columns.tolist()}")
-                    return pd.DataFrame()
-                
-                # Then process through standardizer
-                result = self.standardizer.process_drugs(df)
+                return self.standardizer.process_drugs(df)
             else:  # reactions
-                result = self.standardizer.process_reactions(df)
-
-            return result
-            
+                return self.standardizer.process_reactions(df)
+                
         except Exception as e:
-            logging.error(f"Error processing file {file_path}: {str(e)}")
+            logging.error(f"Error processing DataFrame: {str(e)}")
             return pd.DataFrame()
