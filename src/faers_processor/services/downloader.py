@@ -210,24 +210,40 @@ class FAERSDownloader(DataDownloader):
                 logging.info(f"Zip file for {quarter} already exists and is complete")
 
             # Check if files are already extracted
+            extract_dir.mkdir(exist_ok=True)
+            
             if extract_dir.exists() and any(extract_dir.iterdir()):
                 logging.info(f"Files for {quarter} already extracted in {extract_dir}")
                 return
 
             # Extract files
-            logging.info(f"Extracting {zip_file} to {quarter_dir}")
-            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-                zip_ref.extractall(quarter_dir)
-
-            # Only delete zip file if extraction was successful
-            if extract_dir.exists() and any(extract_dir.iterdir()):
-                logging.info(f"Extraction successful, removing {zip_file}")
-                zip_file.unlink()
-            else:
-                logging.error(f"Extraction may have failed - keeping {zip_file}")
-
+            logging.info(f"Extracting {zip_file} to {extract_dir}")
+            try:
+                with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                    # List files before extraction
+                    files = zip_ref.namelist()
+                    logging.debug(f"Files in zip: {files}")
+                    
+                    # Extract all files
+                    zip_ref.extractall(extract_dir)
+                    
+                    # Verify extraction
+                    extracted_files = list(extract_dir.rglob('*.txt'))
+                    if not extracted_files:
+                        raise Exception("No .txt files found after extraction")
+                        
+                    logging.info(f"Successfully extracted {len(extracted_files)} files")
+                    
+                    # Only delete zip file if extraction was successful
+                    logging.info(f"Extraction successful, removing {zip_file}")
+                    zip_file.unlink()
+                    
+            except Exception as e:
+                logging.error(f"Error extracting {zip_file}: {str(e)}")
+                logging.error("Keeping zip file for troubleshooting")
+                
             # Handle special case for 2018Q1
-            demo_file = quarter_dir / 'ascii' / 'DEMO18Q1_new.txt'
+            demo_file = extract_dir / 'DEMO18Q1_new.txt'
             if demo_file.exists():
                 demo_file.rename(demo_file.parent / 'DEMO18Q1.txt')
 
@@ -322,20 +338,33 @@ class FAERSDownloader(DataDownloader):
         Args:
             max_workers: Maximum number of parallel downloads
         """
+        # Get list of quarters
         quarters = self.get_quarters()
         if not quarters:
-            logging.error("No quarters available for download")
+            logging.error("No quarters found to download")
             return
-
-        logging.info(f"Found {len(quarters)} quarters available for download")
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            
+        logging.info(f"Downloading {len(quarters)} quarters with {max_workers} workers")
+        
+        # Track success/failure for each quarter
+        results = {
+            'success': [],
+            'failed': [],
+            'skipped': []
+        }
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for quarter in quarters:
-                future = executor.submit(
-                    self.download_quarter,
-                    quarter=quarter
-                )
+                # Check if already downloaded and extracted
+                quarter_dir = self.output_dir / quarter
+                extract_dir = quarter_dir / "ascii"
+                if extract_dir.exists() and any(extract_dir.iterdir()):
+                    logging.info(f"Quarter {quarter} already downloaded and extracted")
+                    results['skipped'].append(quarter)
+                    continue
+                    
+                future = executor.submit(self.download_quarter, quarter)
                 futures.append((quarter, future))
 
             with tqdm(total=len(futures), desc="Downloading quarters") as pbar:
@@ -343,10 +372,22 @@ class FAERSDownloader(DataDownloader):
                     try:
                         future.result()
                         logging.info(f"Successfully downloaded quarter {quarter}")
+                        results['success'].append(quarter)
                     except Exception as e:
                         logging.error(f"Error downloading quarter {quarter}: {str(e)}")
+                        results['failed'].append((quarter, str(e)))
                     pbar.update(1)
-
+                    
+        # Report results
+        if results['success']:
+            logging.info(f"Successfully downloaded {len(results['success'])} quarters: {', '.join(results['success'])}")
+        if results['failed']:
+            logging.error(f"Failed to download {len(results['failed'])} quarters:")
+            for quarter, error in results['failed']:
+                logging.error(f"  {quarter}: {error}")
+        if results['skipped']:
+            logging.info(f"Skipped {len(results['skipped'])} already downloaded quarters: {', '.join(results['skipped'])}")
+            
     def download_all(self, max_workers: int = 4) -> None:
         """Download all available FAERS quarters.
         
