@@ -348,50 +348,49 @@ class FAERSProcessor:
         return content
 
     def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
-        """Process a single FAERS file.
-        
-        Args:
-            file_path: Path to the file to process
-            data_type: Type of data being processed (demographics, drugs, etc.)
-            
-        Returns:
-            Processed DataFrame
-        """
+        """Process a single FAERS file."""
         try:
             if not file_path.exists():
                 logging.error(f"File does not exist: {file_path}")
                 return pd.DataFrame()
             
-            # Use dask if enabled - read in chunks to avoid memory issues
+            # Calculate chunk size based on file size
+            file_size = file_path.stat().st_size
+            chunk_size = min(50_000, max(10_000, file_size // (100 * 1024 * 1024)))  # Smaller chunks
+            
             if self.use_dask:
                 try:
-                    # Calculate optimal chunk size based on file size
-                    file_size = file_path.stat().st_size
-                    chunk_size = min(100_000, max(10_000, file_size // (50 * 1024 * 1024)))  # Aim for ~50MB chunks
-                    
-                    # Read file in chunks using dask
-                    df = dd.read_csv(
+                    # Process in smaller chunks to avoid large graph
+                    ddf = dd.read_csv(
                         file_path,
                         sep='$',
                         dtype=str,
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True,
                         header=0,
+                        blocksize=25 * 1024 * 1024,  # 25MB blocks
+                        sample=1000,  # Reduced sample size
                         assume_missing=True,
-                        blocksize=chunk_size * 1024,  # Convert to bytes
-                        encoding='utf-8',
-                        sample=10000  # Sample fewer rows for metadata
+                        encoding='utf-8'
                     )
-                    # Convert to pandas immediately to avoid large graph
-                    return self._process_dataframe(df.compute(), data_type)
+                    
+                    # Process in smaller partitions
+                    n_partitions = max(1, file_size // (50 * 1024 * 1024))  # 50MB per partition
+                    ddf = ddf.repartition(npartitions=n_partitions)
+                    
+                    # Process and compute immediately
+                    df = ddf.compute()
+                    return self._process_dataframe(df, data_type)
+                    
                 except Exception as e:
-                    logging.warning(f"Dask parsing failed for {file_path}, falling back to pandas: {str(e)}")
+                    logging.warning(f"Dask processing failed for {file_path}, falling back to pandas: {str(e)}")
             
-            # Standard pandas processing
+            # Pandas processing with chunking
+            chunks = []
+            total_chunks = 0
+            
             try:
-                # Read in chunks with pandas
-                chunk_size = 100_000
-                chunks = []
+                # Read and process in chunks
                 for chunk in pd.read_csv(
                     file_path,
                     sep='$',
@@ -403,26 +402,33 @@ class FAERSProcessor:
                     low_memory=False,
                     encoding='utf-8'
                 ):
-                    chunks.append(chunk)
+                    # Process each chunk immediately
+                    processed_chunk = self._process_dataframe(chunk, data_type)
+                    if not processed_chunk.empty:
+                        chunks.append(processed_chunk)
+                        total_chunks += 1
+                        
+                    # Log progress
+                    if total_chunks % 10 == 0:
+                        logging.info(f"Processed {total_chunks} chunks from {file_path}")
                 
                 if chunks:
-                    df = pd.concat(chunks, ignore_index=True)
-                    return self._process_dataframe(df, data_type)
+                    # Combine processed chunks
+                    return pd.concat(chunks, ignore_index=True)
                 return pd.DataFrame()
                 
             except Exception as e:
                 logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
                 
-                # If standard parsing fails, try with our manual fix
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                # Fix known data issues
-                fixed_content = self._fix_known_data_issues(file_path, content)
-                
-                # Try reading the fixed content in chunks
+                # Manual fix attempt
                 try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    fixed_content = self._fix_known_data_issues(file_path, content)
                     chunks = []
+                    
+                    # Process fixed content in chunks
                     for chunk in pd.read_csv(
                         io.StringIO(fixed_content),
                         sep='$',
@@ -433,17 +439,18 @@ class FAERSProcessor:
                         chunksize=chunk_size,
                         low_memory=False
                     ):
-                        chunks.append(chunk)
+                        processed_chunk = self._process_dataframe(chunk, data_type)
+                        if not processed_chunk.empty:
+                            chunks.append(processed_chunk)
                     
                     if chunks:
-                        df = pd.concat(chunks, ignore_index=True)
-                        return self._process_dataframe(df, data_type)
+                        return pd.concat(chunks, ignore_index=True)
                     return pd.DataFrame()
                     
                 except Exception as e2:
                     logging.error(f"Failed to process {file_path} even after fixes: {str(e2)}")
                     return pd.DataFrame()
-                    
+        
         except Exception as e:
             logging.error(f"Error processing file {file_path}: {str(e)}")
             return pd.DataFrame()

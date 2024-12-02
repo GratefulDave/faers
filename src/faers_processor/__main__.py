@@ -242,7 +242,7 @@ def process_data(
         # Get absolute paths from project root
         root_dir = Path(__file__).parent.parent.parent  # Go up to project root
         input_dir = root_dir / 'data' / 'raw'
-        output_dir = root_dir / 'data' / 'clean'
+        output_dir = root_dir / 'data' / 'clean'  # Fixed output directory path
         external_dir = root_dir / 'external_data'
         
         # Create directories if they don't exist
@@ -256,10 +256,19 @@ def process_data(
         if use_dask:
             logging.info("Initializing Dask cluster")
             from distributed import Client, LocalCluster
+            import dask
             
             # Configure dask for better stability
             if max_workers is None:
                 max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
+            
+            # Configure dask settings
+            dask.config.set({
+                'distributed.worker.memory.target': 0.6,  # Target 60% memory usage
+                'distributed.worker.memory.spill': 0.7,   # Spill to disk at 70%
+                'distributed.worker.memory.pause': 0.8,   # Pause work at 80%
+                'distributed.worker.memory.terminate': 0.95  # Emergency shutdown at 95%
+            })
             
             # Create a local cluster with specific resource limits
             cluster = LocalCluster(
@@ -268,8 +277,10 @@ def process_data(
                 memory_limit='4GB',    # Limit memory per worker
                 lifetime=None,         # Don't timeout workers
                 lifetime_stagger='10s', # Stagger worker restarts
-                lifetime_restart=True   # Restart workers if they die
+                lifetime_restart=True,  # Restart workers if they die
+                silence_logs=logging.WARNING  # Reduce log noise
             )
+            
             client = Client(cluster)
             logging.info(f"Dask dashboard available at: {client.dashboard_link}")
             
