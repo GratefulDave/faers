@@ -132,28 +132,44 @@ class FAERSProcessor:
             Processed DataFrame
         """
         try:
-            # Common read options
-            read_opts = {
-                'filepath_or_buffer': str(file_path),  # Convert Path to string
-                'sep': '$',
-                'dtype': str,
-                'na_values': ['', 'NA', 'NULL'],
-                'keep_default_na': True
-            }
-
+            logging.info(f"Reading {data_type} file: {file_path}")
+            
+            # Convert Path to string for compatibility
+            file_path_str = str(file_path)
+            
             # Read data with optimized settings
             if self.use_dask:
-                df = dd.read_csv(
-                    **read_opts,
-                    blocksize=self.chunk_size * 1024
-                )
+                try:
+                    df = dd.read_csv(
+                        file_path_str,
+                        sep='$',
+                        dtype=str,
+                        na_values=['', 'NA', 'NULL'],
+                        keep_default_na=True,
+                        blocksize=self.chunk_size * 1024,
+                        sample=10000  # Sample size for dtype inference
+                    )
+                except Exception as e:
+                    logging.warning(f"Dask read failed, falling back to pandas: {str(e)}")
+                    df = None
             else:
-                chunks = pd.read_csv(
-                    **read_opts,
+                df = None
+                
+            # Fall back to pandas if dask fails or not used
+            if df is None:
+                chunks = []
+                for chunk in pd.read_csv(
+                    file_path_str,
+                    sep='$',
+                    dtype=str,
+                    na_values=['', 'NA', 'NULL'],
+                    keep_default_na=True,
                     chunksize=self.chunk_size
-                )
-                # Concatenate chunks into single DataFrame
+                ):
+                    chunks.append(chunk)
                 df = pd.concat(chunks, ignore_index=True)
+
+            logging.info(f"Successfully read {len(df)} rows from {data_type} file")
 
             # Process based on data type
             if data_type == 'demographics':
@@ -164,7 +180,7 @@ class FAERSProcessor:
                 result = self.standardizer.process_reactions(df)
 
             # Compute if using Dask
-            if self.use_dask:
+            if isinstance(df, dd.DataFrame):
                 result = result.compute()
 
             return result
