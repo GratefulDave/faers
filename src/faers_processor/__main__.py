@@ -252,7 +252,7 @@ def process_data(
         logging.info(f"Saving processed data to: {output_dir}")
         
         # Initialize processor with standardizer
-        standardizer = DataStandardizer(external_dir)
+        standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
         processor = FAERSProcessor(standardizer)
         
         # Process all quarters
