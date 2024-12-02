@@ -335,46 +335,24 @@ class FAERSProcessor:
             Processed DataFrame
         """
         try:
-            # Define column mappings
-            column_mapping = {
-                'demographics': {
-                    'primaryid': 'primaryid',
-                    'caseid': 'caseid',
-                    'i_f_cod': 'i_f_code',
-                    'event_dt': 'event_date',
-                    'rept_dt': 'report_date'
-                },
-                'drugs': {
-                    'primaryid': 'primaryid',
-                    'drug_seq': 'drug_seq',
-                    'drugname': 'drug_name',
-                    'prod_ai': 'active_ingredient'
-                }
-            }
-            
-            # Rename columns according to mapping
-            if data_type in column_mapping:
-                df = df.rename(columns=column_mapping[data_type])
-            
-            # Convert numeric columns
-            if 'primaryid' in df.columns:
-                df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
+            # First process the data through the standardizer
             if data_type == 'demographics':
-                if 'caseid' in df.columns:
-                    df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
-                if 'age' in df.columns:
-                    df['age'] = pd.to_numeric(df['age'], errors='coerce')
-            elif data_type == 'drugs' and 'drug_seq' in df.columns:
-                df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
-            
-            # Process based on data type
-            if data_type == 'demographics':
-                return self.standardizer.process_demographics(df)
+                df = self.standardizer.process_demographics(df)
             elif data_type == 'drugs':
-                return self.standardizer.process_drugs(df)
+                df = self.standardizer.process_drugs(df)
             else:  # reactions
-                return self.standardizer.process_reactions(df)
+                df = self.standardizer.process_reactions(df)
                 
+            # Then apply any additional standardization
+            if data_type == 'demographics':
+                df = self.standardizer.standardize_demographics(df)
+            elif data_type == 'drugs':
+                df = self.standardizer.standardize_drugs(df)
+            else:  # reactions
+                df = self.standardizer.standardize_reactions(df)
+                
+            return df
+            
         except Exception as e:
             logging.error(f"Error processing DataFrame: {str(e)}")
             return pd.DataFrame()

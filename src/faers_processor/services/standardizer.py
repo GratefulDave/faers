@@ -1145,13 +1145,32 @@ class DataStandardizer:
         """
         df = df.copy()
         
+        # Basic column mapping
+        column_map = {
+            'isr': 'primaryid',
+            'case': 'caseid',
+            'i_f_cod': 'i_f_code',
+            'event_dt': 'event_date',
+            'rept_dt': 'report_date',
+            'gndr_cod': 'sex'
+        }
+        df = df.rename(columns=column_map)
+        
+        # Convert numeric fields
+        numeric_cols = ['primaryid', 'caseid', 'age']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                if col in ['primaryid', 'caseid']:
+                    df[col] = df[col].fillna(-1).astype('int64')
+        
         # 1. Initial data cleaning
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].str.strip()
         
         # 2. Standardize dates
-        date_cols = ['init_fda_dt', 'fda_dt', 'event_dt', 'rept_dt']
+        date_cols = ['event_date', 'report_date']
         df = self.standardize_dates(df, date_cols)
         
         # 3. Standardize sex values
@@ -1189,6 +1208,25 @@ class DataStandardizer:
             Processed drug DataFrame
         """
         df = df.copy()
+        
+        # Basic column mapping
+        column_map = {
+            'isr': 'primaryid',
+            'case': 'caseid',
+            'drug_seq': 'drug_seq',
+            'DRUGNAME': 'drugname',  # Handle both upper and lower case
+            'drugname': 'drugname',
+            'prod_ai': 'prod_ai'
+        }
+        df = df.rename(columns=column_map)
+        
+        # Convert numeric fields
+        numeric_cols = ['primaryid', 'caseid', 'drug_seq']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                if col in ['primaryid', 'caseid', 'drug_seq']:
+                    df[col] = df[col].fillna(-1).astype('int64')
         
         # 1. Initial data cleaning (exactly like R script)
         df['drugname'] = df['drugname'].fillna('').astype(str)
@@ -1259,6 +1297,22 @@ class DataStandardizer:
             Processed reaction DataFrame
         """
         df = df.copy()
+        
+        # Basic column mapping
+        column_map = {
+            'isr': 'primaryid',
+            'case': 'caseid',
+            'pt': 'pt'
+        }
+        df = df.rename(columns=column_map)
+        
+        # Convert numeric fields
+        numeric_cols = ['primaryid', 'caseid']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                if col in ['primaryid', 'caseid']:
+                    df[col] = df[col].fillna(-1).astype('int64')
         
         # 1. Clean and standardize PT terms
         if 'pt' in df.columns:
