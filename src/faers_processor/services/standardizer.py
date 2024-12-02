@@ -462,64 +462,73 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # 1. Load MedDRA PT list
-        meddra_df = pd.read_csv(self.external_dir / 'Dictionaries/MedDRA/meddra.csv', sep=';', low_memory=False)
-        pt_list = pd.Series(meddra_df['pt'].unique()).str.lower().str.strip().unique()
+        # 1. Load MedDRA PT list and convert to lowercase for matching
+        meddra_df = pd.read_csv(self.external_dir / 'Dictionaries/MedDRA/meddra.csv', 
+                               sep=';', low_memory=False)
+        pt_list = pd.Series(meddra_df['pt'].unique()).str.strip().str.lower().unique()
         
-        # 2. Calculate PT frequencies
-        df[pt_variable] = df[pt_variable].str.lower().str.strip()
-        pt_freq = (df[~df[pt_variable].isna()]
-                   .groupby(pt_variable).size()
-                   .reset_index(name='N')
-                   .sort_values('N', ascending=False))
-        
-        # 3. Check if PTs are standardized
-        pt_freq['standard_pt'] = np.where(pt_freq[pt_variable].isin(pt_list), 
-                                         pt_freq[pt_variable], 
-                                         np.nan)
-        pt_freq['freq'] = np.round(pt_freq['N'] / pt_freq['N'].sum() * 100, 2)
-        
-        # 4. Get unstandardized PTs
-        not_pts = pt_freq[pt_freq['standard_pt'].isna()][[pt_variable, 'N', 'freq']]
-        
-        # 5. Calculate initial non-standardized percentage
-        initial_nonstd_pct = np.round(not_pts['N'].sum() * 100 / len(df[~df[pt_variable].isna()]), 3)
-        logging.info(f"Initial non-standardized PT percentage: {initial_nonstd_pct}%")
-        
-        # 6. Try to translate through LLTs
-        llt_mappings = meddra_df[['pt', 'llt']].copy()
-        llt_mappings.columns = ['standard_pt', pt_variable]
-        not_pts = not_pts.merge(llt_mappings, on=pt_variable, how='left')
-        not_llts = not_pts[not_pts['standard_pt'].isna()].drop('standard_pt', axis=1)
-        
-        # 7. Load and apply manual fixes
-        manual_fixes = pd.read_csv(self.external_dir / 'Manual_fix/pt_fixed.csv', sep=';', low_memory=False)
-        manual_fixes = manual_fixes[[pt_variable, 'standard_pt']]
-        
-        not_llts = not_llts.merge(manual_fixes, on=pt_variable, how='left')
-        still_unstandardized = not_llts[not_llts['standard_pt'].isna()][[pt_variable, 'standard_pt']]
-        
-        # 8. Combine all standardization sources
-        pt_fixed = pd.concat([
-            manual_fixes,
-            still_unstandardized,
-            not_pts[~not_pts['standard_pt'].isna()][[pt_variable, 'standard_pt']]
-        ]).drop_duplicates()
-        
-        # 9. Check for duplicates
-        duplicates = pt_fixed[pt_fixed[pt_variable].duplicated()]
-        if not duplicates.empty:
-            logging.warning(f"Duplicate PT mappings found: {duplicates[pt_variable].tolist()}")
-        
-        # 10. Apply standardization to original data
-        df['pt_temp'] = df[pt_variable].str.lower().str.strip()
-        df = df.merge(pt_fixed, left_on='pt_temp', right_on=pt_variable, how='left')
-        df[pt_variable] = df['standard_pt'].fillna(df['pt_temp'])
-        df = df.drop(['pt_temp', 'standard_pt'], axis=1)
-        
-        # 11. Calculate final standardization percentage
-        final_std_pct = np.round(len(df[df[pt_variable].isin(pt_list)]) * 100 / len(df[~df[pt_variable].isna()]), 3)
-        logging.info(f"Final standardized PT percentage: {final_std_pct}%")
+        # 2. Clean and standardize PT terms (matching R script)
+        if pt_variable in df.columns:
+            # Clean terms: lowercase and strip whitespace
+            df[pt_variable] = df[pt_variable].str.strip().str.lower()
+            
+            # Calculate frequencies before standardization
+            pt_freq = (df[~df[pt_variable].isna()]
+                      .groupby(pt_variable).size()
+                      .reset_index(name='N')
+                      .sort_values('N', ascending=False))
+            
+            # Mark standard PTs
+            pt_freq['standard_pt'] = np.where(pt_freq[pt_variable].isin(pt_list), 
+                                            pt_freq[pt_variable], 
+                                            np.nan)
+            pt_freq['freq'] = np.round(pt_freq['N'] / pt_freq['N'].sum() * 100, 2)
+            
+            # Get unstandardized PTs
+            not_pts = pt_freq[pt_freq['standard_pt'].isna()][[pt_variable, 'N', 'freq']]
+            
+            # Calculate initial non-standardized percentage
+            initial_nonstd_pct = np.round(not_pts['N'].sum() * 100 / len(df[~df[pt_variable].isna()]), 3)
+            logging.info(f"Initial non-standardized PT percentage: {initial_nonstd_pct}%")
+            
+            # Try LLT translations
+            llt_mappings = meddra_df[['pt', 'llt']].copy()
+            llt_mappings.columns = ['standard_pt', pt_variable]
+            llt_mappings[pt_variable] = llt_mappings[pt_variable].str.strip().str.lower()
+            llt_mappings['standard_pt'] = llt_mappings['standard_pt'].str.strip()
+            
+            not_pts = not_pts.merge(llt_mappings, on=pt_variable, how='left')
+            not_llts = not_pts[not_pts['standard_pt'].isna()].drop('standard_pt', axis=1)
+            
+            # Try manual fixes
+            manual_fixes = pd.read_csv(self.external_dir / 'Manual_fix/pt_fixed.csv', 
+                                     sep=';', low_memory=False)
+            manual_fixes = manual_fixes[[pt_variable, 'standard_pt']]
+            manual_fixes[pt_variable] = manual_fixes[pt_variable].str.strip().str.lower()
+            manual_fixes['standard_pt'] = manual_fixes['standard_pt'].str.strip()
+            
+            # Apply standardization in order: direct PT, LLT, manual fixes
+            df['standard_pt'] = df[pt_variable].map(lambda x: x if x in pt_list else None)
+            mask = df['standard_pt'].isna()
+            df.loc[mask, 'standard_pt'] = df.loc[mask, pt_variable].map(
+                dict(zip(llt_mappings[pt_variable], llt_mappings['standard_pt']))
+            )
+            still_missing = df['standard_pt'].isna()
+            df.loc[still_missing, 'standard_pt'] = df.loc[still_missing, pt_variable].map(
+                dict(zip(manual_fixes[pt_variable], manual_fixes['standard_pt']))
+            )
+            
+            # Log standardization results
+            total = len(df)
+            standardized = df['standard_pt'].notna().sum()
+            logging.info(f"PT standardization results:")
+            logging.info(f"  Total terms: {total}")
+            logging.info(f"  Standardized: {standardized} ({100*standardized/total:.1f}%)")
+            logging.info(f"  Unstandardized: {total-standardized} ({100*(total-standardized)/total:.1f}%)")
+            
+            # Replace original column with standardized version
+            df[pt_variable] = df['standard_pt']
+            df = df.drop('standard_pt', axis=1)
         
         return df
 
@@ -854,36 +863,36 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        if 'route' not in df.columns:
-            return df
+        # Load route mappings (case-sensitive as in R script)
+        route_map = pd.read_csv(self.external_dir / 'Manual_fix/routes.csv', 
+                              sep=';', low_memory=False)
         
-        # Clean route strings
-        df['route'] = df['route'].str.lower().str.strip()
+        # Create mapping dictionary preserving original case
+        route_dict = dict(zip(route_map['route'], route_map['Route_std']))
         
-        # Load route standardization mapping
-        route_st = pd.read_csv(
-            self.external_dir / 'Manual_fix/route_st.csv',
-            sep=';',
-            usecols=['route', 'route_st'],
-            low_memory=False
-        ).drop_duplicates()
-        
-        # Create mapping dictionary
-        route_map = dict(zip(route_st['route'], route_st['route_st']))
-        
-        # Apply standardization
-        df['route_st'] = df['route'].map(route_map)
-        
-        # Log unmapped routes
-        unmapped = df[~df['route'].isna() & df['route_st'].isna()]['route'].unique()
-        if len(unmapped) > 0:
-            logging.warning(f"Unmapped routes: {unmapped}")
-        
-        # Convert to categorical
-        df['route_st'] = df['route_st'].astype('category')
-        
-        # Update column name
-        df = df.drop(columns=['route']).rename(columns={'route_st': 'route'})
+        # First try exact matches (case-sensitive)
+        if 'route' in df.columns:
+            df['route_std'] = df['route'].map(route_dict)
+            
+            # For non-matches, try case-insensitive matching
+            mask = df['route_std'].isna()
+            if mask.any():
+                # Create case-insensitive mapping
+                lower_dict = {k.lower(): v for k, v in route_dict.items()}
+                df.loc[mask, 'route_std'] = df.loc[mask, 'route'].str.lower().map(lower_dict)
+            
+            # Replace original with standardized and convert to category
+            df['route'] = df['route_std']
+            df = df.drop('route_std', axis=1)
+            df['route'] = df['route'].astype('category')
+            
+            # Log standardization results
+            total = len(df)
+            standardized = df['route'].notna().sum()
+            logging.info(f"Route standardization results:")
+            logging.info(f"  Total routes: {total}")
+            logging.info(f"  Standardized: {standardized} ({100*standardized/total:.1f}%)")
+            logging.info(f"  Unstandardized: {total-standardized} ({100*(total-standardized)/total:.1f}%)")
         
         return df
 
@@ -1052,17 +1061,20 @@ class DataStandardizer:
         if pd.isna(name):
             return name
         
-        # Convert to string and lowercase
+        # 1. Convert to string and lowercase (matching R's tolower)
         name = str(name).lower()
         
-        # Remove special characters but keep hyphens and spaces
-        name = re.sub(r'[^\w\s-]', '', name)
+        # 2. Remove trailing dots (matching R's gsub("\\.$",""))
+        name = re.sub(r'\.$', '', name)
         
-        # Replace multiple spaces with single space
+        # 3. Trim whitespace (matching R's trimws)
+        name = name.strip()
+        
+        # 4. Replace multiple spaces with single space (matching R's gsub("\\s+", " "))
         name = re.sub(r'\s+', ' ', name)
         
-        # Strip leading/trailing spaces
-        name = name.strip()
+        # 5. Remove remaining special characters but keep hyphens and spaces
+        name = re.sub(r'[^\w\s-]', '', name)
         
         return name
 
