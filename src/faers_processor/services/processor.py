@@ -54,7 +54,6 @@ class FAERSProcessor:
             
             if not quarters:
                 logging.warning(f"No quarters found to process in {self.data_dir}")
-                # List directory contents to help debug
                 logging.info("Directory contents:")
                 for item in self.data_dir.iterdir():
                     logging.info(f"  {item.name} ({'dir' if item.is_dir() else 'file'})")
@@ -66,11 +65,15 @@ class FAERSProcessor:
             with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
                 for quarter in quarters:
                     try:
-                        quarter_dir = self.data_dir / quarter
+                        quarter_dir = self.data_dir / quarter / 'ascii'
+                        if not quarter_dir.exists():
+                            logging.warning(f"No ascii directory found for quarter {quarter}")
+                            continue
+                            
                         logging.info(f"Processing quarter {quarter} from {quarter_dir}")
                         
                         # List files in quarter directory for debugging
-                        logging.info(f"Files in {quarter} directory:")
+                        logging.info(f"Files in {quarter}/ascii directory:")
                         for f in quarter_dir.glob("*.txt"):
                             logging.info(f"  {f.name}")
                         
