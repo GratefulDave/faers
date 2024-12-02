@@ -338,24 +338,13 @@ class FAERSProcessor:
         """Find the ASCII directory - it's always ASCII or ascii."""
         # Log current directory for debugging
         logging.info(f"Searching for ASCII directory in: {quarter_dir}")
-        logging.info("Contents:")
-        for item in quarter_dir.iterdir():
-            logging.info(f"  - {item.name}")
-            
-        # Try case-insensitive match for 'ascii' directory
-        for item in quarter_dir.iterdir():
-            if item.is_dir() and item.name.lower() == 'ascii':
+        
+        # Use rglob to find any variation of 'ascii' directory
+        for item in quarter_dir.rglob('[aA][sS][cC][iI][iI]'):
+            if item.is_dir():
                 logging.info(f"Found ASCII directory: {item}")
                 return item
                 
-        # If not found directly, look one level deeper
-        for item in quarter_dir.iterdir():
-            if item.is_dir():
-                for subitem in item.iterdir():
-                    if subitem.is_dir() and subitem.name.lower() == 'ascii':
-                        logging.info(f"Found ASCII directory in subdirectory: {subitem}")
-                        return subitem
-                        
         logging.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
         return None
 
@@ -400,9 +389,10 @@ class FAERSProcessor:
             try:
                 # Find matching files case-insensitively
                 matched_files = []
-                for file in ascii_dir.glob('*.txt'):
-                    file_stem = file.stem.lower()  # Get filename without extension
-                    if any(pat.lower() == file_stem for pat in patterns):  
+                # Use rglob to find all .txt files (case insensitive)
+                for file in ascii_dir.rglob('*.[tT][xX][tT]'):
+                    file_name = file.name.lower()
+                    if any(pat.lower() in file_name for pat in patterns):
                         matched_files.append(file)
                         logging.info(f"Found {data_type} file: {file}")
                         break  # Take the first matching file
