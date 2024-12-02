@@ -102,221 +102,76 @@ class DataStandardizer:
         # Process date columns in order matching R script
         date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
         
+        # FAERS date formats we need to handle
+        date_formats = [
+            '%Y%m%d',      # YYYYMMDD
+            '%Y%m',        # YYYYMM
+            '%Y',          # YYYY
+            '%d%b%Y',      # DDMONYYYY
+            '%b%Y',        # MONYYYY
+            '%d/%m/%Y',    # DD/MM/YYYY
+            '%m/%d/%Y',    # MM/DD/YYYY
+            '%Y-%m-%d',    # YYYY-MM-DD
+        ]
+        
+        def try_parse_date(date_str):
+            """Try to parse a date string using multiple formats."""
+            if pd.isna(date_str):
+                return pd.NaT
+                
+            date_str = str(date_str).strip()
+            
+            # Handle empty strings
+            if not date_str:
+                return pd.NaT
+                
+            # Try each format
+            for fmt in date_formats:
+                try:
+                    return pd.to_datetime(date_str, format=fmt)
+                except (ValueError, TypeError):
+                    continue
+                    
+            # If all formats fail, try dateutil parser
+            try:
+                return pd.to_datetime(date_str)
+            except (ValueError, TypeError):
+                return pd.NaT
+        
+        # Valid date range
+        min_date = pd.Timestamp('1960-01-01')
+        max_date = pd.Timestamp.now()
+        
         for col in date_columns:
             if col not in df.columns:
                 continue
                 
             try:
-                # Convert to datetime, coercing errors to NaT
-                df[col] = pd.to_datetime(df[col], errors='coerce')
+                # Convert to datetime using our custom parser
+                df[col] = df[col].apply(try_parse_date)
                 
-                # Log any rows where conversion failed
+                # Validate dates are within reasonable range
+                mask = df[col].notna()
+                invalid_dates = (
+                    (df[col] < min_date) | 
+                    (df[col] > max_date)
+                )
+                df.loc[mask & invalid_dates, col] = pd.NaT
+                
+                # Log statistics
+                total_rows = len(df)
                 na_count = df[col].isna().sum()
                 if na_count > 0:
-                    logging.warning(f"{na_count} rows had invalid dates in {col}")
+                    logging.warning(
+                        f"{na_count}/{total_rows} rows ({na_count/total_rows*100:.1f}%) "
+                        f"had invalid dates in {col}"
+                    )
                     
             except Exception as e:
                 logging.error(f"Error processing {col}: {str(e)}")
                 # Keep original values if conversion fails
                 continue
         
-        return df
-
-    def standardize_therapy_dates(self, df: pd.DataFrame, max_date: int = 20230331) -> pd.DataFrame:
-        """Standardize therapy dates and durations.
-        
-        Args:
-            df: DataFrame with therapy dates and duration
-            max_date: Maximum allowed date
-        
-        Returns:
-            DataFrame with standardized dates and durations
-        """
-        df = df.copy()
-
-        # Standardize start and end dates
-        for col in ['start_dt', 'end_dt']:
-            if col in df.columns:
-                df[col] = self._check_date(df[col], max_date)
-
-        # Duration conversion factors (to days)
-        dur_factors = {
-            'YR': 365,
-            'MON': 30.41667,
-            'WK': 7,
-            'DAY': 1,
-            'HR': 0.04166667,
-            'MIN': 0.0006944444,
-            'SEC': 1.157407e-05
-        }
-
-        # Convert duration to numeric
-        df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
-
-        # Create duration corrector
-        df['dur_corrector'] = df['dur_cod'].map(dur_factors)
-
-        # Calculate duration in days
-        df['dur_in_days'] = abs(df['dur']) * df['dur_corrector']
-
-        # Handle implausible durations (> 50 years)
-        df.loc[df['dur_in_days'] > 50 * 365, 'dur_in_days'] = pd.NA
-
-        # Calculate standardized duration from dates
-        df['dur_std'] = pd.NA
-        mask_8digit = (df['start_dt'].astype(str).str.len() == 8) & (df['end_dt'].astype(str).str.len() == 8)
-
-        if mask_8digit.any():
-            start_dates = pd.to_datetime(df.loc[mask_8digit, 'start_dt'].astype(str), format='%Y%m%d')
-            end_dates = pd.to_datetime(df.loc[mask_8digit, 'end_dt'].astype(str), format='%Y%m%d')
-            df.loc[mask_8digit, 'dur_std'] = (end_dates - start_dates).dt.days + 1
-
-        # Handle negative durations
-        df.loc[df['dur_std'] < 0, 'dur_std'] = pd.NA
-
-        # Use calculated duration if date-based duration is NA
-        df.loc[df['dur_std'].isna(), 'dur_std'] = df.loc[df['dur_std'].isna(), 'dur_in_days']
-
-        # Backfill missing dates using duration
-        def fill_dates(row):
-            if pd.isna(row['start_dt']) and not pd.isna(row['end_dt']) and not pd.isna(row['dur_std']):
-                end_date = pd.to_datetime(str(row['end_dt']), format='%Y%m%d')
-                start_date = end_date - pd.Timedelta(days=row['dur_std'] - 1)
-                return int(start_date.strftime('%Y%m%d'))
-            return row['start_dt']
-
-        def fill_end_dates(row):
-            if pd.isna(row['end_dt']) and not pd.isna(row['start_dt']) and not pd.isna(row['dur_std']):
-                start_date = pd.to_datetime(str(row['start_dt']), format='%Y%m%d')
-                end_date = start_date + pd.Timedelta(days=row['dur_std'] - 1)
-                return int(end_date.strftime('%Y%m%d'))
-            return row['end_dt']
-
-        df['start_dt'] = df.apply(fill_dates, axis=1)
-        df['end_dt'] = df.apply(fill_end_dates, axis=1)
-
-        # Final duration assignment and cleanup
-        df['dur_in_days'] = df['dur_std']
-        df = df.drop(columns=['dur_std', 'dur_corrector', 'dur', 'dur_cod'])
-
-        return df
-
-    def standardize_drug_info(self, df: pd.DataFrame, max_date: int = 20500101) -> pd.DataFrame:
-        """Standardize drug information including routes, dose forms, frequencies, and dates.
-        
-        Args:
-            df: DataFrame with drug information
-            max_date: Maximum allowed date for expiration dates
-        
-        Returns:
-            DataFrame with standardized drug information
-        """
-        df = df.copy()
-
-        # 1. Route standardization
-        if 'route' in df.columns:
-            # Clean route strings
-            df['route'] = df['route'].str.lower().str.strip()
-
-            # Load route standardization mapping
-            route_st = pd.read_csv(
-                "external_data/manual_fix/route_st.csv",
-                sep=";",
-                usecols=['route', 'route_st'],
-                low_memory=False
-            ).drop_duplicates()
-
-            # Merge standardized routes
-            df = pd.merge(df, route_st, on='route', how='left')
-
-            # Log untranslated routes
-            untranslated_routes = df[df['route_st'].isna()]['route'].unique()
-            if len(untranslated_routes) > 0:
-                logging.warning(f"Untranslated routes: {'; '.join(untranslated_routes)}")
-
-        # 2. Challenge/Rechallenge standardization
-        valid_responses = ['Y', 'N', 'D']
-        for col in ['dechal', 'rechal']:
-            if col in df.columns:
-                df[col] = df[col].where(df[col].isin(valid_responses), pd.NA)
-                df[col] = df[col].astype('category')
-
-        # 3. Dose form standardization
-        if 'dose_form' in df.columns:
-            # Clean dose form strings
-            df['dose_form'] = df['dose_form'].str.lower().str.strip()
-
-            # Load dose form standardization mapping
-            dose_form_st = pd.read_csv(
-                "external_data/manual_fix/dose_form_st.csv",
-                sep=";",
-                usecols=['dose_form', 'dose_form_st'],
-                low_memory=False
-            )
-
-            # Merge standardized dose forms
-            df = pd.merge(df, dose_form_st, on='dose_form', how='left')
-            df['dose_form_st'] = df['dose_form_st'].astype('category')
-
-            # Log untranslated dose forms
-            untranslated_forms = df[df['dose_form_st'].isna()]['dose_form'].unique()
-            if len(untranslated_forms) > 0:
-                logging.warning(f"Untranslated dose forms: {'; '.join(untranslated_forms)}")
-
-        # 4. Dose frequency standardization
-        if 'dose_freq' in df.columns:
-            # Load dose frequency standardization mapping
-            dose_freq_st = pd.read_csv(
-                "external_data/manual_fix/dose_freq_st.csv",
-                sep=";",
-                usecols=['dose_freq', 'dose_freq_st'],
-                low_memory=False
-            ).dropna(subset=['dose_freq_st']).drop_duplicates()
-
-            # Merge standardized frequencies
-            df = pd.merge(df, dose_freq_st, on='dose_freq', how='left')
-            df['dose_freq_st'] = df['dose_freq_st'].astype('category')
-
-            # Log untranslated frequencies
-            untranslated_freq = df[df['dose_freq_st'].isna()]['dose_freq'].unique()
-            if len(untranslated_freq) > 0:
-                logging.warning(f"Untranslated frequencies: {'; '.join(untranslated_freq)}")
-
-        # 5. Route-form standardization
-        if 'dose_form_st' in df.columns:
-            # Load route-form mapping
-            route_form_st = pd.read_csv(
-                "external_data/manual_fix/route_form_st.csv",
-                sep=";",
-                usecols=['dose_form_st', 'route_plus'],
-                low_memory=False
-            ).drop_duplicates()
-
-            # Merge route suggestions
-            df = pd.merge(df, route_form_st, on='dose_form_st', how='left')
-
-            # Update routes where missing or unknown
-            mask = (df['route_st'].isna()) | (df['route_st'] == 'unknown')
-            df.loc[mask, 'route_st'] = df.loc[mask, 'route_plus']
-            df['route_st'] = df['route_st'].astype('category')
-
-        # 6. Select and reorder final columns
-        final_columns = [
-            'primaryid', 'drug_seq', 'val_vbm', 'route_st', 'dose_vbm',
-            'cum_dose_unit', 'cum_dose_chr', 'dose_amt', 'dose_unit',
-            'dose_form_st', 'dose_freq_st', 'dechal', 'rechal',
-            'lot_num', 'nda_num', 'exp_dt'
-        ]
-        df = df[final_columns].rename(columns={
-            'route_st': 'route',
-            'dose_form_st': 'dose_form',
-            'dose_freq_st': 'dose_freq'
-        })
-
-        # 7. Standardize expiration date
-        if 'exp_dt' in df.columns:
-            df['exp_dt'] = self._check_date(df['exp_dt'], max_date)
-
         return df
 
     def remove_incomplete_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
