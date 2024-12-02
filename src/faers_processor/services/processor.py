@@ -469,44 +469,36 @@ class FAERSProcessor:
         start_time = time.time()
         
         try:
-            # Attempt standard parsing first
-            df = pd.read_csv(file_path, delimiter='$', dtype=str, encoding='latin1')
+            # Read the file
+            df = pd.read_csv(file_path, delimiter='$', encoding='latin1')
             table_summary.total_rows = len(df)
             
-            # Process the DataFrame based on type
-            df = self._process_dataframe(df, data_type, table_summary)
+            # Process based on data type
+            if data_type == 'demo':
+                df = self.standardizer.standardize_demographics(df)
+            elif data_type == 'drug':
+                df = self.standardizer.standardize_drugs(df)
+            elif data_type == 'reac':
+                df = self.standardizer.standardize_reactions(df)
+            elif data_type == 'outc':
+                df = self.standardizer.standardize_outcomes(df)
+            elif data_type == 'rpsr':
+                df = self.standardizer.standardize_sources(df)
+            elif data_type == 'ther':
+                df = self.standardizer.standardize_therapies(df)
+            elif data_type == 'indi':
+                df = self.standardizer.standardize_indications(df)
             
-            if df is not None:
-                table_summary.processed_rows = len(df)
-                
-        except pd.errors.ParserError as e:
-            error_msg = f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}"
-            table_summary.add_parsing_error(error_msg)
-            
-            try:
-                # Try manual fix for parsing errors
-                content = self._fix_known_data_issues(file_path)
-                df = pd.read_csv(io.StringIO(content), delimiter='$', dtype=str, encoding='latin1')
-                table_summary.total_rows = len(df)
-                
-                df = self._process_dataframe(df, data_type, table_summary)
-                if df is not None:
-                    table_summary.processed_rows = len(df)
-                    
-            except Exception as e:
-                error_msg = f"Manual fix failed for {file_path}: {str(e)}"
-                table_summary.add_parsing_error(error_msg)
-                return pd.DataFrame()
-                
-        except Exception as e:
-            error_msg = f"Error processing {file_path}: {str(e)}"
-            table_summary.add_parsing_error(error_msg)
-            return pd.DataFrame()
-            
-        finally:
+            table_summary.processed_rows = len(df)
             table_summary.processing_time = time.time() - start_time
             
-        return df
+            return df
+            
+        except Exception as e:
+            error_msg = f"Error processing DataFrame: {str(e)}"
+            logging.error(error_msg)
+            table_summary.add_parsing_error(error_msg)
+            return pd.DataFrame()
 
     def _fix_known_data_issues(self, file_path: Path) -> str:
         """Fix known data formatting issues in specific FAERS files.
