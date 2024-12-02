@@ -1076,7 +1076,7 @@ class DataStandardizer:
         return df
         
     def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process drug data.
+        """Process drug data following R script order exactly.
         
         Args:
             df: Raw drug DataFrame
@@ -1086,25 +1086,67 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Standardize drug names and substances
-        df = self.standardize_drugs(df)
+        # 1. Initial data cleaning (exactly like R script)
+        df['drugname'] = df['drugname'].fillna('').astype(str)
+        df['drugname'] = df['drugname'].str.lower()
+        df['drugname'] = df['drugname'].str.strip()
+        df['drugname'] = df['drugname'].str.replace(r'\s+', ' ', regex=True)
+        df['drugname'] = df['drugname'].str.replace(r'\.$', '', regex=True)
+        df['drugname'] = df['drugname'].str.replace(r'\( ', '(', regex=True)
+        df['drugname'] = df['drugname'].str.replace(r' \)', ')', regex=True)
         
-        # Standardize routes
+        # 2. Map to standardized substances (exact match first)
+        df['Substance'] = df['drugname'].map(self.drug_map).fillna('UNKNOWN')
+        
+        # 3. Handle multi-substance drugs (split into separate rows)
+        multi_substance = df[df['Substance'].str.contains(';', na=False)]
+        single_substance = df[~df['Substance'].str.contains(';', na=False)]
+        
+        if len(multi_substance) > 0:
+            split_substances = []
+            for _, row in multi_substance.iterrows():
+                substances = row['Substance'].split(';')
+                for substance in substances:
+                    new_row = row.copy()
+                    new_row['Substance'] = substance.strip()
+                    split_substances.append(new_row)
+            multi_substance_df = pd.DataFrame(split_substances)
+            df = pd.concat([single_substance, multi_substance_df], ignore_index=True)
+        
+        # 4. Mark trial drugs (after splitting)
+        df['trial'] = df['Substance'].str.contains(', trial', na=False)
+        df['Substance'] = df['Substance'].str.replace(', trial', '', regex=False)
+        
+        # 5. Standardize routes (if present)
         if 'route' in df.columns:
             df['route'] = self.standardize_route(df['route'])
-            
-        # Standardize dose forms
+        
+        # 6. Standardize dose forms (if present)
         if 'dose_form' in df.columns:
             df['dose_form'] = self.standardize_dose_form(df['dose_form'])
-            
-        # Convert dosages to standard units
+        
+        # 7. Convert dosages to standard units (if present)
         if all(col in df.columns for col in ['dose_amt', 'dose_unit']):
             df['dose_std'] = self.standardize_dose(df['dose_amt'], df['dose_unit'])
-            
-        return df
         
+        # 8. Memory optimization (after all processing)
+        df['drugname'] = df['drugname'].astype('category')
+        df['Substance'] = df['Substance'].astype('category')
+        if 'prod_ai' in df.columns:
+            df['prod_ai'] = df['prod_ai'].astype('category')
+        
+        # 9. Log statistics
+        logging.info(f"Drug processing statistics:")
+        logging.info(f"  Total drugs: {len(df)}")
+        logging.info(f"  Unique substances: {df['Substance'].nunique()}")
+        logging.info(f"  Trial drugs: {df['trial'].sum()}")
+        if 'route' in df.columns:
+            logging.info(f"  Unique routes: {df['route'].nunique()}")
+        
+        return df
+
     def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process reaction data.
+        """Process reaction data following R script order exactly.
         
         Args:
             df: Raw reaction DataFrame
@@ -1114,14 +1156,96 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Standardize reaction terms using MedDRA
+        # 1. Clean and standardize PT terms
         if 'pt' in df.columns:
-            df['reaction_term'] = self.standardize_reaction(df['pt'])
+            # First try direct PT matches
+            df['pt'] = df['pt'].str.lower().str.strip()
+            df['reaction_term'] = df['pt'].map(lambda x: x if x in self.pt_data['pt_name'].str.lower().values else None)
             
-        # Add reaction severity if available
+            # Then try LLT translations for non-standard terms
+            mask = df['reaction_term'].isna()
+            df.loc[mask, 'reaction_term'] = df.loc[mask, 'pt'].map(self.pt_to_llt_map)
+            
+            # Finally try manual fixes
+            still_missing = df['reaction_term'].isna()
+            df.loc[still_missing, 'reaction_term'] = df.loc[still_missing, 'pt'].map(self.manual_pt_fixes)
+            
+            # Log standardization results
+            total = len(df)
+            standardized = df['reaction_term'].notna().sum()
+            logging.info(f"Reaction standardization results:")
+            logging.info(f"  Total terms: {total}")
+            logging.info(f"  Standardized: {standardized} ({100*standardized/total:.1f}%)")
+            logging.info(f"  Unstandardized: {total-standardized} ({100*(total-standardized)/total:.1f}%)")
+        
+        # 2. Add severity if available (after PT standardization)
         if 'outc_cod' in df.columns:
             df['severity'] = self.standardize_outcome(df['outc_cod'])
+            severity_dist = df['severity'].value_counts()
+            logging.info("Severity distribution:")
+            for sev, count in severity_dist.items():
+                logging.info(f"  {sev}: {count} ({100*count/len(df):.1f}%)")
+        
+        # 3. Memory optimization
+        if 'reaction_term' in df.columns:
+            df['reaction_term'] = df['reaction_term'].astype('category')
+        if 'severity' in df.columns:
+            df['severity'] = df['severity'].astype('category')
+        
+        return df
+
+    def process_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process demographics data following R script order exactly.
+        
+        Args:
+            df: Raw demographics DataFrame
             
+        Returns:
+            Processed demographics DataFrame
+        """
+        df = df.copy()
+        
+        # 1. Standardize dates first (as they may affect age calculations)
+        date_cols = ['init_fda_dt', 'fda_dt', 'event_dt', 'mfr_dt']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = self.standardize_dates(df[col])
+        
+        # 2. Standardize sex (before age groups as it may be used in age-sex analysis)
+        if 'sex' in df.columns:
+            df = self.standardize_sex(df)
+        
+        # 3. Process age and create age groups
+        if 'age' in df.columns and 'age_cod' in df.columns:
+            df = self.standardize_age(df)
+            df = self.standardize_age_groups(df)
+        
+        # 4. Standardize country codes
+        if 'reporter_country' in df.columns:
+            df = self.standardize_country(df)
+        
+        # 5. Standardize occupation codes (last as it's least critical)
+        if 'occp_cod' in df.columns:
+            df = self.standardize_occupation(df)
+        
+        # 6. Memory optimization
+        for col in df.select_dtypes(include=['object']).columns:
+            df[col] = df[col].astype('category')
+        
+        # 7. Log processing results
+        logging.info("Demographics processing results:")
+        if 'sex' in df.columns:
+            sex_dist = df['sex'].value_counts(dropna=False)
+            logging.info("Sex distribution:")
+            for sex, count in sex_dist.items():
+                logging.info(f"  {sex}: {count} ({100*count/len(df):.1f}%)")
+        
+        if 'age_grp' in df.columns:
+            age_dist = df['age_grp'].value_counts(dropna=False)
+            logging.info("Age group distribution:")
+            for grp, count in age_dist.items():
+                logging.info(f"  {grp}: {count} ({100*count/len(df):.1f}%)")
+        
         return df
 
     def standardize_dates(self, date_series: pd.Series) -> pd.Series:
