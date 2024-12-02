@@ -44,175 +44,159 @@ class FAERSProcessor:
         logging.info(f"Data directory: {self.data_dir}")
         logging.info(f"Output directory: {self.output_dir}")
 
+    def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
+        """Process a single quarter's worth of FAERS data.
+        
+        Args:
+            quarter_dir: Path to quarter directory containing ASCII files
+            
+        Returns:
+            Dictionary of processed DataFrames for demographics, drugs, and reactions
+        """
+        results = {}
+        ascii_dir = quarter_dir / 'ascii'
+        
+        # Find relevant files
+        demo_file = next(ascii_dir.glob('DEMO*.txt'), None)
+        drug_file = next(ascii_dir.glob('DRUG*.txt'), None)
+        reac_file = next(ascii_dir.glob('REAC*.txt'), None)
+        
+        if not all([demo_file, drug_file, reac_file]):
+            logging.error(f"Missing required files in {quarter_dir}")
+            return results
+            
+        try:
+            # Process demographics
+            logging.info(f"Processing demographics from {demo_file}")
+            demo_df = self.standardizer.process_file(demo_file, 'demographics')
+            if not demo_df.empty:
+                demo_df = self.standardizer.standardize_demographics(demo_df)
+                results['demographics'] = demo_df
+            
+            # Process drugs
+            logging.info(f"Processing drugs from {drug_file}")
+            drug_df = self.standardizer.process_file(drug_file, 'drugs')
+            if not drug_df.empty:
+                drug_df = self.standardizer.standardize_drugs(drug_df)
+                results['drugs'] = drug_df
+            
+            # Process reactions
+            logging.info(f"Processing reactions from {reac_file}")
+            reac_df = self.standardizer.process_file(reac_file, 'reactions')
+            if not reac_df.empty:
+                reac_df = self.standardizer.standardize_reactions(reac_df)
+                results['reactions'] = reac_df
+                
+        except Exception as e:
+            logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
+            
+        return results
+
     def merge_quarters(self, output_dir: Path) -> None:
-        """Merge all processed quarterly files into single files for each data type.
+        """Merge all processed quarterly files into final datasets.
         
         Args:
             output_dir: Directory containing processed quarterly files
         """
-        logging.info("Starting quarter merging process...")
-        
-        # Define data types and their patterns
-        data_types = {
-            'demographics': '*_demographics.txt',
-            'drugs': '*_drugs.txt',
-            'reactions': '*_reactions.txt'
-        }
-        
-        # Process each data type
-        for data_type, pattern in data_types.items():
+        for data_type in ['demographics', 'drugs', 'reactions']:
             try:
-                # Find all quarterly files for this data type
-                quarterly_files = list(output_dir.glob(pattern))
-                if not quarterly_files:
-                    logging.warning(f"No {data_type} files found to merge")
+                # Find all quarterly files for this type
+                pattern = f'*_{data_type}.txt'
+                quarter_files = list(output_dir.glob(pattern))
+                
+                if not quarter_files:
+                    logging.warning(f"No quarterly files found for {data_type}")
                     continue
                 
-                logging.info(f"Found {len(quarterly_files)} {data_type} files to merge")
+                logging.info(f"Merging {len(quarter_files)} files for {data_type}")
                 
-                # Initialize list to store dataframes
+                # Read and concatenate all quarters
                 dfs = []
-                
-                # Read each quarterly file
-                for file in tqdm(quarterly_files, desc=f"Reading {data_type} files"):
+                for file in quarter_files:
                     try:
-                        # Extract quarter from filename
-                        quarter = file.stem.split('_')[0]
-                        
-                        # Read the file
-                        df = pd.read_csv(file, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
-                                       keep_default_na=True, encoding='utf-8')
-                        
-                        # Add quarter column
+                        quarter = file.name.split('_')[0]  # Extract quarter from filename
+                        df = pd.read_csv(
+                            file,
+                            sep='$',
+                            dtype=str,
+                            na_values=['', 'NA', 'NULL'],
+                            keep_default_na=True,
+                            low_memory=False,
+                            encoding='utf-8'
+                        )
                         df['quarter'] = quarter
-                        
                         dfs.append(df)
-                        
                     except Exception as e:
                         logging.error(f"Error reading {file}: {str(e)}")
-                        continue
                 
                 if not dfs:
-                    logging.warning(f"No valid {data_type} dataframes to merge")
+                    logging.error(f"No valid data found for {data_type}")
                     continue
                 
-                # Merge all dataframes
-                logging.info(f"Merging {len(dfs)} {data_type} dataframes")
+                # Merge all quarters
                 merged_df = pd.concat(dfs, ignore_index=True)
                 
-                # Sort by primaryid and quarter
+                # Convert numeric columns
                 if 'primaryid' in merged_df.columns:
                     merged_df['primaryid'] = pd.to_numeric(merged_df['primaryid'], errors='coerce')
-                    merged_df = merged_df.sort_values(['primaryid', 'quarter'])
+                if data_type == 'demographics':
+                    if 'caseid' in merged_df.columns:
+                        merged_df['caseid'] = pd.to_numeric(merged_df['caseid'], errors='coerce')
+                    if 'age' in merged_df.columns:
+                        merged_df['age'] = pd.to_numeric(merged_df['age'], errors='coerce')
+                elif data_type == 'drugs' and 'drug_seq' in merged_df.columns:
+                    merged_df['drug_seq'] = pd.to_numeric(merged_df['drug_seq'], errors='coerce')
+                
+                # Sort by primaryid and quarter
+                merged_df = merged_df.sort_values(['primaryid', 'quarter'])
                 
                 # Save merged file
-                output_file = output_dir / f"merged_{data_type}.txt"
-                logging.info(f"Saving merged {data_type} to {output_file}")
+                output_file = output_dir / f'merged_{data_type}.txt'
                 merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
                 
-                # Log merge statistics
-                logging.info(f"{data_type.capitalize()} merge statistics:")
-                logging.info(f"  Total records: {len(merged_df)}")
-                logging.info(f"  Unique cases: {merged_df['primaryid'].nunique()}")
-                if 'quarter' in merged_df.columns:
-                    logging.info("  Records per quarter:")
-                    quarter_counts = merged_df['quarter'].value_counts().sort_index()
-                    for quarter, count in quarter_counts.items():
-                        logging.info(f"    {quarter}: {count}")
+                logging.info(f"Saved merged {data_type} to {output_file}")
+                logging.info(f"Shape: {merged_df.shape}")
                 
             except Exception as e:
-                logging.error(f"Error merging {data_type} files: {str(e)}")
-                continue
+                logging.error(f"Error merging {data_type}: {str(e)}")
+
+    def process_all(self, input_dir: Path, output_dir: Path) -> None:
+        """Process all FAERS quarters and merge results.
         
-        logging.info("Quarter merging process completed")
-
-    def process_all(self) -> None:
-        """Process all FAERS data files."""
-        try:
-            # Create output directory if it doesn't exist
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Get list of all quarters from data directory (excluding clean dir)
-            quarters = []
-            logging.info("Discovering quarters...")
-            for d in self.data_dir.iterdir():
-                if d.is_dir() and d.name.lower() != 'clean':
-                    # Check if it matches quarter pattern (e.g., 2004q1)
-                    if len(d.name) == 6 and d.name[:4].isdigit() and d.name[4] == 'q' and d.name[5].isdigit():
-                        quarters.append(d.name)
-                        logging.info(f"Found quarter: {d.name}")
-            
-            quarters.sort()  # Sort quarters chronologically
-            
-            if not quarters:
-                logging.warning(f"No quarters found in {self.data_dir}")
-                logging.info("Directory contents:")
-                for item in self.data_dir.iterdir():
-                    logging.info(f"  {item.name} ({'dir' if item.is_dir() else 'file'})")
-                return
+        Args:
+            input_dir: Directory containing raw FAERS data
+            output_dir: Directory to save processed files
+        """
+        # Create output directory if needed
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Find all quarter directories
+        quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}q[1-4]', d.name)]
+        quarter_dirs.sort()  # Process in chronological order
+        
+        logging.info(f"Found {len(quarter_dirs)} quarters to process")
+        
+        # Process each quarter
+        for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
+            try:
+                quarter_results = self.process_quarter(quarter_dir)
                 
-            logging.info(f"Found {len(quarters)} quarters to process")
-            
-            # Process each quarter
-            with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
-                for quarter in quarters:
-                    try:
-                        # Check for ascii directory case-insensitively
-                        quarter_path = self.data_dir / quarter
-                        if not quarter_path.exists():
-                            logging.warning(f"Quarter directory {quarter} not found")
-                            continue
-
-                        # Find ascii directory case-insensitively
-                        logging.info(f"Looking for ascii directory in {quarter_path}")
-                        ascii_dir = None
-                        for d in quarter_path.iterdir():
-                            if d.is_dir() and d.name.lower() == 'ascii':
-                                ascii_dir = d
-                                break
-                        
-                        if not ascii_dir:
-                            logging.warning(f"No ascii directory found for quarter {quarter}")
-                            continue
-                            
-                        logging.info(f"Processing quarter {quarter} from {ascii_dir}")
-                        
-                        # Find data files case-insensitively
-                        demo_files = list(ascii_dir.glob('*DEMO*.txt'))
-                        drug_files = list(ascii_dir.glob('*DRUG*.txt'))
-                        reac_files = list(ascii_dir.glob('*REAC*.txt'))
-                        
-                        # Process each file type if found
-                        if demo_files:
-                            demo_df = self.process_file(demo_files[0], 'demographics')
-                            if not demo_df.empty:
-                                save_path = self.output_dir / f"{quarter}_demographics.txt"
-                                demo_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
-                        
-                        if drug_files:
-                            drug_df = self.process_file(drug_files[0], 'drugs')
-                            if not drug_df.empty:
-                                save_path = self.output_dir / f"{quarter}_drugs.txt"
-                                drug_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
-                        
-                        if reac_files:
-                            reac_df = self.process_file(reac_files[0], 'reactions')
-                            if not reac_df.empty:
-                                save_path = self.output_dir / f"{quarter}_reactions.txt"
-                                reac_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
-                        
-                    except Exception as e:
-                        logging.error(f"Error processing quarter {quarter}: {str(e)}")
-                    finally:
-                        pbar.update(1)
-            
-            # After processing all quarters, merge them
-            logging.info("All quarters processed. Starting merge process...")
-            self.merge_quarters(self.output_dir)
-            
-        except Exception as e:
-            logging.error(f"Error in process_all: {str(e)}")
-            raise
+                if not quarter_results:
+                    logging.warning(f"No results for quarter {quarter_dir}")
+                    continue
+                
+                # Save quarterly results
+                quarter_prefix = quarter_dir.name
+                for data_type, df in quarter_results.items():
+                    output_file = output_dir / f"{quarter_prefix}_{data_type}.txt"
+                    df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
+                    logging.info(f"Saved {data_type} to {output_file}")
+                
+            except Exception as e:
+                logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
+        
+        # Merge all quarters
+        self.merge_quarters(output_dir)
 
     def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
         """Process a single FAERS file.
@@ -267,14 +251,30 @@ class FAERSProcessor:
             try:
                 # Read file with $ delimiter and first row as header
                 try:
-                    df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'], 
-                                   keep_default_na=True, header=0, encoding='utf-8')
+                    df = pd.read_csv(
+                        file_path,
+                        sep='$',
+                        dtype=str,
+                        na_values=['', 'NA', 'NULL'],
+                        keep_default_na=True,
+                        header=0,
+                        low_memory=False,
+                        encoding='utf-8'
+                    )
                     logging.debug(f"File {file_path.name}")
                     logging.debug(f"Original columns: {df.columns.tolist()}")
                 except UnicodeDecodeError:
                     # If UTF-8 fails, try with latin1 encoding
-                    df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
-                                   keep_default_na=True, header=0, encoding='latin1')
+                    df = pd.read_csv(
+                        file_path,
+                        sep='$',
+                        dtype=str,
+                        na_values=['', 'NA', 'NULL'],
+                        keep_default_na=True,
+                        header=0,
+                        low_memory=False,
+                        encoding='latin1'
+                    )
                     logging.debug(f"File {file_path.name} (latin1)")
                     logging.debug(f"Original columns: {df.columns.tolist()}")
                 

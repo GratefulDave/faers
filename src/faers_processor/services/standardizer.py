@@ -30,7 +30,7 @@ class DataStandardizer:
         Args:
             external_dir: Path to external reference data
         """
-        self.external_dir = external_dir
+        self.external_dir = Path(external_dir)
         self._init_logging()
         self._load_reference_data()
         self._load_meddra_data()
@@ -67,7 +67,7 @@ class DataStandardizer:
         if not hasattr(self, '_drug_dictionary'):
             dict_path = self.external_dir / 'drug_dictionary.csv'
             if dict_path.exists():
-                df = pd.read_csv(dict_path)
+                df = pd.read_csv(dict_path, low_memory=False)
                 self._drug_dictionary = dict(zip(df['original'], df['standard']))
             else:
                 logging.warning(f"Drug dictionary not found at {dict_path}")
@@ -196,7 +196,8 @@ class DataStandardizer:
             route_st = pd.read_csv(
                 "external_data/manual_fix/route_st.csv",
                 sep=";",
-                usecols=['route', 'route_st']
+                usecols=['route', 'route_st'],
+                low_memory=False
             ).drop_duplicates()
 
             # Merge standardized routes
@@ -223,7 +224,8 @@ class DataStandardizer:
             dose_form_st = pd.read_csv(
                 "external_data/manual_fix/dose_form_st.csv",
                 sep=";",
-                usecols=['dose_form', 'dose_form_st']
+                usecols=['dose_form', 'dose_form_st'],
+                low_memory=False
             )
 
             # Merge standardized dose forms
@@ -241,7 +243,8 @@ class DataStandardizer:
             dose_freq_st = pd.read_csv(
                 "external_data/manual_fix/dose_freq_st.csv",
                 sep=";",
-                usecols=['dose_freq', 'dose_freq_st']
+                usecols=['dose_freq', 'dose_freq_st'],
+                low_memory=False
             ).dropna(subset=['dose_freq_st']).drop_duplicates()
 
             # Merge standardized frequencies
@@ -259,7 +262,8 @@ class DataStandardizer:
             route_form_st = pd.read_csv(
                 "external_data/manual_fix/route_form_st.csv",
                 sep=";",
-                usecols=['dose_form_st', 'route_plus']
+                usecols=['dose_form_st', 'route_plus'],
+                low_memory=False
             ).drop_duplicates()
 
             # Merge route suggestions
@@ -342,7 +346,7 @@ class DataStandardizer:
         # Load country mappings
         country_file = self.external_dir / 'manual_fix' / 'countries.csv'
         if country_file.exists():
-            self.country_map = pd.read_csv(country_file, sep=';', dtype=str).set_index('country')['Country_Name'].to_dict()
+            self.country_map = pd.read_csv(country_file, sep=';', dtype=str, low_memory=False).set_index('country')['Country_Name'].to_dict()
 
         # Load occupation codes (matching R script)
         self.valid_occupations = {'MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN'}
@@ -350,17 +354,17 @@ class DataStandardizer:
         # Load route standardization
         route_file = self.external_dir / 'manual_fix' / 'route_st.csv'
         if route_file.exists():
-            self.route_map = pd.read_csv(route_file, sep=';', dtype=str).set_index('route')['route_st'].to_dict()
+            self.route_map = pd.read_csv(route_file, sep=';', dtype=str, low_memory=False).set_index('route')['route_st'].to_dict()
 
         # Load dose form standardization
         dose_form_file = self.external_dir / 'manual_fix' / 'dose_form_st.csv'
         if dose_form_file.exists():
-            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', dtype=str).set_index('dose_form')['dose_form_st'].to_dict()
+            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', dtype=str, low_memory=False).set_index('dose_form')['dose_form_st'].to_dict()
 
         # Load dose frequency standardization
         dose_freq_file = self.external_dir / 'manual_fix' / 'dose_freq_st.csv'
         if dose_freq_file.exists():
-            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', dtype=str).set_index('dose_freq')['dose_freq_st'].to_dict()
+            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', dtype=str, low_memory=False).set_index('dose_freq')['dose_freq_st'].to_dict()
 
     def _load_meddra_data(self):
         """Load MedDRA terminology data from external files."""
@@ -369,19 +373,19 @@ class DataStandardizer:
         # Load SOC data
         soc_file = meddra_dir / 'soc.asc'
         if soc_file.exists():
-            self.soc_data = pd.read_csv(soc_file, sep='$', dtype=str, usecols=[0,1,2])
+            self.soc_data = pd.read_csv(soc_file, sep='$', dtype=str, low_memory=False, usecols=[0,1,2])
             self.soc_data.columns = ['soc_code', 'soc_name', 'soc_abbrev']
 
         # Load PT data
         pt_file = meddra_dir / 'pt.asc'
         if pt_file.exists():
-            self.pt_data = pd.read_csv(pt_file, sep='$', dtype=str, usecols=[0,1,3])
+            self.pt_data = pd.read_csv(pt_file, sep='$', dtype=str, low_memory=False, usecols=[0,1,3])
             self.pt_data.columns = ['pt_code', 'pt_name', 'pt_soc_code']
 
         # Load LLT data
         llt_file = meddra_dir / 'llt.asc'
         if llt_file.exists():
-            self.llt_data = pd.read_csv(llt_file, sep='$', dtype=str, usecols=[0,1,2])
+            self.llt_data = pd.read_csv(llt_file, sep='$', dtype=str, low_memory=False, usecols=[0,1,2])
             self.llt_data.columns = ['llt_code', 'llt_name', 'pt_code']
 
         # Create PT to LLT mapping (case-insensitive)
@@ -408,7 +412,7 @@ class DataStandardizer:
         self.manual_pt_fixes = {}
         manual_fix_file = self.external_dir / 'manual_fix' / 'pt_manual_fixes.csv'
         if manual_fix_file.exists():
-            manual_fixes = pd.read_csv(manual_fix_file)
+            manual_fixes = pd.read_csv(manual_fix_file, low_memory=False)
             self.manual_pt_fixes = dict(zip(manual_fixes['original'].str.lower(), 
                                           manual_fixes['standardized']))
 
@@ -417,14 +421,16 @@ class DataStandardizer:
         try:
             dict_path = self.external_dir / 'DiAna_dictionary' / 'drugnames_standardized.csv'
             if not dict_path.exists():
-                logging.error(f"DiAna dictionary not found at {dict_path}")
-                return
+                raise FileNotFoundError(f"DiAna dictionary not found at {dict_path}")
             
             # Read with error_bad_lines=False to skip problematic rows
-            self.diana_dict = pd.read_csv(dict_path, 
-                                        dtype={'drugname': str, 'Substance': str},
-                                        on_bad_lines='skip',  # Skip problematic lines
-                                        delimiter=';')  # Use semicolon delimiter
+            self.diana_dict = pd.read_csv(
+                dict_path,
+                dtype={'drugname': str, 'Substance': str},
+                low_memory=False,
+                on_bad_lines='skip',  # Skip problematic lines
+                delimiter=';'  # Use semicolon delimiter
+            )
             
             # Clean dictionary entries (matching R script)
             self.diana_dict['drugname'] = self.diana_dict['drugname'].apply(self._clean_drugname)
@@ -456,7 +462,7 @@ class DataStandardizer:
         df = df.copy()
         
         # 1. Load MedDRA PT list
-        meddra_df = pd.read_csv(self.external_dir / 'Dictionaries/MedDRA/meddra.csv', sep=';')
+        meddra_df = pd.read_csv(self.external_dir / 'Dictionaries/MedDRA/meddra.csv', sep=';', low_memory=False)
         pt_list = pd.Series(meddra_df['pt'].unique()).str.lower().str.strip().unique()
         
         # 2. Calculate PT frequencies
@@ -486,7 +492,7 @@ class DataStandardizer:
         not_llts = not_pts[not_pts['standard_pt'].isna()].drop('standard_pt', axis=1)
         
         # 7. Load and apply manual fixes
-        manual_fixes = pd.read_csv(self.external_dir / 'Manual_fix/pt_fixed.csv', sep=';')
+        manual_fixes = pd.read_csv(self.external_dir / 'Manual_fix/pt_fixed.csv', sep=';', low_memory=False)
         manual_fixes = manual_fixes[[pt_variable, 'standard_pt']]
         
         not_llts = not_llts.merge(manual_fixes, on=pt_variable, how='left')
@@ -604,7 +610,14 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Define age unit conversion factors (matching R script)
+        # Convert age to numeric, handling various formats
+        if 'age' in df.columns:
+            df['age'] = pd.to_numeric(
+                df['age'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            )
+        
+        # Define age unit conversion factors
         age_factors = {
             'DEC': 3650,
             'YR': 365,
@@ -618,7 +631,7 @@ class DataStandardizer:
         
         # Convert age to days
         df['age_corrector'] = df['age_cod'].map(age_factors)
-        df['age_in_days'] = pd.to_numeric(df['age'].abs()) * df['age_corrector']
+        df['age_in_days'] = df['age'].abs() * df['age_corrector']
         
         # Handle plausible age range
         max_age_days = 122 * 365  # Maximum recorded human age
@@ -646,7 +659,7 @@ class DataStandardizer:
         # Initialize age group column
         df['age_grp_st'] = pd.NA
         
-        # Apply age group rules (matching R script)
+        # Apply age group rules
         mask = df['age_in_years'].notna()
         df.loc[mask, 'age_grp_st'] = 'E'  # Default to Elderly
         df.loc[mask & (df['age_in_years'] < 65), 'age_grp_st'] = 'A'
@@ -692,12 +705,12 @@ class DataStandardizer:
         
         # Convert weight to kg
         df['wt_corrector'] = df['wt_cod'].map(wt_factors).fillna(1)
-        df['wt_in_kgs'] = pd.to_numeric(df['wt'].abs()) * df['wt_corrector']
+        df['wt_in_kgs'] = pd.to_numeric(df['wt'].abs(), errors='coerce') * df['wt_corrector']
         
         # Round to nearest kg
         df['wt_in_kgs'] = df['wt_in_kgs'].round()
         
-        # Handle implausible weights (> 635 kg, matching R script)
+        # Handle implausible weights (> 635 kg)
         df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = pd.NA
         
         # Log weight distribution
@@ -723,7 +736,7 @@ class DataStandardizer:
         df = df.copy()
         
         # Load country mappings
-        countries_df = pd.read_csv(self.external_dir / 'Manual_fix/countries.csv', sep=';')
+        countries_df = pd.read_csv(self.external_dir / 'Manual_fix/countries.csv', sep=';', low_memory=False)
         
         # Handle special case for Namibia (NA)
         countries_df.loc[countries_df['country'].isna(), 'country'] = 'NA'
@@ -759,7 +772,7 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Valid occupation codes (matching R script)
+        # Valid occupation codes
         valid_codes = {
             'MD': 'Medical Doctor',
             'CN': 'Consumer',
@@ -850,7 +863,8 @@ class DataStandardizer:
         route_st = pd.read_csv(
             self.external_dir / 'Manual_fix/route_st.csv',
             sep=';',
-            usecols=['route', 'route_st']
+            usecols=['route', 'route_st'],
+            low_memory=False
         ).drop_duplicates()
         
         # Create mapping dictionary
@@ -893,7 +907,8 @@ class DataStandardizer:
         dose_form_st = pd.read_csv(
             self.external_dir / 'Manual_fix/dose_form_st.csv',
             sep=';',
-            usecols=['dose_form', 'dose_form_st']
+            usecols=['dose_form', 'dose_form_st'],
+            low_memory=False
         ).drop_duplicates()
         
         # Create mapping dictionary
@@ -930,7 +945,8 @@ class DataStandardizer:
         unit_st = pd.read_csv(
             self.external_dir / 'Manual_fix/unit_st.csv',
             sep=';',
-            usecols=['unit', 'unit_st', 'conversion_factor']
+            usecols=['unit', 'unit_st', 'conversion_factor'],
+            low_memory=False
         ).drop_duplicates()
         
         # Create unit mapping dictionary
@@ -1059,13 +1075,14 @@ class DataStandardizer:
         Returns:
             Series with standardized dates
         """
-        def is_valid_date(date_str: str) -> bool:
-            if pd.isna(date_str):
+        def is_valid_date(date_val) -> bool:
+            if pd.isna(date_val):
                 return False
-            
+                
             try:
-                # Ensure 8 digits with leading zeros
-                date_str = str(date_str).zfill(8)
+                # Convert to string and ensure 8 digits
+                date_str = str(int(float(str(date_val).replace(',', ''))))
+                date_str = date_str.zfill(8)
                 
                 # Extract components
                 year = int(date_str[:4])
@@ -1097,8 +1114,13 @@ class DataStandardizer:
             except (ValueError, TypeError):
                 return False
         
-        # Apply validation to series
-        result = date_series.copy()
+        # Convert series to numeric, handling various formats
+        result = pd.to_numeric(
+            date_series.astype(str).str.replace(',', ''),
+            errors='coerce'
+        ).fillna(-1).astype('int64')
+        
+        # Apply validation
         mask = ~result.apply(is_valid_date)
         result[mask] = pd.NA
         
@@ -1274,3 +1296,43 @@ class DataStandardizer:
             df['severity'] = df['severity'].astype('category')
         
         return df
+
+    def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
+        """Process a single FAERS file.
+        
+        Args:
+            file_path: Path to the file
+            data_type: Type of data ('demographics', 'drugs', 'reactions')
+            
+        Returns:
+            Processed DataFrame
+        """
+        try:
+            # Read file with optimized settings
+            df = pd.read_csv(
+                file_path,
+                sep='$',
+                dtype=str,
+                na_values=['', 'NA', 'NULL'],
+                keep_default_na=True,
+                low_memory=False,
+                encoding='utf-8'
+            )
+            
+            # Convert numeric columns
+            if 'primaryid' in df.columns:
+                df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
+            
+            if data_type == 'demographics':
+                if 'caseid' in df.columns:
+                    df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
+                if 'age' in df.columns:
+                    df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            elif data_type == 'drugs' and 'drug_seq' in df.columns:
+                df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error processing {file_path}: {str(e)}")
+            return pd.DataFrame()
