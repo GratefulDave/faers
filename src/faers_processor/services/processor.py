@@ -356,13 +356,13 @@ class FAERSProcessor:
         """Process a single quarter directory."""
         quarter_dir = self._normalize_quarter_path(quarter_dir)
         ascii_dir = self._find_ascii_directory(quarter_dir)
-
+        
         if not ascii_dir:
             raise ValueError(f"No ASCII directory found in {quarter_dir}")
-
+            
         logging.info(f"Processing quarter directory: {quarter_dir}")
         logging.info(f"Using ASCII directory: {ascii_dir}")
-
+        
         # Initialize results dictionary for all FAERS file types
         results = {
             'demo': pd.DataFrame(),      # Demographics
@@ -373,7 +373,11 @@ class FAERSProcessor:
             'ther': pd.DataFrame(),      # Therapy information
             'indi': pd.DataFrame()       # Indications
         }
-
+        
+        # Create quarter summary
+        quarter_summary = QuarterSummary(quarter=quarter_dir.name)
+        start_time = time.time()
+        
         # Process each file type
         file_types = {
             'DEMO': ('demo', ['demo', 'demog']),
@@ -384,34 +388,55 @@ class FAERSProcessor:
             'THER': ('ther', ['ther', 'therapy']),
             'INDI': ('indi', ['indi', 'indic'])
         }
-
+        
         for base_name, (data_type, patterns) in file_types.items():
             try:
-                # Find matching files
+                # Find matching files case-insensitively
                 matched_files = []
                 for pattern in patterns:
-                    matched_files.extend(ascii_dir.glob(f'*{pattern}*.txt'))
-
+                    # Use rglob to search recursively and match case-insensitively
+                    for file in ascii_dir.rglob('*'):
+                        if file.is_file() and any(pat.lower() in file.name.lower() for pat in patterns) and file.suffix.lower() == '.txt':
+                            matched_files.append(file)
+                
                 if not matched_files:
                     logging.warning(f"No {data_type} files found in {ascii_dir}")
                     continue
-
+                    
                 # Use the first matching file
                 file_path = matched_files[0]
                 logging.info(f"Processing {data_type} file: {file_path}")
-
+                
                 # Process the file
                 df = self.process_file(file_path, data_type)
+                
+                # Update statistics
+                table_summary = getattr(quarter_summary, f"{data_type}_summary")
+                table_summary.total_rows = len(df) if not df.empty else 0
+                
                 if not df.empty:
                     results[data_type] = df
+                    table_summary.processed_rows = len(df)
                     logging.info(f"Successfully processed {data_type} file. Shape: {df.shape}")
+                    logging.info(f"Success rate: {table_summary.success_rate:.1f}%")
                 else:
                     logging.warning(f"Empty DataFrame returned for {data_type}")
-
+                    table_summary.parsing_errors.append("Empty DataFrame returned")
+                    
             except Exception as e:
-                logging.error(f"Error processing {data_type} in {quarter_dir}: {str(e)}")
-                raise
-
+                error_msg = f"Error processing {data_type}: {str(e)}"
+                logging.error(error_msg)
+                table_summary = getattr(quarter_summary, f"{data_type}_summary")
+                table_summary.parsing_errors.append(error_msg)
+        
+        # Update quarter processing time
+        quarter_summary.processing_time = time.time() - start_time
+        
+        # Add quarter summary to processing summary
+        if not hasattr(self, 'processing_summary'):
+            self.processing_summary = FAERSProcessingSummary()
+        self.processing_summary.add_quarter_summary(quarter_dir.name, quarter_summary)
+        
         return results
 
     def _fix_known_data_issues(self, file_path: Path, content: str) -> str:
