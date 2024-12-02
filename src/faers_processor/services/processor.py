@@ -48,18 +48,25 @@ class FAERSProcessor:
         """Process all FAERS data files."""
         try:
             # Get list of all quarters from data directory (excluding clean dir)
-            quarters = [d.name for d in self.data_dir.iterdir() 
-                       if d.is_dir() and d.name.lower() != 'clean' 
-                       and any(c.isdigit() for c in d.name)]  # Only include quarter directories
+            quarters = []
+            logging.info("Discovering quarters...")
+            for d in self.data_dir.iterdir():
+                if d.is_dir() and d.name.lower() != 'clean':
+                    # Check if it matches quarter pattern (e.g., 2004q1)
+                    if len(d.name) == 6 and d.name[:4].isdigit() and d.name[4] == 'q' and d.name[5].isdigit():
+                        quarters.append(d.name)
+                        logging.info(f"Found quarter: {d.name}")
+            
+            quarters.sort()  # Sort quarters chronologically
             
             if not quarters:
-                logging.warning(f"No quarters found to process in {self.data_dir}")
+                logging.warning(f"No quarters found in {self.data_dir}")
                 logging.info("Directory contents:")
                 for item in self.data_dir.iterdir():
                     logging.info(f"  {item.name} ({'dir' if item.is_dir() else 'file'})")
                 return
                 
-            logging.info(f"Found {len(quarters)} quarters to process: {quarters}")
+            logging.info(f"Found {len(quarters)} quarters to process")
             
             # Process each quarter
             with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
@@ -166,6 +173,35 @@ class FAERSProcessor:
             # Convert Path to string for compatibility
             file_path_str = str(file_path)
             
+            # Define metadata based on data type
+            if data_type == 'demographics':
+                meta = {
+                    'primaryid': 'int64',
+                    'caseid': 'float64',
+                    'age': 'float64',
+                    'age_cod': 'object',
+                    'sex': 'object',
+                    'reporter_country': 'object',
+                    'occr_country': 'object'
+                }
+            elif data_type == 'drugs':
+                meta = {
+                    'primaryid': 'int64',
+                    'drug_seq': 'int64',
+                    'drugname': 'object',
+                    'prod_ai': 'object',
+                    'route': 'object',
+                    'dose_amt': 'object',
+                    'dose_unit': 'object',
+                    'dose_form': 'object'
+                }
+            else:  # reactions
+                meta = {
+                    'primaryid': 'int64',
+                    'pt': 'object',
+                    'drug_rec_act': 'object'
+                }
+            
             # Read data with optimized settings
             if self.use_dask:
                 try:
@@ -176,7 +212,9 @@ class FAERSProcessor:
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True,
                         blocksize=self.chunk_size * 1024,
-                        sample=10000  # Sample size for dtype inference
+                        assume_missing=True,
+                        sample=10000,  # Sample size for dtype inference
+                        meta=meta
                     )
                 except Exception as e:
                     logging.warning(f"Dask read failed, falling back to pandas: {str(e)}")
