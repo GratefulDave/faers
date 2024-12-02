@@ -223,23 +223,35 @@ def process_data(
     chunk_size: int,
     use_dask: bool = False
 ) -> None:
-    """Process downloaded FAERS data with optimized parallel processing."""
+    """Process downloaded FAERS data with optimized parallel processing.
+    
+    Args:
+        data_dir: Path to raw data directory
+        external_dir: Path to external data directory
+        chunk_size: Number of rows to process at once
+        use_dask: Whether to use Dask for parallel processing
+    """
     try:
-        # Resolve paths relative to current working directory
-        cwd = Path.cwd()
-        data_dir = (cwd / data_dir).resolve()
-        external_dir = (cwd / external_dir).resolve()
+        # Create clean data directory
+        clean_dir = data_dir.parent / 'clean'
+        clean_dir.mkdir(parents=True, exist_ok=True)
         
         logging.info(f"Processing data from: {data_dir}")
         logging.info(f"Using external data from: {external_dir}")
+        logging.info(f"Saving processed data to: {clean_dir}")
         
-        processor = FAERSProcessor(
-            data_dir=data_dir,
-            external_dir=external_dir,
-            chunk_size=chunk_size,
-            use_dask=use_dask
+        # Initialize processor with standardizer
+        standardizer = DataStandardizer(external_dir)
+        processor = FAERSProcessor(standardizer)
+        
+        # Process all quarters
+        processor.process_all(
+            input_dir=data_dir / 'Raw_FAERS_QD',  # Raw data is in Raw_FAERS_QD subdirectory
+            output_dir=clean_dir / 'Clean Data'    # Clean data goes in Clean Data subdirectory
         )
-        processor.process_all()
+        
+        logging.info("Data processing completed successfully")
+        
     except Exception as e:
         logging.error(f"Error in data processing: {str(e)}")
         raise
