@@ -38,6 +38,14 @@ class FAERSProcessor:
         import time
         from datetime import datetime
         
+        # Convert to absolute paths and resolve any symlinks
+        input_dir = input_dir.resolve()
+        output_dir = output_dir.resolve()
+        
+        logging.info(f"Using absolute paths:")
+        logging.info(f"Input directory: {input_dir}")
+        logging.info(f"Output directory: {output_dir}")
+        
         # Initialize results tracking
         results = {
             'total_quarters': 0,
@@ -171,9 +179,10 @@ class FAERSProcessor:
                     merged_df = merged_df.sort_values(['primaryid', 'quarter'])
                     
                     # Save merged file
-                    output_file = output_dir / f'{data_type}.txt'
+                    output_file = output_dir.resolve() / f'{data_type}.txt'
+                    logging.info(f"Saving {data_type} to: {output_file}")
                     merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
-                    logging.info(f"Saved merged {data_type} to {output_file}")
+                    logging.info(f"Successfully saved {data_type} to {output_file}")
                     logging.info(f"Shape: {merged_df.shape}")
                 except Exception as e:
                     logging.error(f"Error merging {data_type}: {str(e)}")
