@@ -336,20 +336,27 @@ class FAERSProcessor:
 
     def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
         """Find the ASCII directory - it's always ASCII or ascii."""
-        # Just check for ASCII or ascii - that's all we need
-        ascii_dir = quarter_dir / 'ASCII'
-        if ascii_dir.is_dir():
-            return ascii_dir
-
-        ascii_dir = quarter_dir / 'ascii'
-        if ascii_dir.is_dir():
-            return ascii_dir
-
-        # Log what we found to help debug
-        logging.info(f"Contents of {quarter_dir}:")
+        # Log current directory for debugging
+        logging.info(f"Searching for ASCII directory in: {quarter_dir}")
+        logging.info("Contents:")
         for item in quarter_dir.iterdir():
             logging.info(f"  - {item.name}")
-
+            
+        # Try case-insensitive match for 'ascii' directory
+        for item in quarter_dir.iterdir():
+            if item.is_dir() and item.name.lower() == 'ascii':
+                logging.info(f"Found ASCII directory: {item}")
+                return item
+                
+        # If not found directly, look one level deeper
+        for item in quarter_dir.iterdir():
+            if item.is_dir():
+                for subitem in item.iterdir():
+                    if subitem.is_dir() and subitem.name.lower() == 'ascii':
+                        logging.info(f"Found ASCII directory in subdirectory: {subitem}")
+                        return subitem
+                        
+        logging.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
         return None
 
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
@@ -393,11 +400,12 @@ class FAERSProcessor:
             try:
                 # Find matching files case-insensitively
                 matched_files = []
-                for pattern in patterns:
-                    # Use rglob to search recursively and match case-insensitively
-                    for file in ascii_dir.rglob('*'):
-                        if file.is_file() and any(pat.lower() in file.name.lower() for pat in patterns) and file.suffix.lower() == '.txt':
-                            matched_files.append(file)
+                for file in ascii_dir.glob('*.txt'):
+                    file_lower = file.name.lower()
+                    if any(pat.lower() in file_lower for pat in patterns):
+                        matched_files.append(file)
+                        logging.info(f"Found {data_type} file: {file}")
+                        break  # Take the first matching file
                 
                 if not matched_files:
                     logging.warning(f"No {data_type} files found in {ascii_dir}")
