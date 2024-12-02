@@ -228,13 +228,15 @@ def download_data(max_workers: int) -> None:
 
 def process_data(
     chunk_size: int,
-    use_dask: bool = False
+    use_dask: bool = False,
+    max_workers: int = None
 ) -> None:
     """Process downloaded FAERS data with optimized parallel processing.
     
     Args:
         chunk_size: Number of rows to process at once
         use_dask: Whether to use Dask for parallel processing
+        max_workers: Maximum number of worker processes to use
     """
     try:
         # Get absolute paths from project root
@@ -252,26 +254,48 @@ def process_data(
         logging.info(f"Saving processed data to: {output_dir}")
         
         if use_dask:
-            logging.info("Using Dask for parallel processing")
-            # Configure dask to use multiple workers
+            logging.info("Initializing Dask cluster")
             from distributed import Client, LocalCluster
-            cluster = LocalCluster()
+            
+            # Configure dask for better stability
+            if max_workers is None:
+                max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
+            
+            # Create a local cluster with specific resource limits
+            cluster = LocalCluster(
+                n_workers=max_workers,
+                threads_per_worker=1,  # Use processes instead of threads
+                memory_limit='4GB',    # Limit memory per worker
+                lifetime=None,         # Don't timeout workers
+                lifetime_stagger='10s', # Stagger worker restarts
+                lifetime_restart=True   # Restart workers if they die
+            )
             client = Client(cluster)
             logging.info(f"Dask dashboard available at: {client.dashboard_link}")
-        
-        # Initialize processor with standardizer
-        standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
-        processor = FAERSProcessor(standardizer, use_dask=use_dask)
-        
-        # Process all quarters
-        processor.process_all(
-            input_dir=input_dir,
-            output_dir=output_dir
-        )
-        
-        if use_dask:
-            client.close()
-            cluster.close()
+            
+            try:
+                # Initialize processor with standardizer
+                standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
+                processor = FAERSProcessor(standardizer, use_dask=use_dask)
+                
+                # Process all quarters
+                processor.process_all(
+                    input_dir=input_dir,
+                    output_dir=output_dir
+                )
+            finally:
+                # Clean up dask resources
+                client.close()
+                cluster.close()
+        else:
+            # Sequential processing
+            standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
+            processor = FAERSProcessor(standardizer, use_dask=False)
+            
+            processor.process_all(
+                input_dir=input_dir,
+                output_dir=output_dir
+            )
         
         logging.info("Data processing completed successfully")
         

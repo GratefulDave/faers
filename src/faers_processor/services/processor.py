@@ -39,7 +39,7 @@ class FAERSProcessor:
             output_dir: Directory to save processed files
         """
         # Find all quarter directories
-        quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name)]
+        quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
         
         if not quarter_dirs:
             logging.error(f"No quarter directories found in {input_dir}")
@@ -48,33 +48,40 @@ class FAERSProcessor:
         logging.info(f"Found {len(quarter_dirs)} quarters to process")
         
         if self.use_dask:
-            import dask.bag as db
+            import dask.dataframe as dd
             from distributed import get_client
             
             # Get the dask client
             client = get_client()
             
-            # Create a dask bag from quarter directories
-            quarters_bag = db.from_sequence(quarter_dirs)
-            
-            # Process quarters in parallel
-            results = quarters_bag.map(lambda d: self.process_quarter(d)).compute()
-            
-            # Combine results
-            all_results = {}
-            for quarter_result in results:
-                for data_type, df in quarter_result.items():
-                    if data_type not in all_results:
-                        all_results[data_type] = []
-                    all_results[data_type].append(df)
-            
-            # Concatenate and save results
-            for data_type, dfs in all_results.items():
-                if dfs:
-                    combined_df = pd.concat(dfs, ignore_index=True)
-                    output_file = output_dir / f"combined_{data_type}.txt"
-                    combined_df.to_csv(output_file, sep='$', index=False)
-                    logging.info(f"Saved combined {data_type} data to {output_file}")
+            # Process quarters in smaller batches to avoid memory issues
+            batch_size = 4  # Process 4 quarters at a time
+            for i in range(0, len(quarter_dirs), batch_size):
+                batch = quarter_dirs[i:i + batch_size]
+                logging.info(f"Processing batch of {len(batch)} quarters")
+                
+                # Process batch in parallel
+                futures = []
+                for quarter_dir in batch:
+                    future = client.submit(self.process_quarter, quarter_dir)
+                    futures.append(future)
+                
+                # Gather results as they complete
+                for future, quarter_dir in zip(futures, batch):
+                    try:
+                        results = future.result()
+                        quarter = quarter_dir.name
+                        
+                        # Save results for this quarter
+                        for data_type, df in results.items():
+                            if not df.empty:
+                                output_file = output_dir / f"{quarter}_{data_type}.txt"
+                                df.to_csv(output_file, sep='$', index=False)
+                                logging.info(f"Saved {data_type} data for {quarter} to {output_file}")
+                    
+                    except Exception as e:
+                        logging.error(f"Error processing quarter {quarter_dir}: {str(e)}")
+                        continue
         else:
             # Sequential processing
             for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
@@ -103,11 +110,26 @@ class FAERSProcessor:
             Dictionary of processed DataFrames for demographics, drugs, and reactions
         """
         results = {}
-        ascii_dir = quarter_dir / 'ascii'
         
-        if not ascii_dir.exists():
-            logging.error(f"ASCII directory not found in {quarter_dir}")
+        # Look for ASCII files in both quarter_dir and ascii subdirectory
+        ascii_paths = [
+            quarter_dir,  # Try root directory first
+            quarter_dir / 'ascii',  # Then try ascii subdirectory
+            quarter_dir / 'ASCII'   # Then try ASCII subdirectory (case sensitive)
+        ]
+        
+        # Find the first valid path that contains our files
+        ascii_dir = None
+        for path in ascii_paths:
+            if path.exists() and any(path.glob('*.[Tt][Xx][Tt]')):
+                ascii_dir = path
+                break
+        
+        if not ascii_dir:
+            logging.error(f"No valid ASCII directory found in {quarter_dir}")
             return results
+        
+        logging.info(f"Using ASCII directory: {ascii_dir}")
         
         # Find relevant files (case-insensitive)
         demo_file = next((f for f in ascii_dir.glob('[Dd][Ee][Mm][Oo]*.[Tt][Xx][Tt]')), None)
@@ -115,53 +137,48 @@ class FAERSProcessor:
         reac_file = next((f for f in ascii_dir.glob('[Rr][Ee][Aa][Cc]*.[Tt][Xx][Tt]')), None)
         
         if not all([demo_file, drug_file, reac_file]):
-            logging.error(f"Missing required files in {quarter_dir}")
+            missing = []
+            if not demo_file: missing.append("demographics")
+            if not drug_file: missing.append("drugs")
+            if not reac_file: missing.append("reactions")
+            logging.error(f"Missing files in {quarter_dir}: {', '.join(missing)}")
             return results
             
         try:
             if self.use_dask:
-                # Process files in parallel using dask
-                import dask.delayed as delayed
-                
-                # Create delayed objects for each file processing task
-                demo_task = delayed(self.process_file)(demo_file, 'demographics')
-                drug_task = delayed(self.process_file)(drug_file, 'drugs')
-                reac_task = delayed(self.process_file)(reac_file, 'reactions')
-                
-                # Compute all tasks in parallel
-                demo_df, drug_df, reac_df = delayed(lambda x, y, z: (x, y, z))(
-                    demo_task, drug_task, reac_task
-                ).compute()
-                
-                # Standardize results
-                if not demo_df.empty:
-                    demo_df = self.standardizer.standardize_demographics(demo_df)
-                    results['demographics'] = demo_df
-                
-                if not drug_df.empty:
-                    drug_df = self.standardizer.standardize_drugs(drug_df)
-                    results['drugs'] = drug_df
-                
-                if not reac_df.empty:
-                    reac_df = self.standardizer.standardize_reactions(reac_df)
-                    results['reactions'] = reac_df
-            else:
-                # Sequential processing
-                # Process demographics
+                # Process files sequentially but use dask for the file reading
+                # This avoids memory issues while still maintaining parallelism
                 logging.info(f"Processing demographics from {demo_file}")
                 demo_df = self.process_file(demo_file, 'demographics')
                 if not demo_df.empty:
                     demo_df = self.standardizer.standardize_demographics(demo_df)
                     results['demographics'] = demo_df
                 
-                # Process drugs
                 logging.info(f"Processing drugs from {drug_file}")
                 drug_df = self.process_file(drug_file, 'drugs')
                 if not drug_df.empty:
                     drug_df = self.standardizer.standardize_drugs(drug_df)
                     results['drugs'] = drug_df
                 
-                # Process reactions
+                logging.info(f"Processing reactions from {reac_file}")
+                reac_df = self.process_file(reac_file, 'reactions')
+                if not reac_df.empty:
+                    reac_df = self.standardizer.standardize_reactions(reac_df)
+                    results['reactions'] = reac_df
+            else:
+                # Sequential processing (same as above)
+                logging.info(f"Processing demographics from {demo_file}")
+                demo_df = self.process_file(demo_file, 'demographics')
+                if not demo_df.empty:
+                    demo_df = self.standardizer.standardize_demographics(demo_df)
+                    results['demographics'] = demo_df
+                
+                logging.info(f"Processing drugs from {drug_file}")
+                drug_df = self.process_file(drug_file, 'drugs')
+                if not drug_df.empty:
+                    drug_df = self.standardizer.standardize_drugs(drug_df)
+                    results['drugs'] = drug_df
+                
                 logging.info(f"Processing reactions from {reac_file}")
                 reac_df = self.process_file(reac_file, 'reactions')
                 if not reac_df.empty:
@@ -202,6 +219,7 @@ class FAERSProcessor:
                             dtype=str,
                             na_values=['', 'NA', 'NULL'],
                             keep_default_na=True,
+                            header=0,
                             low_memory=False,
                             encoding='utf-8'
                         )
