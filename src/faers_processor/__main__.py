@@ -20,13 +20,16 @@ from .services.downloader import FAERSDownloader
 from .services.processor import FAERSProcessor
 
 # Check if running on Apple Silicon
-IS_APPLE_SILICON = platform.processor() == 'arm'
+IS_APPLE_SILICON = platform.machine() == 'arm64'
 if IS_APPLE_SILICON:
+    logging.info("Running on Apple Silicon - enabling optimizations")
     # Enable Apple Silicon optimizations
     import os
     os.environ['OPENBLAS_NUM_THREADS'] = str(multiprocessing.cpu_count())
     os.environ['MKL_NUM_THREADS'] = str(multiprocessing.cpu_count())
     os.environ['VECLIB_MAXIMUM_THREADS'] = str(multiprocessing.cpu_count())
+else:
+    logging.info(f"Running on {platform.machine()} architecture")
 
 # Configure pandas for better performance
 pd.set_option('compute.use_numexpr', True)
