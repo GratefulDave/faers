@@ -207,7 +207,23 @@ class FAERSProcessor:
             
             # Read file with pandas
             try:
-                df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'], keep_default_na=True)
+                # First try to read with header=0 (standard)
+                try:
+                    df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'], 
+                                   keep_default_na=True, header=0, encoding='utf-8')
+                    # Check if we got expected columns after potential mapping
+                    mapped_cols = [column_mapping[data_type].get(col, col) for col in df.columns]
+                    if not any(col in mapped_cols for col in expected_columns[data_type]):
+                        # Try reading with header=None and first row as header
+                        df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
+                                       keep_default_na=True, header=None, encoding='utf-8')
+                        # Use first row as header, preserving original names
+                        df.columns = df.iloc[0]
+                        df = df.iloc[1:].reset_index(drop=True)
+                except UnicodeDecodeError:
+                    # If UTF-8 fails, try with latin1 encoding
+                    df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
+                                   keep_default_na=True, header=0, encoding='latin1')
                 
                 # Rename columns according to mapping
                 if data_type in column_mapping:
