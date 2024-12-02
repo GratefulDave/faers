@@ -401,8 +401,8 @@ class FAERSProcessor:
                 # Find matching files case-insensitively
                 matched_files = []
                 for file in ascii_dir.glob('*.txt'):
-                    file_lower = file.name.lower()
-                    if any(pat.lower() in file_lower for pat in patterns):
+                    file_stem = file.stem.lower()  # Get filename without extension
+                    if any(pat.lower() == file_stem for pat in patterns):  
                         matched_files.append(file)
                         logging.info(f"Found {data_type} file: {file}")
                         break  # Take the first matching file
