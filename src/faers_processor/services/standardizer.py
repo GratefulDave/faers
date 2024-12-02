@@ -95,15 +95,23 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized dates
         """
+        if df.empty:
+            return df
+            
         df = df.copy()
 
         # Date columns to process
         date_columns = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
 
-        # Process each date column
+        # Process each date column if it exists
         for col in date_columns:
             if col in df.columns:
-                df[col] = self._check_date(df[col], max_date)
+                try:
+                    df[col] = self._check_date(df[col], max_date)
+                except Exception as e:
+                    logging.warning(f"Error standardizing {col}: {str(e)}")
+                    # Keep original values if standardization fails
+                    pass
 
         return df
 
