@@ -1061,9 +1061,6 @@ class DataStandardizer:
         if 'occp_cod' in df.columns:
             df['occupation'] = self.standardize_occupation(df['occp_cod'])
             
-        # Remove incomplete cases
-        df = self.remove_incomplete_cases(df)
-        
         return df
         
     def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1094,6 +1091,239 @@ class DataStandardizer:
             
         return df
         
+    def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process reaction data.
+        
+        Args:
+            df: Raw reaction DataFrame
+            
+        Returns:
+            Processed reaction DataFrame
+        """
+        df = df.copy()
+        
+        # Standardize reaction terms using MedDRA
+        if 'pt' in df.columns:
+            df['reaction_term'] = self.standardize_reaction(df['pt'])
+            
+        # Add reaction severity if available
+        if 'outc_cod' in df.columns:
+            df['severity'] = self.standardize_outcome(df['outc_cod'])
+            
+        return df
+
+    def standardize_dates(self, date_series: pd.Series) -> pd.Series:
+        """Standardize dates to a consistent format.
+        
+        Args:
+            date_series: Series of dates to standardize
+            
+        Returns:
+            Standardized date series
+        """
+        if pd.isna(date_series).all():
+            return date_series
+
+        try:
+            return pd.to_datetime(date_series, format='%Y%m%d', errors='coerce')
+        except Exception as e:
+            logging.warning(f"Error standardizing dates: {str(e)}")
+            return date_series
+
+    def standardize_route(self, route_series: pd.Series) -> pd.Series:
+        """Standardize drug administration routes.
+        
+        Args:
+            route_series: Series of routes to standardize
+            
+        Returns:
+            Standardized route series
+        """
+        if not hasattr(self, 'route_map'):
+            self._load_reference_data()
+            
+        standardized = route_series.str.lower().str.strip().map(self.route_map)
+        unknown_routes = route_series[standardized.isna()].unique()
+        if len(unknown_routes) > 0:
+            logging.warning(f"Unknown routes: {unknown_routes}")
+        return standardized
+
+    def standardize_dose_form(self, form_series: pd.Series) -> pd.Series:
+        """Standardize drug dose forms.
+        
+        Args:
+            form_series: Series of dose forms to standardize
+            
+        Returns:
+            Standardized dose form series
+        """
+        if not hasattr(self, 'dose_form_map'):
+            self._load_reference_data()
+            
+        standardized = form_series.str.lower().str.strip().map(self.dose_form_map)
+        unknown_forms = form_series[standardized.isna()].unique()
+        if len(unknown_forms) > 0:
+            logging.warning(f"Unknown dose forms: {unknown_forms}")
+        return standardized
+
+    def standardize_dose(self, amount_series: pd.Series, unit_series: pd.Series) -> pd.Series:
+        """Standardize drug doses to consistent units.
+        
+        Args:
+            amount_series: Series of dose amounts
+            unit_series: Series of dose units
+            
+        Returns:
+            Standardized dose series
+        """
+        # Convert amounts to numeric
+        amounts = pd.to_numeric(amount_series, errors='coerce')
+        
+        # Define unit conversions (to standard units)
+        unit_conversions = {
+            'MG': 1,
+            'G': 1000,
+            'MCG': 0.001,
+            'NG': 0.000001,
+            'ML': 1,
+            'L': 1000,
+        }
+        
+        # Standardize units and apply conversions
+        units = unit_series.str.upper().str.strip()
+        conversion_factors = units.map(unit_conversions)
+        
+        # Log unknown units
+        unknown_units = units[conversion_factors.isna()].unique()
+        if len(unknown_units) > 0:
+            logging.warning(f"Unknown dose units: {unknown_units}")
+            
+        return amounts * conversion_factors
+
+    def standardize_reaction(self, reaction_series: pd.Series) -> pd.Series:
+        """Standardize reaction terms using MedDRA terminology.
+        
+        Args:
+            reaction_series: Series of reaction terms to standardize
+            
+        Returns:
+            Standardized reaction series
+        """
+        if not hasattr(self, 'pt_data'):
+            self._load_meddra_data()
+            
+        # Clean and standardize terms
+        cleaned_terms = reaction_series.str.lower().str.strip()
+        
+        # Try direct PT matches
+        standardized = cleaned_terms.map(self.pt_to_llt_map)
+        
+        # Try manual fixes for unmatched terms
+        unmatched = standardized.isna()
+        if unmatched.any():
+            standardized.loc[unmatched] = cleaned_terms[unmatched].map(self.manual_pt_fixes)
+            
+        # Log unmatched terms
+        still_unmatched = standardized[standardized.isna()].unique()
+        if len(still_unmatched) > 0:
+            logging.warning(f"Unmatched reaction terms: {still_unmatched}")
+            
+        return standardized
+
+    def standardize_outcome(self, outcome_series: pd.Series) -> pd.Series:
+        """Standardize outcome codes to severity levels.
+        
+        Args:
+            outcome_series: Series of outcome codes to standardize
+            
+        Returns:
+            Standardized severity series
+        """
+        # Define outcome severity mapping
+        severity_map = {
+            'DE': 'Death',
+            'LT': 'Life-Threatening',
+            'HO': 'Hospitalization',
+            'DS': 'Disability',
+            'CA': 'Congenital Anomaly',
+            'RI': 'Required Intervention',
+            'OT': 'Other'
+        }
+        
+        standardized = outcome_series.str.upper().str.strip().map(severity_map)
+        unknown_outcomes = outcome_series[standardized.isna()].unique()
+        if len(unknown_outcomes) > 0:
+            logging.warning(f"Unknown outcome codes: {unknown_outcomes}")
+            
+        return standardized
+
+    def process_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process demographics data.
+        
+        Args:
+            df: Raw demographics DataFrame
+            
+        Returns:
+            Processed demographics DataFrame
+        """
+        df = df.copy()
+        
+        # Standardize dates
+        date_cols = ['init_fda_dt', 'fda_dt', 'event_dt', 'mfr_dt']
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = self.standardize_dates(df[col])
+        
+        # Standardize sex
+        if 'sex' in df.columns:
+            df['sex'] = self.standardize_sex(df['sex'])
+            
+        # Standardize age
+        if 'age' in df.columns and 'age_cod' in df.columns:
+            df['age'] = self.standardize_age(df['age'], df['age_cod'])
+            
+        # Standardize weight
+        if 'wt' in df.columns and 'wt_cod' in df.columns:
+            df['weight'] = self.standardize_weight(df['wt'], df['wt_cod'])
+            
+        # Standardize country codes
+        if 'reporter_country' in df.columns:
+            df['reporter_country'] = self.standardize_country(df['reporter_country'])
+            
+        # Standardize occupations
+        if 'occp_cod' in df.columns:
+            df['occupation'] = self.standardize_occupation(df['occp_cod'])
+            
+        return df
+
+    def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process drug data.
+        
+        Args:
+            df: Raw drug DataFrame
+            
+        Returns:
+            Processed drug DataFrame
+        """
+        df = df.copy()
+        
+        # Standardize drug names and substances
+        df = self.standardize_drugs(df)
+        
+        # Standardize routes
+        if 'route' in df.columns:
+            df['route'] = self.standardize_route(df['route'])
+            
+        # Standardize dose forms
+        if 'dose_form' in df.columns:
+            df['dose_form'] = self.standardize_dose_form(df['dose_form'])
+            
+        # Convert dosages to standard units
+        if all(col in df.columns for col in ['dose_amt', 'dose_unit']):
+            df['dose_std'] = self.standardize_dose(df['dose_amt'], df['dose_unit'])
+            
+        return df
+
     def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process reaction data.
         
