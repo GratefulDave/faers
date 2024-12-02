@@ -215,25 +215,25 @@ def process_data(
         # Get absolute paths from project root
         root_dir = Path(__file__).parent.parent.parent.resolve()  # Ensure absolute path
         input_dir = root_dir / 'data' / 'raw'
-        output_dir = root_dir / 'data' / 'clean'
+        clean_dir = root_dir / 'data' / 'clean'
         external_dir = root_dir / 'external_data'
         
         # Create directories if they don't exist
         input_dir.mkdir(parents=True, exist_ok=True)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        clean_dir.mkdir(parents=True, exist_ok=True)
         
         logging.info(f"Processing data from: {input_dir}")
         logging.info(f"Using external data from: {external_dir}")
-        logging.info(f"Saving processed data to: {output_dir}")
+        logging.info(f"Saving processed data to: {clean_dir}")
         
         # Initialize processor with standardizer
-        standardizer = DataStandardizer(external_dir=external_dir, output_dir=output_dir)
+        standardizer = DataStandardizer(external_dir=external_dir, output_dir=clean_dir)
         processor = FAERSProcessor(standardizer, use_parallel=True)
         
         # Process all quarters
         processor.process_all(
             input_dir=input_dir,
-            output_dir=output_dir,
+            output_dir=clean_dir,
             max_workers=max_workers
         )
         

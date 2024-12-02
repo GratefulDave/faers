@@ -34,7 +34,7 @@ class FAERSProcessor:
         self.use_parallel = use_parallel
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
-        """Process all quarters in the input directory and save merged results in data/clean."""
+        """Process all quarters in the input directory and save merged results in output_dir."""
         import time
         from datetime import datetime
         
@@ -49,9 +49,12 @@ class FAERSProcessor:
         }
         start_time = time.time()
         
-        # Create data/clean directory
-        clean_dir = Path('data') / 'clean'
-        clean_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure output directory exists and is clean
+        if output_dir.exists():
+            logging.info(f"Cleaning output directory: {output_dir}")
+            for file in output_dir.glob('*.txt'):
+                file.unlink()
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # Find all quarter directories
         quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
@@ -167,8 +170,8 @@ class FAERSProcessor:
                     # Sort by primaryid and quarter
                     merged_df = merged_df.sort_values(['primaryid', 'quarter'])
                     
-                    # Save merged file in data/clean
-                    output_file = clean_dir / f'{data_type}.txt'
+                    # Save merged file
+                    output_file = output_dir / f'{data_type}.txt'
                     merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
                     logging.info(f"Saved merged {data_type} to {output_file}")
                     logging.info(f"Shape: {merged_df.shape}")
@@ -179,12 +182,12 @@ class FAERSProcessor:
         results['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         results['duration'] = time.time() - start_time
         
-        # Generate summary report in data/clean
-        self.generate_summary_report(clean_dir, results)
+        # Generate summary report
+        self.generate_summary_report(output_dir, results)
         
         # Print final summary
         print(f"\nProcessing completed in {results['duration']:.2f} seconds")
-        print(f"See detailed report at: {clean_dir}/processing_report.md")
+        print(f"See detailed report at: {output_dir}/processing_report.md")
 
     def generate_summary_report(self, output_dir: Path, results: Dict) -> None:
         """Generate a markdown summary report of processing results.
