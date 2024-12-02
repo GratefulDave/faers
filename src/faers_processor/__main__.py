@@ -232,13 +232,19 @@ def process_data(
         use_dask: Whether to use Dask for parallel processing
     """
     try:
-        # Create clean data directory
-        clean_dir = data_dir.parent / 'clean'
-        clean_dir.mkdir(parents=True, exist_ok=True)
+        # Get absolute paths from project root
+        root_dir = Path(__file__).parent.parent.parent  # Go up to project root
+        input_dir = root_dir / 'data' / 'raw'
+        output_dir = root_dir / 'data' / 'clean'
+        external_dir = root_dir / 'external_data'
         
-        logging.info(f"Processing data from: {data_dir}")
+        # Create directories if they don't exist
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        logging.info(f"Processing data from: {input_dir}")
         logging.info(f"Using external data from: {external_dir}")
-        logging.info(f"Saving processed data to: {clean_dir}")
+        logging.info(f"Saving processed data to: {output_dir}")
         
         # Initialize processor with standardizer
         standardizer = DataStandardizer(external_dir)
@@ -246,8 +252,8 @@ def process_data(
         
         # Process all quarters
         processor.process_all(
-            input_dir=data_dir / 'Raw_FAERS_QD',  # Raw data is in Raw_FAERS_QD subdirectory
-            output_dir=clean_dir / 'Clean Data'    # Clean data goes in Clean Data subdirectory
+            input_dir=input_dir,
+            output_dir=output_dir
         )
         
         logging.info("Data processing completed successfully")
