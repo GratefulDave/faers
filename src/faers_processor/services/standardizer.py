@@ -1,68 +1,42 @@
 """
-FAERS Data Standardization Module
+FAERS data standardization service.
 
-This module provides functionality for standardizing and processing FDA Adverse Event 
-Reporting System (FAERS) data. Optimized for modern hardware including Apple Silicon,
-utilizing parallel processing and efficient data processing libraries.
-
-Performance Features:
-- Dask for parallel computations
-- Vaex for memory-efficient data handling
-- NumPy operations optimized for ARM64
-- Parallel processing for data downloads
-- Memory-efficient data structures
+Key features:
+- Standardizes demographic data
+- Standardizes drug names and dosages
+- Standardizes reaction terms
+- Handles missing and inconsistent data
+- NumPy operations optimized for Apple Silicon
 """
 
 import logging
-import re
-from datetime import datetime
-from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Any
-
 import numpy as np
 import pandas as pd
-import seaborn as sns
-from matplotlib import pyplot as plt
-from tqdm import tqdm
-
-# Optimize NumPy for ARM64 if available
-try:
-    import platform
-    import numpy as np
-    from numpy.distutils.system_info import get_info
-
-    if platform.machine() == 'arm64':
-        # Check if OpenBLAS is being used
-        blas_info = get_info('blas_opt')
-        if blas_info and any('openblas' in str(v).lower() for v in blas_info.values()):
-            logging.info("Using optimized OpenBLAS for ARM64")
-        else:
-            logging.info("OpenBLAS optimization not detected for ARM64")
-except ImportError:
-    logging.warning("Could not check for ARM64 optimizations")
-
+from pathlib import Path
+from typing import Dict, List, Optional, Union
 
 class DataStandardizer:
-    """
-    A class for standardizing and processing FAERS data, optimized for modern hardware.
+    """Standardizes FAERS data fields."""
     
-    Performance Optimizations:
-    - Uses Dask for parallel processing of large datasets
-    - Leverages Vaex for memory-efficient operations
-    - Implements parallel downloading of FAERS data
-    - Utilizes all available CPU cores for processing
-    - Optimized for Apple Silicon when available
-    """
-
     def __init__(self, external_dir: Path):
-        """Initialize standardizer with external reference data directory.
+        """Initialize standardizer with reference data directory.
         
         Args:
-            external_dir: Path to external reference data directory
+            external_dir: Path to external reference data
         """
         self.external_dir = external_dir
-        self._drug_dictionary = None
-        self._init_logging()
+        self._load_reference_data()
+        
+        # Configure NumPy optimizations
+        try:
+            import numpy.distutils.system_info as sysinfo
+            blas_info = sysinfo.get_info('blas_opt')
+            if blas_info:
+                logging.info("Using optimized BLAS for Apple Silicon")
+            else:
+                logging.info("Standard BLAS configuration in use")
+        except Exception as e:
+            logging.info(f"Using default NumPy configuration: {str(e)}")
 
     def _init_logging(self):
         """Initialize logging configuration."""
@@ -73,7 +47,7 @@ class DataStandardizer:
 
     def get_drug_dictionary(self) -> Dict[str, str]:
         """Get or load drug standardization dictionary."""
-        if self._drug_dictionary is None:
+        if not hasattr(self, '_drug_dictionary'):
             dict_path = self.external_dir / 'drug_dictionary.csv'
             if dict_path.exists():
                 df = pd.read_csv(dict_path)
@@ -95,7 +69,7 @@ class DataStandardizer:
         """
         df = data.copy()
         
-        with tqdm(total=len(date_columns), desc="Standardizing dates") as pbar:
+        with pd.option_context('display.max_rows', None, 'display.max_columns', None):
             for col in date_columns:
                 if col in df.columns:
                     try:
@@ -104,7 +78,6 @@ class DataStandardizer:
                         logging.warning(f"Error converting {col} to datetime: {str(e)}")
                         # Try custom date parsing for problematic formats
                         df[col] = df[col].apply(self._parse_custom_date)
-                pbar.update(1)
         
         return df
 
@@ -379,7 +352,7 @@ class DataStandardizer:
         # Use word characters, whitespace, and hyphen only
         return re.sub(r'[^\w\s-]', '', str(text))
 
-    def standardize_boolean(self, value: Any) -> Optional[bool]:
+    def standardize_boolean(self, value: Union[str, int]) -> Optional[bool]:
         """Standardize boolean values.
         
         Args:
