@@ -1817,50 +1817,27 @@ class DataStandardizer:
 
     def process_drug_file(self, file_path: Path, quarter: str) -> pd.DataFrame:
         """Process drug file exactly as in R script."""
-        # Read drug file with exact column names from R script
-        drug_cols = {
-            'ISR': np.int64,
-            'DRUG_SEQ': np.int64,
-            'ROLE_COD': str,
-            'DRUGNAME': str,
-            'VAL_VBM': str,
-            'ROUTE': str,
-            'DOSE_VBM': str,
-            'CUM_DOSE_CHR': str,
-            'CUM_DOSE_UNIT': str,
-            'DECHAL': str,
-            'RECHAL': str,
-            'LOT_NUM': str,
-            'EXP_DT': str,
-            'NDA_NUM': str,
-            'DOSE_AMT': str,
-            'DOSE_UNIT': str,
-            'DOSE_FORM': str,
-            'DOSE_FREQ': str,
-        }
-        
         try:
+            # Read raw data exactly as R script does
             df = pd.read_csv(
-                file_path, 
-                dtype=drug_cols,
+                file_path,
+                sep='$',
+                dtype=str,  # Read all as string first like R
                 encoding='latin1',
-                delimiter='$',
-                on_bad_lines='skip',
-                low_memory=False
+                na_values=[''],
+                keep_default_na=False
             )
             
-            # Ensure all expected columns exist
-            for col in drug_cols:
-                if col not in df.columns:
-                    df[col] = pd.NA
-            
-            # Convert empty strings to NA
-            df = df.replace('', pd.NA)
-            
-            # Rename columns to lowercase to match rest of processing
+            # Convert column names to lowercase immediately after reading
             df.columns = df.columns.str.lower()
             
-            # Map ISR to primaryid and add caseid
+            # Convert numeric columns after reading, exactly as R does
+            numeric_cols = ['isr', 'drug_seq']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Map ISR to primaryid and create caseid
             df = df.rename(columns={'isr': 'primaryid'})
             df['caseid'] = df['primaryid']
             
