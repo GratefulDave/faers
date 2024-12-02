@@ -31,9 +31,12 @@ class DataDownloader(ABC):
 
 class FAERSDownloader(DataDownloader):
     """FAERS specific data downloader implementation."""
-
+    
     FAERS_BASE_URL = "https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html"
-
+    FAERS_CONTENT_BASE = "https://fis.fda.gov"
+    FAERS_START_YEAR = 2004  # Earliest available data
+    FAERS_SWITCH_YEAR = 2013  # Year when AERS switched to FAERS
+    
     def __init__(self, output_dir: Path):
         """Initialize the FAERS downloader.
         
@@ -43,7 +46,38 @@ class FAERSDownloader(DataDownloader):
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.session = None
-
+        self.quarter_urls = {}  # Cache for quarter URLs
+        
+    @staticmethod
+    def get_prefix_for_year(year: int) -> str:
+        """Get the correct prefix (aers/faers) for a given year."""
+        return 'faers' if year >= FAERSDownloader.FAERS_SWITCH_YEAR else 'aers'
+        
+    @staticmethod
+    def validate_quarter(quarter: str) -> bool:
+        """Validate quarter format and range.
+        
+        Args:
+            quarter: Quarter string (e.g., '2023q1')
+            
+        Returns:
+            bool: True if valid
+            
+        Raises:
+            ValueError: If quarter format or range is invalid
+        """
+        try:
+            if not re.match(r'^\d{4}q[1-4]$', quarter.lower()):
+                raise ValueError(f"Invalid quarter format: {quarter}")
+                
+            year = int(quarter[:4])
+            if year < FAERSDownloader.FAERS_START_YEAR:
+                raise ValueError(f"Year {year} predates available FAERS data")
+                
+            return True
+        except Exception as e:
+            raise ValueError(f"Invalid quarter {quarter}: {str(e)}")
+            
     def get_quarters(self) -> List[str]:
         """Get list of available FAERS quarters from FDA website.
         
@@ -57,57 +91,75 @@ class FAERSDownloader(DataDownloader):
 
             # Parse HTML and find zip file links
             soup = BeautifulSoup(response.text, 'html.parser')
-            links = soup.find_all('a', href=True)
-
-            # Filter for ASCII zip files and extract quarters
-            quarters = set()  # Use set to avoid duplicates
-            for link in links:
-                href = link['href'].lower()  # Convert to lowercase for consistent matching
-                if '.zip' not in href:
-                    continue
-                    
-                if 'ascii' not in href:
-                    continue
-                    
-                # Try different patterns to extract quarter
-                filename = os.path.basename(href)
-                
-                # Pattern 1: faers_ascii_2023q1.zip
-                if '_ascii_' in filename:
-                    quarter = filename.split('_ascii_')[1].replace('.zip', '')
-                    quarters.add(quarter)
-                    continue
-                
-                # Pattern 2: ascii_2023q1.zip
-                if filename.startswith('ascii_'):
-                    quarter = filename.replace('ascii_', '').replace('.zip', '')
-                    quarters.add(quarter)
-                    continue
-                    
-                # Pattern 3: Extract year and quarter using regex
-                match = re.search(r'(19|20)\d{2}q[1-4]', filename)
-                if match:
-                    quarters.add(match.group(0))
-                    continue
-                    
-                logging.debug(f"Could not extract quarter from filename: {filename}")
-
-            # Sort quarters chronologically
-            sorted_quarters = sorted(list(quarters), key=lambda x: (x[:4], x[4:]))  # Sort by year then quarter
             
-            if not sorted_quarters:
+            # Dictionary to store quarter URLs
+            quarter_urls = {}
+            
+            # Process both current and older files sections
+            for section in ['fpd-panel', 'fpd-panel-legacy']:
+                panels = soup.find_all('div', class_=section)
+                for panel in panels:
+                    # Find all ASCII zip file links
+                    links = panel.find_all('a', href=True)
+                    for link in links:
+                        href = link['href']
+                        # Case insensitive check for zip and ascii
+                        if not re.search(r'\.zip$', href, re.IGNORECASE):
+                            continue
+                            
+                        if not re.search(r'ascii', href, re.IGNORECASE):
+                            continue
+                            
+                        # Extract quarter from URL with flexible pattern
+                        # Handle:
+                        # - faers_ascii_YYYY[Qq][1-4].zip (2013-present)
+                        # - aers_ascii_YYYY[Qq][1-4].zip (pre-2013)
+                        match = re.search(r'(?:faers|aers)_ascii_(\d{4})([Qq])([1-4])\.zip', href, re.IGNORECASE)
+                        if match:
+                            year = match.group(1)
+                            quarter = f"{year}q{match.group(3)}"  # Normalize to lowercase q
+                            quarter_urls[quarter] = href
+                            logging.debug(f"Found {quarter}: {href}")
+                            
+            if not quarter_urls:
                 logging.error("No quarters found in webpage")
-                logging.info("Available links:")
-                for link in links:
-                    logging.info(f"  - {link['href']}")
-            else:
-                logging.info(f"Found {len(sorted_quarters)} quarters: {sorted_quarters}")
+                # Log all links for debugging
+                all_links = soup.find_all('a', href=True)
+                logging.debug("All links found:")
+                for link in all_links:
+                    logging.debug(f"  {link['href']}")
+                return []
                 
+            # Sort quarters chronologically
+            sorted_quarters = sorted(quarter_urls.keys(), key=lambda x: (x[:4], x[5]))  # Sort by year then quarter number
+            logging.info(f"Found {len(sorted_quarters)} quarters: {', '.join(sorted_quarters)}")
+            
+            # Store URLs for later use
+            self.quarter_urls = quarter_urls
+            
             return sorted_quarters
 
         except Exception as e:
             logging.error(f"Error getting quarters list: {str(e)}")
             return []
+            
+    def get_quarter_url(self, quarter: str) -> str:
+        """Get download URL for a specific quarter."""
+        if not hasattr(self, 'quarter_urls'):
+            self.get_quarters()  # Populate quarter_urls if not already done
+            
+        if quarter not in self.quarter_urls:
+            raise ValueError(f"No URL found for quarter {quarter}")
+            
+        url = self.quarter_urls[quarter]
+        
+        # Handle relative URLs
+        if not url.startswith('http'):
+            # All download URLs are under the content directory
+            url = f"{self.FAERS_CONTENT_BASE}/{url.lstrip('/')}"
+            
+        logging.debug(f"Download URL for {quarter}: {url}")
+        return url
 
     def download_quarter(self, quarter: str) -> None:
         """Download and extract a specific FAERS quarter.
@@ -116,28 +168,25 @@ class FAERSDownloader(DataDownloader):
             quarter: Quarter identifier (e.g., '2023q1')
         """
         try:
+            self.validate_quarter(quarter)
+            
             # Create quarter directory
             quarter_dir = self.output_dir / quarter
             quarter_dir.mkdir(exist_ok=True)
 
-            # Get the webpage content to find the correct URL
-            response = requests.get(self.FAERS_BASE_URL, timeout=30)
-            response.raise_for_status()
-
-            # Find the correct download link
-            soup = BeautifulSoup(response.text, 'html.parser')
-            download_url = None
-            for link in soup.find_all('a', href=True):
-                href = link['href']
-                if f'ascii_{quarter}.zip' in href.lower():
-                    download_url = href
-                    break
-
-            if not download_url:
-                raise ValueError(f"Could not find download URL for quarter {quarter}")
+            # Get the direct download URL for this quarter
+            download_url = self.get_quarter_url(quarter)
+            
+            # Determine file paths
+            # Use the same prefix (faers/aers) as the source URL
+            year = int(quarter[:4])
+            prefix = self.get_prefix_for_year(year)
+            zip_file = quarter_dir / f"{prefix}_ascii_{quarter}.zip"
+            extract_dir = quarter_dir / "ascii"
+            
+            logging.info(f"Downloading {quarter} from {download_url}")
 
             # Download the zip file
-            zip_path = quarter_dir / f"faers_ascii_{quarter}.zip"
             response = requests.get(download_url, stream=True)
             response.raise_for_status()
 
@@ -145,9 +194,9 @@ class FAERSDownloader(DataDownloader):
             block_size = 8192
 
             # Only download if file doesn't exist or is incomplete
-            if not zip_path.exists() or zip_path.stat().st_size != total_size:
-                logging.info(f"Downloading {quarter} to {zip_path}")
-                with open(zip_path, 'wb') as f:
+            if not zip_file.exists() or zip_file.stat().st_size != total_size:
+                logging.info(f"Downloading {quarter} to {zip_file}")
+                with open(zip_file, 'wb') as f:
                     with tqdm(
                             total=total_size,
                             unit='iB',
@@ -161,25 +210,21 @@ class FAERSDownloader(DataDownloader):
                 logging.info(f"Zip file for {quarter} already exists and is complete")
 
             # Check if files are already extracted
-            ascii_dir = quarter_dir / 'ASCII'
-            if not ascii_dir.exists():
-                ascii_dir = quarter_dir / 'ascii'
-            
-            if ascii_dir.exists() and any(ascii_dir.iterdir()):
-                logging.info(f"Files for {quarter} already extracted in {ascii_dir}")
+            if extract_dir.exists() and any(extract_dir.iterdir()):
+                logging.info(f"Files for {quarter} already extracted in {extract_dir}")
                 return
 
             # Extract files
-            logging.info(f"Extracting {zip_path} to {quarter_dir}")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            logging.info(f"Extracting {zip_file} to {quarter_dir}")
+            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                 zip_ref.extractall(quarter_dir)
 
             # Only delete zip file if extraction was successful
-            if ascii_dir.exists() and any(ascii_dir.iterdir()):
-                logging.info(f"Extraction successful, removing {zip_path}")
-                zip_path.unlink()
+            if extract_dir.exists() and any(extract_dir.iterdir()):
+                logging.info(f"Extraction successful, removing {zip_file}")
+                zip_file.unlink()
             else:
-                logging.error(f"Extraction may have failed - keeping {zip_path}")
+                logging.error(f"Extraction may have failed - keeping {zip_file}")
 
             # Handle special case for 2018Q1
             demo_file = quarter_dir / 'ascii' / 'DEMO18Q1_new.txt'
@@ -192,12 +237,16 @@ class FAERSDownloader(DataDownloader):
             raise
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        """Set up async session."""
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Clean up async session."""
         if self.session:
             await self.session.close()
+            self.session = None
 
     async def get_download_links(self) -> Set[str]:
         """Get all FAERS download links."""
