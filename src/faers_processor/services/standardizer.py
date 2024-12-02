@@ -662,35 +662,53 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Convert age to numeric, handling various formats
-        if 'age' in df.columns:
-            df['age'] = pd.to_numeric(
-                df['age'].astype(str).str.replace(',', ''),
-                errors='coerce'
-            )
+        # Ensure required columns exist
+        if 'age' not in df.columns:
+            df['age'] = pd.NA
+            logging.warning("Age column not found, added with NA values")
         
-        # Define age unit conversion factors
+        if 'age_cod' not in df.columns:
+            df['age_cod'] = 'YR'  # Default to years if missing
+            logging.info("Age code column not found, defaulting to years (YR)")
+        
+        # Convert age to numeric, handling various formats
+        df['age'] = pd.to_numeric(
+            df['age'].astype(str).str.replace(',', ''),
+            errors='coerce'
+        )
+        
+        # Define age unit conversion factors to days
         age_factors = {
-            'DEC': 3650,
-            'YR': 365,
-            'MON': 30.41667,
-            'WK': 7,
-            'DY': 1,
-            'HR': 0.00011415525114155251,
-            'MIN': 1.9025875190259e-06,
-            'SEC': 3.1709791983764586e-08
+            'DEC': 3650,       # Decades to days
+            'YR': 365,         # Years to days
+            'MON': 30.41667,   # Months to days (average)
+            'WK': 7,           # Weeks to days
+            'DY': 1,           # Days (no conversion needed)
+            'HR': 1/24,        # Hours to days
+            'MIN': 1/1440,     # Minutes to days
+            'SEC': 1/86400     # Seconds to days
         }
         
+        # Fill missing age codes with YR
+        df['age_cod'] = df['age_cod'].fillna('YR')
+        
         # Convert age to days
-        df['age_corrector'] = df['age_cod'].map(age_factors)
+        df['age_corrector'] = df['age_cod'].str.upper().map(age_factors)
+        df.loc[df['age_corrector'].isna(), 'age_corrector'] = age_factors['YR']
         df['age_in_days'] = df['age'].abs() * df['age_corrector']
         
         # Handle plausible age range
         max_age_days = 122 * 365  # Maximum recorded human age
         df.loc[df['age_in_days'] > max_age_days, 'age_in_days'] = pd.NA
         
-        # Convert to years
+        # Convert to years for convenience
         df['age_in_years'] = (df['age_in_days'] / 365).round()
+        
+        # Log age distribution
+        age_stats = df['age_in_years'].describe()
+        logging.info("Age distribution (years):")
+        for stat, value in age_stats.items():
+            logging.info(f"  {stat}: {value:.1f}")
         
         # Clean up temporary columns
         df = df.drop(columns=['age_corrector', 'age', 'age_cod'])
@@ -1199,41 +1217,71 @@ class DataStandardizer:
         """
         df = df.copy()
         
-        # Basic column mapping
+        # Basic column mapping (handle both upper and lower case)
         column_map = {
             'isr': 'primaryid',
             'case': 'caseid',
-            'i_f_cod': 'i_f_code',
-            'event_dt': 'event_date',
-            'rept_dt': 'report_date',
-            'gndr_cod': 'sex'
+            'i_f_code': 'i_f_code',
+            'event_dt': 'event_dt',
+            'sex': 'sex',
+            'SEX': 'sex',
+            'gndr_cod': 'sex',
+            'age': 'age',
+            'age_cod': 'age_cod',
+            'AGE_COD': 'age_cod',
+            'age_grp': 'age_grp',
+            'AGE_GRP': 'age_grp',
+            'wt': 'wt',
+            'wt_cod': 'wt_cod',
+            'WT_COD': 'wt_cod',
+            'rept_cod': 'rept_cod',
+            'REPT_COD': 'rept_cod',
+            'occp_cod': 'occp_cod',
+            'OCCP_COD': 'occp_cod',
+            'reporter_country': 'reporter_country',
+            'REPORTER_COUNTRY': 'reporter_country',
+            'occr_country': 'occr_country',
+            'OCCR_COUNTRY': 'occr_country'
         }
         df = df.rename(columns=column_map)
         
         # Convert numeric fields
-        numeric_cols = ['primaryid', 'caseid', 'age']
+        numeric_cols = ['primaryid', 'caseid', 'age', 'wt']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
                 if col in ['primaryid', 'caseid']:
                     df[col] = df[col].fillna(-1).astype('int64')
         
-        # 1. Initial data cleaning
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].str.strip()
+        # Ensure required columns exist with defaults
+        required_cols = {
+            'sex': pd.NA,
+            'age': pd.NA,
+            'age_cod': 'YR',  # Default to years if missing
+            'wt': pd.NA,
+            'wt_cod': 'KG'    # Default to kilograms if missing
+        }
         
-        # 2. Standardize dates
-        date_cols = ['event_date', 'report_date']
-        df = self.standardize_dates(df, date_cols)
+        for col, default in required_cols.items():
+            if col not in df.columns:
+                df[col] = default
+                logging.info(f"Added missing column '{col}' with default value: {default}")
         
-        # 3. Standardize sex values
+        # Process in exact R script order
+        # 1. Standardize dates
+        if 'event_dt' in df.columns:
+            df = self.standardize_dates(df)
+        
+        # 2. Standardize sex
         df = self.standardize_sex(df)
         
-        # 4. Standardize age values
+        # 3. Standardize age
         df = self.standardize_age(df)
         
-        # 5. Standardize weight values
+        # 4. Standardize age groups
+        df = self.standardize_age_groups(df)
+        
+        # 5. Standardize weight
         df = self.standardize_weight(df)
         
         # 6. Standardize country codes
@@ -1417,16 +1465,68 @@ class DataStandardizer:
             Processed DataFrame
         """
         try:
-            # Read file with optimized settings
-            df = pd.read_csv(
-                file_path,
-                sep='$',
-                dtype=str,
-                na_values=['', 'NA', 'NULL'],
-                keep_default_na=True,
-                low_memory=False,
-                encoding='utf-8'
-            )
+            # First try standard parsing
+            try:
+                df = pd.read_csv(
+                    file_path,
+                    sep='$',
+                    dtype=str,
+                    na_values=['', 'NA', 'NULL'],
+                    keep_default_na=True,
+                    low_memory=False,
+                    encoding='utf-8',
+                    on_bad_lines='warn' if data_type == 'drugs' else 'error'
+                )
+            except pd.errors.ParserError as e:
+                if data_type == 'drugs':
+                    logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
+                    
+                    # Read file manually and fix lines with incorrect field counts
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                    
+                    # Get header and expected field count
+                    header = lines[0].strip().split('$')
+                    expected_fields = len(header)
+                    
+                    # Fix problematic lines
+                    fixed_lines = [lines[0]]  # Keep header
+                    for i, line in enumerate(lines[1:], 1):
+                        fields = line.strip().split('$')
+                        if len(fields) != expected_fields:
+                            # Try to fix common issues
+                            line = line.replace('$$', '$NA$')  # Fix empty fields
+                            line = re.sub(r'\${2,}', '$', line)  # Remove multiple delimiters
+                            fields = line.strip().split('$')
+                            
+                            # If still incorrect, log and skip
+                            if len(fields) != expected_fields:
+                                logging.warning(f"Skipping line {i} in {file_path}: incorrect field count")
+                                continue
+                        fixed_lines.append(line)
+                    
+                    # Create temporary file with fixed data
+                    temp_file = file_path.parent / f"temp_{file_path.name}"
+                    with open(temp_file, 'w', encoding='utf-8') as f:
+                        f.writelines(fixed_lines)
+                    
+                    try:
+                        # Try reading fixed file
+                        df = pd.read_csv(
+                            temp_file,
+                            sep='$',
+                            dtype=str,
+                            na_values=['', 'NA', 'NULL'],
+                            keep_default_na=True,
+                            low_memory=False,
+                            encoding='utf-8'
+                        )
+                        temp_file.unlink()  # Clean up temp file
+                    except Exception as e2:
+                        temp_file.unlink()  # Clean up temp file
+                        raise Exception(f"Failed to process {file_path} even after fixes: {str(e2)}")
+                else:
+                    raise e
             
             # Convert numeric columns
             if 'primaryid' in df.columns:
