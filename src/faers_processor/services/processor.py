@@ -66,8 +66,17 @@ class FAERSProcessor:
                 for quarter in quarters:
                     try:
                         # Check for ascii directory case-insensitively
-                        ascii_dir = next((d for d in (self.data_dir / quarter).iterdir() 
-                                        if d.is_dir() and d.name.lower() == 'ascii'), None)
+                        quarter_path = self.data_dir / quarter
+                        if not quarter_path.exists():
+                            logging.warning(f"Quarter directory {quarter} not found")
+                            continue
+
+                        # Find ascii directory case-insensitively
+                        ascii_dir = None
+                        for d in quarter_path.iterdir():
+                            if d.is_dir() and any(c.isalpha() for c in d.name) and d.name.lower() == 'ascii':
+                                ascii_dir = d
+                                break
                         
                         if not ascii_dir:
                             logging.warning(f"No ascii directory found for quarter {quarter}")
@@ -76,17 +85,22 @@ class FAERSProcessor:
                         logging.info(f"Processing quarter {quarter} from {ascii_dir}")
                         
                         # List files in quarter directory for debugging
-                        logging.info(f"Files in {quarter}/ascii directory:")
-                        for f in ascii_dir.glob("*.txt"):
+                        logging.info(f"Files in {quarter}/{ascii_dir.name} directory:")
+                        txt_files = list(ascii_dir.glob("[Dd][Ee][Mm][Oo]*.txt")) + \
+                                  list(ascii_dir.glob("[Dd][Rr][Uu][Gg]*.txt")) + \
+                                  list(ascii_dir.glob("[Rr][Ee][Aa][Cc]*.txt"))
+                        
+                        for f in txt_files:
                             logging.info(f"  {f.name}")
                         
-                        # Look for files case-insensitively
-                        demo_file = next((f for f in ascii_dir.glob("*.txt") 
-                                        if "DEMO" in f.name.upper()), None)
-                        drug_file = next((f for f in ascii_dir.glob("*.txt") 
-                                        if "DRUG" in f.name.upper()), None)
-                        reac_file = next((f for f in ascii_dir.glob("*.txt") 
-                                        if "REAC" in f.name.upper()), None)
+                        # Look for files case-insensitively using character class patterns
+                        demo_files = list(ascii_dir.glob("[Dd][Ee][Mm][Oo]*.txt"))
+                        drug_files = list(ascii_dir.glob("[Dd][Rr][Uu][Gg]*.txt"))
+                        reac_files = list(ascii_dir.glob("[Rr][Ee][Aa][Cc]*.txt"))
+                        
+                        demo_file = demo_files[0] if demo_files else None
+                        drug_file = drug_files[0] if drug_files else None
+                        reac_file = reac_files[0] if reac_files else None
                         
                         if not all([demo_file, drug_file, reac_file]):
                             logging.warning(f"Missing files for quarter {quarter}:")
