@@ -1929,91 +1929,143 @@ class DataStandardizer:
         
         return df
 
-    def process_drug_file(self, file_path: Path) -> pd.DataFrame:
-        """Process FAERS drug data file with robust error handling.
+    def standardize_outcomes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize outcome data following R script.
         
-        Args:
-            file_path: Path to drug data file
-        
-        Returns:
-            Processed DataFrame
+        Standardizes:
+        - outc_cod (outcome codes)
+        - Removes duplicates
         """
-        def detect_delimiter(sample_lines: List[str]) -> str:
-            """Detect the most likely delimiter in the file."""
-            delimiters = ['$', '|', '\t', ',']
-            max_consistent_cols = 0
-            best_delimiter = ','
-            
-            for delimiter in delimiters:
-                cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
-                # Get most common column count
-                from collections import Counter
-                col_counts = Counter(cols_per_row)
-                if col_counts:
-                    most_common_count = col_counts.most_common(1)[0][1]
-                    if most_common_count > max_consistent_cols:
-                        max_consistent_cols = most_common_count
-                        best_delimiter = delimiter
-                        
-            return best_delimiter
-        
-        def clean_line(line: str) -> str:
-            """Clean problematic characters from a line."""
-            # Remove null bytes
-            line = line.replace('\0', '')
-            # Normalize line endings
-            line = line.strip('\r\n')
-            # Handle escaped quotes
-            line = re.sub(r'(?<!\\)"', '\\"', line)
-            return line
-        
-        def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
-            """Read and clean the file, detecting delimiter."""
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                # Read sample for delimiter detection
-                sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
-                
-            # Detect delimiter
-            delimiter = detect_delimiter(sample_lines)
-            
-            # Clean all lines
-            cleaned_lines = [clean_line(line) for line in sample_lines]
-            
-            return cleaned_lines, delimiter
-        
         try:
-            # First try standard parsing
-            df = pd.read_csv(file_path, low_memory=False)
-            logging.info(f"Successfully parsed {file_path} using standard method")
+            # Standardize outcome codes
+            outcome_map = {
+                'DE': 'Death',
+                'LT': 'Life-Threatening',
+                'HO': 'Hospitalization',
+                'DS': 'Disability',
+                'CA': 'Congenital Anomaly',
+                'RI': 'Required Intervention',
+                'OT': 'Other'
+            }
+            
+            if 'outc_cod' in df.columns:
+                df['outc_cod'] = df['outc_cod'].str.upper().map(outcome_map)
+            
+            # Remove duplicates
+            df = df.drop_duplicates()
+            
             return df
+            
         except Exception as e:
-            logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
+            logging.error(f"Error standardizing outcomes: {str(e)}")
+            return df
+
+    def standardize_sources(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize report source data following R script.
         
+        Standardizes:
+        - rpsr_cod (report source codes)
+        - Removes duplicates
+        """
         try:
-            # Read and clean file
-            cleaned_lines, delimiter = read_and_clean_file(file_path)
+            # Standardize report source codes
+            source_map = {
+                'HP': 'Health Professional',
+                'FG': 'Foreign',
+                'LR': 'Literature',
+                'CR': 'Company Representative',
+                'CT': 'Clinical Trial',
+                'DT': 'Direct',
+                'UF': 'User Facility',
+                'OT': 'Other'
+            }
             
-            # Get header
-            header = cleaned_lines[0].split(delimiter)
-            header = [col.strip() for col in header]
+            if 'rpsr_cod' in df.columns:
+                df['rpsr_cod'] = df['rpsr_cod'].str.upper().map(source_map)
             
-            # Process data rows
-            data = []
-            for line in cleaned_lines[1:]:
-                fields = line.split(delimiter)
-                # Skip malformed rows
-                if len(fields) != len(header):
-                    continue
-                data.append([field.strip() for field in fields])
+            # Remove duplicates
+            df = df.drop_duplicates()
             
-            # Create DataFrame
-            df = pd.DataFrame(data, columns=header)
-            logging.info(f"Successfully parsed {file_path} using manual method")
             return df
-        
+            
         except Exception as e:
-            logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
-            return pd.DataFrame()  # Return empty DataFrame on failure
+            logging.error(f"Error standardizing sources: {str(e)}")
+            return df
+
+    def standardize_therapies(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize therapy data following R script.
+        
+        Standardizes:
+        - start_dt and end_dt (therapy dates)
+        - dur and dur_cod (duration and duration codes)
+        - Removes duplicates
+        """
+        try:
+            # Standardize therapy dates
+            date_cols = ['start_dt', 'end_dt']
+            for col in date_cols:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
+            
+            # Standardize duration codes
+            duration_map = {
+                'YR': 'Years',
+                'MON': 'Months',
+                'WK': 'Weeks',
+                'DAY': 'Days',
+                'HR': 'Hours',
+                'MIN': 'Minutes'
+            }
+            
+            if 'dur_cod' in df.columns:
+                df['dur_cod'] = df['dur_cod'].str.upper().map(duration_map)
+            
+            # Convert duration to days if possible
+            if 'dur' in df.columns and 'dur_cod' in df.columns:
+                df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
+                # Convert to days based on duration code
+                conversion = {
+                    'Years': 365,
+                    'Months': 30,
+                    'Weeks': 7,
+                    'Days': 1,
+                    'Hours': 1/24,
+                    'Minutes': 1/1440
+                }
+                df['dur_days'] = df.apply(lambda x: 
+                    x['dur'] * conversion.get(x['dur_cod'], 0) 
+                    if pd.notnull(x['dur']) and pd.notnull(x['dur_cod']) 
+                    else None, axis=1)
+            
+            # Remove duplicates
+            df = df.drop_duplicates()
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing therapies: {str(e)}")
+            return df
+
+    def standardize_indications(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize indication data following R script.
+        
+        Standardizes:
+        - indi_pt (indication preferred terms)
+        - Removes duplicates
+        """
+        try:
+            # Standardize indication preferred terms using MedDRA
+            if 'indi_pt' in df.columns:
+                df = self.standardize_pt(df, 'indi_pt')
+            
+            # Remove duplicates
+            df = df.drop_duplicates()
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing indications: {str(e)}")
+            return df
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
         """Process all FAERS quarters with summary reporting.
@@ -2111,3 +2163,89 @@ class DataStandardizer:
         
         # Generate and return report
         return summary.generate_markdown_report()
+
+    def process_drug_file(self, file_path: Path) -> pd.DataFrame:
+        """Process FAERS drug data file with robust error handling.
+        
+        Args:
+            file_path: Path to drug data file
+        
+        Returns:
+            Processed DataFrame
+        """
+        def detect_delimiter(sample_lines: List[str]) -> str:
+            """Detect the most likely delimiter in the file."""
+            delimiters = ['$', '|', '\t', ',']
+            max_consistent_cols = 0
+            best_delimiter = ','
+            
+            for delimiter in delimiters:
+                cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
+                # Get most common column count
+                from collections import Counter
+                col_counts = Counter(cols_per_row)
+                if col_counts:
+                    most_common_count = col_counts.most_common(1)[0][1]
+                    if most_common_count > max_consistent_cols:
+                        max_consistent_cols = most_common_count
+                        best_delimiter = delimiter
+                        
+            return best_delimiter
+        
+        def clean_line(line: str) -> str:
+            """Clean problematic characters from a line."""
+            # Remove null bytes
+            line = line.replace('\0', '')
+            # Normalize line endings
+            line = line.strip('\r\n')
+            # Handle escaped quotes
+            line = re.sub(r'(?<!\\)"', '\\"', line)
+            return line
+        
+        def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
+            """Read and clean the file, detecting delimiter."""
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                # Read sample for delimiter detection
+                sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
+                
+            # Detect delimiter
+            delimiter = detect_delimiter(sample_lines)
+            
+            # Clean all lines
+            cleaned_lines = [clean_line(line) for line in sample_lines]
+            
+            return cleaned_lines, delimiter
+        
+        try:
+            # First try standard parsing
+            df = pd.read_csv(file_path, low_memory=False)
+            logging.info(f"Successfully parsed {file_path} using standard method")
+            return df
+        except Exception as e:
+            logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
+        
+        try:
+            # Read and clean file
+            cleaned_lines, delimiter = read_and_clean_file(file_path)
+            
+            # Get header
+            header = cleaned_lines[0].split(delimiter)
+            header = [col.strip() for col in header]
+            
+            # Process data rows
+            data = []
+            for line in cleaned_lines[1:]:
+                fields = line.split(delimiter)
+                # Skip malformed rows
+                if len(fields) != len(header):
+                    continue
+                data.append([field.strip() for field in fields])
+            
+            # Create DataFrame
+            df = pd.DataFrame(data, columns=header)
+            logging.info(f"Successfully parsed {file_path} using manual method")
+            return df
+        
+        except Exception as e:
+            logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
+            return pd.DataFrame()  # Return empty DataFrame on failure
