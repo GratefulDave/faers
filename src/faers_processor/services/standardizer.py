@@ -65,11 +65,10 @@ class FAERSProcessingSummary:
             report.append(f"### Quarter {quarter}\n")
             
             # Demographics table
-            demo_data = [
-                ["Total Rows", summary.demo_summary.total_rows],
-                *[f"Invalid {col}", count] 
-                for col, count in summary.demo_summary.invalid_dates.items()
-            ]
+            demo_data = [["Total Rows", summary.demo_summary.total_rows]]
+            for col, count in summary.demo_summary.invalid_dates.items():
+                demo_data.append([f"Invalid {col}", count])
+            
             report.append("#### Demographics\n")
             report.append(tabulate(demo_data, headers=["Metric", "Value"], 
                                  tablefmt="pipe"))
