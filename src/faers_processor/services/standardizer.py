@@ -524,49 +524,45 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized sex values
         """
-        df = df.copy()
-        
-        # Handle column name variations (both upper and lower case)
-        sex_cols = ['sex', 'SEX', 'gndr_cod']
-        for col in sex_cols:
-            if col in df.columns:
-                df = df.rename(columns={col: 'sex'})
-                break
-        
         if 'sex' not in df.columns:
             logging.warning("Sex column not found in DataFrame")
+            df['sex'] = pd.NA
             return df
+            
+        df = df.copy()
         
-        # Convert to string and uppercase for standardization
-        df['sex'] = df['sex'].astype(str).str.upper()
+        # Convert to uppercase and strip whitespace
+        df['sex'] = df['sex'].str.upper().str.strip()
         
         # Map values
         sex_map = {
-            'M': 'M',     # Male
-            'F': 'F',     # Female
-            'U': pd.NA,   # Unknown
-            'UNK': pd.NA, # Unknown
-            'NS': pd.NA,  # Not Specified
-            'NAN': pd.NA, # Missing
-            'NA': pd.NA,  # Missing
-            'NR': pd.NA,  # Not Reported
-            'UNKNOWN': pd.NA # Unknown
+            'M': 'M',
+            'MALE': 'M',
+            '1': 'M',
+            'F': 'F',
+            'FEMALE': 'F',
+            '2': 'F',
+            'U': 'U',
+            'UNK': 'U',
+            'UNKNOWN': 'U',
+            '0': 'U',
+            'NS': 'U'
         }
         
-        # Apply mapping and set non-mapped values to NA
         df['sex'] = df['sex'].map(sex_map)
-        df.loc[~df['sex'].isin(['F', 'M']), 'sex'] = pd.NA
+        
+        # Set invalid values to Unknown
+        df.loc[~df['sex'].isin(['M', 'F', 'U']), 'sex'] = 'U'
+        
+        # Convert to category
+        df['sex'] = df['sex'].astype('category')
         
         # Log distribution
         sex_dist = df['sex'].value_counts(dropna=False)
         total = len(df)
         logging.info("Sex distribution:")
         for sex, count in sex_dist.items():
-            percent = round(100 * count / total, 2)
-            logging.info(f"  {sex if pd.notna(sex) else 'Unknown'}: {count} ({percent}%)")
-        
-        # Convert to category
-        df['sex'] = df['sex'].astype('category')
+            logging.info(f"  {sex}: {count} ({100*count/total:.1f}%)")
         
         return df
 
@@ -1149,6 +1145,8 @@ class DataStandardizer:
             'CASE_ID': 'caseid',
             'i_f_code': 'i_f_code',
             'i_f_cod': 'i_f_code',
+            'init_fda_cd': 'i_f_code',
+            'init_fda_dt': 'i_f_code',
             'event_dt': 'event_dt',
             'EVENT_DT': 'event_dt',
             'mfr_dt': 'mfr_dt',
@@ -1160,14 +1158,21 @@ class DataStandardizer:
             'sex': 'sex',
             'SEX': 'sex',
             'gndr_cod': 'sex',
+            'gender': 'sex',
             'age': 'age',
+            'AGE': 'age',
             'age_cod': 'age_cod',
             'AGE_COD': 'age_cod',
             'age_grp': 'age_grp',
             'AGE_GRP': 'age_grp',
+            'age_unit': 'age_cod',
+            'AGE_UNIT': 'age_cod',
             'wt': 'wt',
+            'WT': 'wt',
+            'weight': 'wt',
             'wt_cod': 'wt_cod',
             'WT_COD': 'wt_cod',
+            'weight_unit': 'wt_cod',
             'rept_cod': 'rept_cod',
             'REPT_COD': 'rept_cod',
             'occp_cod': 'occp_cod',
@@ -1181,12 +1186,27 @@ class DataStandardizer:
         # Rename columns based on mapping
         df = df.rename(columns=column_map)
         
-        # Ensure required columns exist
-        required_cols = ['primaryid', 'caseid', 'i_f_code', 'event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
-        for col in required_cols:
+        # Required columns with default values
+        required_cols = {
+            'primaryid': -1,
+            'caseid': -1,
+            'i_f_code': 'I',  # Default to Initial report
+            'event_dt': pd.NA,
+            'mfr_dt': pd.NA,
+            'fda_dt': pd.NA,
+            'rept_dt': pd.NA,
+            'sex': pd.NA,
+            'age': pd.NA,
+            'age_cod': 'YR',  # Default to years
+            'wt': pd.NA,
+            'wt_cod': 'KG'  # Default to kilograms
+        }
+        
+        # Add missing columns with defaults
+        for col, default in required_cols.items():
             if col not in df.columns:
-                logging.warning(f"Required column '{col}' not found, adding with NA values")
-                df[col] = pd.NA
+                logging.warning(f"Required column '{col}' not found, adding with default value: {default}")
+                df[col] = default
         
         # Convert IDs to numeric and handle missing values
         for id_col in ['primaryid', 'caseid']:
@@ -1196,11 +1216,22 @@ class DataStandardizer:
                 # Fill NaN with -1 and convert to int64
                 df[id_col] = df[id_col].fillna(-1).astype('int64')
         
-        # Convert numeric fields
-        numeric_cols = ['age', 'wt']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Convert numeric fields with appropriate error handling
+        numeric_cols = {
+            'age': {'fill_value': pd.NA, 'min_valid': 0, 'max_valid': 150},
+            'wt': {'fill_value': pd.NA, 'min_valid': 0, 'max_valid': 650}  # Max weight in kg
+        }
+        
+        for col, params in numeric_cols.items():
+            try:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    # Remove invalid values
+                    mask = (df[col] < params['min_valid']) | (df[col] > params['max_valid'])
+                    df.loc[mask, col] = params['fill_value']
+            except Exception as e:
+                logging.error(f"Error processing {col}: {str(e)}")
+                df[col] = params['fill_value']
         
         # Process dates
         date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
