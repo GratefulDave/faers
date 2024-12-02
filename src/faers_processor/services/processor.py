@@ -16,33 +16,14 @@ class FAERSProcessor:
 
     def __init__(
             self,
-            data_dir: Path,
-            external_dir: Path,
-            chunk_size: int = 100000,
-            use_dask: bool = False
+            standardizer: DataStandardizer
     ):
-        """Initialize processor with configuration.
+        """Initialize processor with standardizer.
         
         Args:
-            data_dir: Base directory containing raw data
-            external_dir: Directory containing external reference data
-            chunk_size: Size of data chunks for processing
-            use_dask: Whether to use Dask for out-of-core processing
+            standardizer: DataStandardizer instance initialized with external data
         """
-        self.data_dir = Path(data_dir)
-        self.output_dir = self.data_dir / 'clean'
-        self.external_dir = Path(external_dir)
-        self.chunk_size = chunk_size
-        self.use_dask = use_dask
-
-        # Initialize standardizer with external data
-        self.standardizer = DataStandardizer(external_dir)
-
-        # Create output directory if it doesn't exist
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        logging.info(f"Data directory: {self.data_dir}")
-        logging.info(f"Output directory: {self.output_dir}")
+        self.standardizer = standardizer
 
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
         """Process a single quarter's worth of FAERS data.
