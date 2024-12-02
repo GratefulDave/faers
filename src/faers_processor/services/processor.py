@@ -453,7 +453,7 @@ class FAERSProcessor:
         return content
 
     def process_file(self, file_path: Path, data_type: str) -> pd.DataFrame:
-        """Process a single FAERS file.
+        """Process a single FAERS file with enhanced encoding detection and error handling.
         
         Args:
             file_path: Path to file
@@ -464,89 +464,114 @@ class FAERSProcessor:
         """
         logging.info(f"Processing {data_type} file: {file_path}")
         
-        # First try UTF-8
-        try:
-            # Create a list to store problematic rows
-            bad_rows = []
+        # List of encodings to try, in order of preference
+        encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']
+        
+        # Create a list to store problematic rows
+        bad_rows = []
+        
+        def detect_file_encoding(file_path):
+            """Detect the file encoding by trying to read a sample."""
+            import chardet
             
-            def log_bad_row(row_num, row_data, expected_fields, actual_fields):
-                error = {
-                    'file': str(file_path),
-                    'line': row_num,
-                    'expected_fields': expected_fields,
-                    'actual_fields': actual_fields,
-                    'data': row_data
-                }
-                bad_rows.append(error)
-            
-            # Custom error handling for pandas warnings
-            import warnings
-            
-            def custom_warning_handler(message, category, filename, lineno, file=None, line=None):
-                if category == pd.errors.ParserWarning:
-                    match = re.search(r'Skipping line (\d+): expected (\d+) fields, saw (\d+)', str(message))
-                    if match:
-                        line_num = int(match.group(1))
-                        expected = int(match.group(2))
-                        actual = int(match.group(3))
-                        
-                        # Read the problematic line directly from file
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            for i, line in enumerate(f, 1):
-                                if i == line_num:
-                                    log_bad_row(line_num, line.strip(), expected, actual)
-                                    break
-            
-            # Set up warning handler
-            warnings.showwarning = custom_warning_handler
-            
-            # Read the file with pandas
-            df = pd.read_csv(
-                file_path,
-                delimiter='$',
-                dtype=str,
-                na_values=['', 'NULL', 'null'],
-                keep_default_na=False,
-                encoding='utf-8',
-                on_bad_lines='warn',
-                engine='python'  # More flexible but slower engine
+            # Read a sample of the file (first 1MB)
+            with open(file_path, 'rb') as file:
+                raw = file.read(1024 * 1024)
+                result = chardet.detect(raw)
+                logging.info(f"Detected encoding for {file_path.name}: {result}")
+                return result['encoding']
+        
+        def log_bad_row(row_num, row_data, expected_fields, actual_fields):
+            error = {
+                'file': str(file_path),
+                'line': row_num,
+                'expected_fields': expected_fields,
+                'actual_fields': actual_fields,
+                'data': row_data
+            }
+            bad_rows.append(error)
+            logging.warning(
+                f"Problematic row in {file_path.name}:\n"
+                f"Line {row_num}: Expected {expected_fields} fields but got {actual_fields}\n"
+                f"Data: {row_data}"
             )
-            
-            # Log any bad rows found
-            if bad_rows:
-                logging.warning(f"Found {len(bad_rows)} problematic rows in {file_path.name}")
-                for error in bad_rows:
-                    logging.warning(
-                        f"Line {error['line']} in {error['file']}: "
-                        f"Expected {error['expected_fields']} fields but got {error['actual_fields']}\n"
-                        f"Data: {error['data']}"
-                    )
-                
-            return df
-            
-        except UnicodeDecodeError:
-            logging.warning(f"Failed to read with utf-8 encoding, trying latin1: {file_path}")
+        
+        # Custom warning handler for pandas
+        def custom_warning_handler(message, category, filename, lineno, file=None, line=None):
+            if category == pd.errors.ParserWarning:
+                match = re.search(r'Skipping line (\d+): expected (\d+) fields, saw (\d+)', str(message))
+                if match:
+                    line_num = int(match.group(1))
+                    expected = int(match.group(2))
+                    actual = int(match.group(3))
+                    
+                    # Read the problematic line directly from file
+                    with open(file_path, 'r', encoding=current_encoding) as f:
+                        for i, line in enumerate(f, 1):
+                            if i == line_num:
+                                log_bad_row(line_num, line.strip(), expected, actual)
+                                break
+        
+        # Try to detect encoding first
+        try:
+            detected_encoding = detect_file_encoding(file_path)
+            if detected_encoding:
+                encodings.insert(0, detected_encoding)
+        except Exception as e:
+            logging.warning(f"Error detecting encoding for {file_path.name}: {str(e)}")
+        
+        # Remove duplicates while preserving order
+        encodings = list(dict.fromkeys(encodings))
+        
+        # Try each encoding
+        for encoding in encodings:
             try:
-                # Try again with latin1 encoding
+                current_encoding = encoding
+                logging.info(f"Attempting to read {file_path.name} with {encoding} encoding")
+                
+                # Set up warning handler
+                import warnings
+                warnings.showwarning = custom_warning_handler
+                
+                # Read the file with pandas
                 df = pd.read_csv(
                     file_path,
                     delimiter='$',
                     dtype=str,
                     na_values=['', 'NULL', 'null'],
                     keep_default_na=False,
-                    encoding='latin1',
+                    encoding=encoding,
                     on_bad_lines='warn',
-                    engine='python'
+                    engine='python',  # More flexible but slower engine
+                    quoting=3,  # QUOTE_NONE
+                    escapechar=None,
+                    low_memory=False
                 )
+                
+                # If we get here, reading succeeded
+                logging.info(f"Successfully read {file_path.name} with {encoding} encoding")
+                
+                # Log summary of any bad rows found
+                if bad_rows:
+                    logging.warning(
+                        f"Found {len(bad_rows)} problematic rows in {file_path.name}\n"
+                        f"File encoding: {encoding}\n"
+                        f"Total rows processed: {len(df)}"
+                    )
+                
                 return df
                 
+            except UnicodeDecodeError as e:
+                logging.warning(f"Failed to read {file_path.name} with {encoding} encoding: {str(e)}")
+                continue
             except Exception as e:
-                logging.error(f"Failed to read file {file_path} with both utf-8 and latin1 encodings: {str(e)}")
-                raise
-                
-        except Exception as e:
-            logging.error(f"Error processing file {file_path}: {str(e)}")
-            raise
+                logging.error(f"Error processing {file_path.name} with {encoding} encoding: {str(e)}")
+                if encoding == encodings[-1]:  # If this was our last encoding attempt
+                    raise
+                continue
+        
+        # If we get here, all encodings failed
+        raise ValueError(f"Failed to read {file_path.name} with any encoding: {encodings}")
 
     def _process_dataframe(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
         """Process a DataFrame based on its type."""
