@@ -1337,3 +1337,99 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Error processing {file_path}: {str(e)}")
             return pd.DataFrame()
+
+    def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize demographics data.
+        
+        Args:
+            df: Raw demographics DataFrame
+            
+        Returns:
+            Standardized demographics DataFrame
+        """
+        # Convert columns to lowercase
+        df.columns = df.columns.str.lower()
+        
+        # Standardize column names
+        column_map = {
+            'primaryid': 'primaryid',
+            'caseid': 'caseid', 
+            'caseversion': 'caseversion',
+            'i_f_cod': 'i_f_code',
+            'sex': 'sex',
+            'age': 'age',
+            'age_cod': 'age_code',
+            'age_grp': 'age_group',
+            'wt': 'weight',
+            'wt_cod': 'weight_code',
+            'reporter_country': 'reporter_country',
+            'occr_country': 'occurrence_country',
+            'event_dt': 'event_date',
+            'rept_dt': 'report_date'
+        }
+        df = df.rename(columns=column_map)
+        
+        # Convert dates
+        for date_col in ['event_date', 'report_date']:
+            if date_col in df.columns:
+                df[date_col] = pd.to_datetime(df[date_col], format='%Y%m%d', errors='coerce')
+        
+        return df
+        
+    def standardize_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize drug data.
+        
+        Args:
+            df: Raw drug DataFrame
+            
+        Returns:
+            Standardized drug DataFrame
+        """
+        # Convert columns to lowercase
+        df.columns = df.columns.str.lower()
+        
+        # Standardize column names
+        column_map = {
+            'primaryid': 'primaryid',
+            'drug_seq': 'drug_seq',
+            'role_cod': 'role_code',
+            'drugname': 'drug_name',
+            'prod_ai': 'active_ingredient',
+            'val_vbm': 'verbatim_indication',
+            'route': 'route',
+            'dose_vbm': 'verbatim_dose',
+            'dechal': 'dechallenge',
+            'rechal': 'rechallenge',
+            'lot_num': 'lot_number',
+            'nda_num': 'nda_number',
+            'exp_dt': 'expiration_date'
+        }
+        df = df.rename(columns=column_map)
+        
+        # Convert dates
+        if 'expiration_date' in df.columns:
+            df['expiration_date'] = pd.to_datetime(df['expiration_date'], format='%Y%m%d', errors='coerce')
+            
+        return df
+        
+    def standardize_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize reaction data.
+        
+        Args:
+            df: Raw reaction DataFrame
+            
+        Returns:
+            Standardized reaction DataFrame
+        """
+        # Convert columns to lowercase
+        df.columns = df.columns.str.lower()
+        
+        # Standardize column names
+        column_map = {
+            'primaryid': 'primaryid',
+            'pt': 'preferred_term',
+            'drug_rec_act': 'drug_reaction_action'
+        }
+        df = df.rename(columns=column_map)
+        
+        return df
