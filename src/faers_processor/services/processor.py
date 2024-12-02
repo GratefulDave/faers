@@ -188,11 +188,27 @@ class FAERSProcessor:
             # Convert Path to string for compatibility
             file_path_str = str(file_path)
             
-            # First try pandas to determine column names
+            # Define expected columns based on data type
+            expected_columns = {
+                'demographics': ['primaryid', 'caseid', 'caseversion', 'i_f_code', 'event_dt', 'mfr_dt', 'init_fda_dt',
+                               'fda_dt', 'rept_cod', 'mfr_num', 'mfr_sndr', 'age', 'age_cod', 'age_grp', 'sex',
+                               'e_sub', 'wt', 'wt_cod', 'rept_dt', 'to_mfr', 'occp_cod', 'reporter_country', 'occr_country'],
+                'drugs': ['primaryid', 'caseid', 'drug_seq', 'role_cod', 'drugname', 'prod_ai', 'val_vbm', 'route',
+                         'dose_vbm', 'cum_dose_chr', 'cum_dose_unit', 'dechal', 'rechal', 'lot_num', 'exp_dt',
+                         'nda_num', 'dose_amt', 'dose_unit', 'dose_form', 'dose_freq'],
+                'reactions': ['primaryid', 'caseid', 'pt', 'drug_rec_act']
+            }
+            
+            # Try pandas to determine column names
             try:
                 sample_df = pd.read_csv(file_path_str, sep='$', nrows=5)
                 columns = list(sample_df.columns)
                 logging.info(f"Detected columns: {columns}")
+                
+                # Check if we need to fix column names
+                if data_type in expected_columns and len(columns) == len(expected_columns[data_type]):
+                    columns = expected_columns[data_type]
+                    logging.info(f"Using expected columns for {data_type}: {columns}")
                 
                 # Define dtypes based on actual columns
                 dtypes = {col: 'str' for col in columns}
@@ -208,6 +224,7 @@ class FAERSProcessor:
                         df = dd.read_csv(
                             file_path_str,
                             sep='$',
+                            names=columns,  # Use explicit column names
                             dtype=dtypes,
                             na_values=['', 'NA', 'NULL'],
                             keep_default_na=True,
@@ -234,6 +251,7 @@ class FAERSProcessor:
                     df = pd.read_csv(
                         file_path_str,
                         sep='$',
+                        names=columns,  # Use explicit column names
                         dtype=dtypes,
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True
