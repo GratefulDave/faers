@@ -15,6 +15,7 @@ import multiprocessing
 import time
 from datetime import datetime
 import sys
+import chardet
 
 from .standardizer import DataStandardizer
 
@@ -90,9 +91,12 @@ class FAERSProcessor:
                         results_dict = future.result()
                         
                         # Save results
+                        quarter_output_dir = output_dir / quarter
+                        quarter_output_dir.mkdir(parents=True, exist_ok=True)
+                        
                         for data_type, df in results_dict.items():
                             if not df.empty:
-                                output_file = output_dir / f"{quarter}_{data_type}.txt"
+                                output_file = quarter_output_dir / f"{data_type}.txt"
                                 df.to_csv(output_file, sep='$', index=False)
                         
                         results['success'].append(quarter)
@@ -118,9 +122,12 @@ class FAERSProcessor:
                     results_dict = self.process_quarter(quarter_dir)
                     
                     # Save results
+                    quarter_output_dir = output_dir / quarter
+                    quarter_output_dir.mkdir(parents=True, exist_ok=True)
+                    
                     for data_type, df in results_dict.items():
                         if not df.empty:
-                            output_file = output_dir / f"{quarter}_{data_type}.txt"
+                            output_file = quarter_output_dir / f"{data_type}.txt"
                             df.to_csv(output_file, sep='$', index=False)
                     
                     results['success'].append(quarter)
@@ -329,7 +336,6 @@ class FAERSProcessor:
                             na_values=['', 'NA', 'NULL'],
                             keep_default_na=True,
                             header=0,
-                            low_memory=False,
                             encoding='utf-8'
                         )
                         df['quarter'] = quarter
@@ -531,8 +537,7 @@ class FAERSProcessor:
                         on_bad_lines='warn',
                         engine='python',
                         quoting=3,  # QUOTE_NONE
-                        escapechar=None,
-                        low_memory=False
+                        escapechar=None
                     )
                     
                     logging.info(f"Successfully read {file_path.name} with {encoding} encoding")
