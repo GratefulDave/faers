@@ -109,13 +109,17 @@ class FAERSProcessor:
         Returns:
             Dictionary of processed DataFrames for demographics, drugs, and reactions
         """
+        # Normalize quarter path first
+        quarter_dir = self._normalize_quarter_path(quarter_dir)
         results = {}
         
         # Look for ASCII files in both quarter_dir and ascii subdirectory
         ascii_paths = [
             quarter_dir,  # Try root directory first
             quarter_dir / 'ascii',  # Then try ascii subdirectory
-            quarter_dir / 'ASCII'   # Then try ASCII subdirectory (case sensitive)
+            quarter_dir / 'ASCII',  # Then try ASCII subdirectory (case sensitive)
+            quarter_dir.parent / quarter_dir.name.lower() / 'ascii',  # Try lowercase path
+            quarter_dir.parent / quarter_dir.name.upper() / 'ASCII'   # Try uppercase path
         ]
         
         # Find the first valid path that contains our files
@@ -128,7 +132,7 @@ class FAERSProcessor:
         if not ascii_dir:
             logging.error(f"No valid ASCII directory found in {quarter_dir}")
             return results
-        
+            
         logging.info(f"Using ASCII directory: {ascii_dir}")
         
         # Find relevant files (case-insensitive)
@@ -358,9 +362,14 @@ class FAERSProcessor:
                 logging.error(f"File does not exist: {file_path}")
                 return pd.DataFrame()
             
-            # Use dask if enabled
+            # Use dask if enabled - read in chunks to avoid memory issues
             if self.use_dask:
                 try:
+                    # Calculate optimal chunk size based on file size
+                    file_size = file_path.stat().st_size
+                    chunk_size = min(100_000, max(10_000, file_size // (50 * 1024 * 1024)))  # Aim for ~50MB chunks
+                    
+                    # Read file in chunks using dask
                     df = dd.read_csv(
                         file_path,
                         sep='$',
@@ -369,26 +378,38 @@ class FAERSProcessor:
                         keep_default_na=True,
                         header=0,
                         assume_missing=True,
-                        encoding='utf-8'
+                        blocksize=chunk_size * 1024,  # Convert to bytes
+                        encoding='utf-8',
+                        sample=10000  # Sample fewer rows for metadata
                     )
-                    # Convert dask DataFrame to pandas DataFrame after processing
+                    # Convert to pandas immediately to avoid large graph
                     return self._process_dataframe(df.compute(), data_type)
                 except Exception as e:
                     logging.warning(f"Dask parsing failed for {file_path}, falling back to pandas: {str(e)}")
             
             # Standard pandas processing
             try:
-                df = pd.read_csv(
+                # Read in chunks with pandas
+                chunk_size = 100_000
+                chunks = []
+                for chunk in pd.read_csv(
                     file_path,
                     sep='$',
                     dtype=str,
                     na_values=['', 'NA', 'NULL'],
                     keep_default_na=True,
                     header=0,
+                    chunksize=chunk_size,
                     low_memory=False,
                     encoding='utf-8'
-                )
-                return self._process_dataframe(df, data_type)
+                ):
+                    chunks.append(chunk)
+                
+                if chunks:
+                    df = pd.concat(chunks, ignore_index=True)
+                    return self._process_dataframe(df, data_type)
+                return pd.DataFrame()
+                
             except Exception as e:
                 logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
                 
@@ -399,18 +420,26 @@ class FAERSProcessor:
                 # Fix known data issues
                 fixed_content = self._fix_known_data_issues(file_path, content)
                 
-                # Try reading the fixed content
+                # Try reading the fixed content in chunks
                 try:
-                    df = pd.read_csv(
+                    chunks = []
+                    for chunk in pd.read_csv(
                         io.StringIO(fixed_content),
                         sep='$',
                         dtype=str,
                         na_values=['', 'NA', 'NULL'],
                         keep_default_na=True,
                         header=0,
+                        chunksize=chunk_size,
                         low_memory=False
-                    )
-                    return self._process_dataframe(df, data_type)
+                    ):
+                        chunks.append(chunk)
+                    
+                    if chunks:
+                        df = pd.concat(chunks, ignore_index=True)
+                        return self._process_dataframe(df, data_type)
+                    return pd.DataFrame()
+                    
                 except Exception as e2:
                     logging.error(f"Failed to process {file_path} even after fixes: {str(e2)}")
                     return pd.DataFrame()
@@ -451,3 +480,23 @@ class FAERSProcessor:
         except Exception as e:
             logging.error(f"Error processing DataFrame: {str(e)}")
             return pd.DataFrame()
+
+    def _normalize_quarter_path(self, quarter_dir: Path) -> Path:
+        """Normalize quarter directory path to handle case sensitivity.
+        
+        Args:
+            quarter_dir: Original quarter directory path
+            
+        Returns:
+            Normalized path
+        """
+        # Extract year and quarter
+        match = re.match(r'(\d{4})([qQ][1-4])', quarter_dir.name)
+        if not match:
+            return quarter_dir
+            
+        year, quarter = match.groups()
+        normalized_name = f"{year}Q{quarter[-1]}"  # Convert to YYYYQ# format
+        
+        # Create new path with normalized name
+        return quarter_dir.parent / normalized_name
