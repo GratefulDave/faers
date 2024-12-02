@@ -174,21 +174,7 @@ class FAERSProcessor:
                 logging.error(f"File does not exist: {file_path}")
                 return pd.DataFrame()
             
-            # Try to read first few lines to determine structure
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    header = f.readline().strip()
-                    first_line = f.readline().strip() if f.readline() else ""
-                logging.info(f"Header: {header}")
-                logging.info(f"First line: {first_line}")
-            except Exception as e:
-                logging.error(f"Error reading file header: {str(e)}")
-                return pd.DataFrame()
-            
-            # Convert Path to string for compatibility
-            file_path_str = str(file_path)
-            
-            # Define expected columns based on data type
+            # Define expected columns based on data type (matching R script column names)
             expected_columns = {
                 'demographics': ['primaryid', 'caseid', 'caseversion', 'i_f_code', 'event_dt', 'mfr_dt', 'init_fda_dt',
                                'fda_dt', 'rept_cod', 'mfr_num', 'mfr_sndr', 'age', 'age_cod', 'age_grp', 'sex',
@@ -199,86 +185,60 @@ class FAERSProcessor:
                 'reactions': ['primaryid', 'caseid', 'pt', 'drug_rec_act']
             }
             
-            # Try pandas to determine column names
-            try:
-                sample_df = pd.read_csv(file_path_str, sep='$', nrows=5)
-                columns = list(sample_df.columns)
-                logging.info(f"Detected columns: {columns}")
-                
-                # Check if we need to fix column names
-                if data_type in expected_columns and len(columns) == len(expected_columns[data_type]):
-                    columns = expected_columns[data_type]
-                    logging.info(f"Using expected columns for {data_type}: {columns}")
-                
-                # Define dtypes based on actual columns
-                dtypes = {col: 'str' for col in columns}
-                
-            except Exception as e:
-                logging.error(f"Error reading sample data: {str(e)}")
-                return pd.DataFrame()
+            # Map old column names to new ones (matching R script)
+            column_mapping = {
+                'demographics': {
+                    'isr': 'primaryid',
+                    'case': 'caseid',
+                    'i_f_cod': 'i_f_code',
+                    'gndr_cod': 'sex'
+                },
+                'drugs': {
+                    'isr': 'primaryid',
+                    'drug_seq': 'drug_seq',
+                    'drugname': 'drugname',
+                    'prod_ai': 'prod_ai'
+                },
+                'reactions': {
+                    'isr': 'primaryid',
+                    'pt': 'pt'
+                }
+            }
             
-            # Read full data
+            # Read file with pandas
             try:
-                if self.use_dask:
-                    try:
-                        df = dd.read_csv(
-                            file_path_str,
-                            sep='$',
-                            names=columns,  # Use explicit column names
-                            dtype=dtypes,
-                            na_values=['', 'NA', 'NULL'],
-                            keep_default_na=True,
-                            blocksize=self.chunk_size * 1024,
-                            assume_missing=True
-                        )
-                        
-                        # Convert numeric columns after reading
-                        if 'primaryid' in df.columns:
-                            df['primaryid'] = dd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
-                        if data_type == 'demographics':
-                            if 'caseid' in df.columns:
-                                df['caseid'] = dd.to_numeric(df['caseid'], errors='coerce')
-                            if 'age' in df.columns:
-                                df['age'] = dd.to_numeric(df['age'], errors='coerce')
-                        elif data_type == 'drugs' and 'drug_seq' in df.columns:
-                            df['drug_seq'] = dd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
-                            
-                    except Exception as e:
-                        logging.warning(f"Dask read failed, falling back to pandas: {str(e)}")
-                        df = None
+                df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'], keep_default_na=True)
                 
-                if df is None:  # If Dask failed or not used
-                    df = pd.read_csv(
-                        file_path_str,
-                        sep='$',
-                        names=columns,  # Use explicit column names
-                        dtype=dtypes,
-                        na_values=['', 'NA', 'NULL'],
-                        keep_default_na=True
-                    )
-                    
-                    # Convert numeric columns
-                    if 'primaryid' in df.columns:
-                        df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
-                    if data_type == 'demographics':
-                        if 'caseid' in df.columns:
-                            df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
-                        if 'age' in df.columns:
-                            df['age'] = pd.to_numeric(df['age'], errors='coerce')
-                    elif data_type == 'drugs' and 'drug_seq' in df.columns:
-                        df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
+                # Rename columns according to mapping
+                if data_type in column_mapping:
+                    df = df.rename(columns=column_mapping[data_type])
+                
+                # Convert numeric columns
+                if 'primaryid' in df.columns:
+                    df['primaryid'] = pd.to_numeric(df['primaryid'], errors='coerce').fillna(-1).astype('int64')
+                if data_type == 'demographics':
+                    if 'caseid' in df.columns:
+                        df['caseid'] = pd.to_numeric(df['caseid'], errors='coerce')
+                    if 'age' in df.columns:
+                        df['age'] = pd.to_numeric(df['age'], errors='coerce')
+                elif data_type == 'drugs' and 'drug_seq' in df.columns:
+                    df['drug_seq'] = pd.to_numeric(df['drug_seq'], errors='coerce').fillna(-1).astype('int64')
                 
                 # Process based on data type
                 if data_type == 'demographics':
                     result = self.standardizer.process_demographics(df)
                 elif data_type == 'drugs':
+                    # First clean and standardize drug names (like R script)
+                    df['drugname'] = df['drugname'].str.lower().str.strip()
+                    df['drugname'] = df['drugname'].str.replace(r'\s+', ' ', regex=True)
+                    df['drugname'] = df['drugname'].str.replace(r'\.$', '', regex=True)
+                    df['drugname'] = df['drugname'].str.replace(r'\( ', '(', regex=True)
+                    df['drugname'] = df['drugname'].str.replace(r' \)', ')', regex=True)
+                    
+                    # Then process through standardizer
                     result = self.standardizer.process_drugs(df)
                 else:  # reactions
                     result = self.standardizer.process_reactions(df)
-
-                # Compute if using Dask
-                if isinstance(df, dd.DataFrame):
-                    result = result.compute()
 
                 return result
                 
