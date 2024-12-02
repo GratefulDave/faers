@@ -2056,7 +2056,7 @@ class DataStandardizer:
         try:
             # Standardize indication preferred terms using MedDRA
             if 'indi_pt' in df.columns:
-                df = self.standardize_pt(df, 'indi_pt')
+                df = self.standardize_pt(df, pt_variable='indi_pt')
             
             # Remove duplicates
             df = df.drop_duplicates()

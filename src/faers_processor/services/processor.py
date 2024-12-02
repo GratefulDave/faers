@@ -510,46 +510,79 @@ class FAERSProcessor:
         
         try:
             # Read the file with error handling like R's read.delim
-            df = pd.read_csv(
-                file_path,
-                delimiter='$',
-                encoding='latin1',
-                on_bad_lines='skip',  # Skip bad lines like R does
-                low_memory=False,  # Avoid mixed type inference warnings
-                dtype=str  # Read all columns as string initially like R
-            )
-            
-            if df.empty:
-                error_msg = f"Empty DataFrame after reading {file_path}"
+            try:
+                df = pd.read_csv(
+                    file_path,
+                    delimiter='$',
+                    encoding='latin1',
+                    on_bad_lines='skip',  # Skip bad lines like R does
+                    low_memory=False,  # Avoid mixed type inference warnings
+                    dtype=str,  # Read all columns as string initially like R
+                    quoting=3,  # QUOTE_NONE like R's quote=""
+                    skip_blank_lines=True  # Skip blank lines like R
+                )
+                
+                if df.empty:
+                    error_msg = f"Empty DataFrame after reading {file_path}"
+                    self.logger.error(error_msg)
+                    table_summary.add_parsing_error(error_msg)
+                    return df
+                    
+                self.logger.info(f"Successfully read {len(df):,} rows from {file_path}")
+                table_summary.total_rows = len(df)
+                
+            except pd.errors.ParserError as e:
+                error_msg = f"Parser error in {file_path}: {str(e)}"
                 self.logger.error(error_msg)
                 table_summary.add_parsing_error(error_msg)
-                return df
+                return pd.DataFrame()
                 
-            table_summary.total_rows = len(df)
+            except Exception as e:
+                error_msg = f"Error reading {file_path}: {str(e)}"
+                self.logger.error(error_msg)
+                table_summary.add_parsing_error(error_msg)
+                return pd.DataFrame()
             
             # Process based on data type
-            if data_type == 'demo':
-                df = self.standardizer.standardize_demographics(df)
-            elif data_type == 'drug':
-                df = self.standardizer.standardize_drugs(df)
-            elif data_type == 'reac':
-                df = self.standardizer.standardize_reactions(df)
-            elif data_type == 'outc':
-                df = self.standardizer.standardize_outcomes(df)
-            elif data_type == 'rpsr':
-                df = self.standardizer.standardize_sources(df)
-            elif data_type == 'ther':
-                df = self.standardizer.standardize_therapies(df)
-            elif data_type == 'indi':
-                df = self.standardizer.standardize_indications(df)
-            
-            table_summary.processed_rows = len(df)
-            table_summary.processing_time = time.time() - start_time
-            
-            return df
+            try:
+                if data_type == 'demo':
+                    df = self.standardizer.standardize_demographics(df)
+                elif data_type == 'drug':
+                    df = self.standardizer.standardize_drugs(df)
+                elif data_type == 'reac':
+                    df = self.standardizer.standardize_reactions(df)
+                elif data_type == 'outc':
+                    df = self.standardizer.standardize_outcomes(df)
+                elif data_type == 'rpsr':
+                    df = self.standardizer.standardize_sources(df)
+                elif data_type == 'ther':
+                    df = self.standardizer.standardize_therapies(df)
+                elif data_type == 'indi':
+                    df = self.standardizer.standardize_indications(df)
+                
+                if df is None or df.empty:
+                    error_msg = f"Empty DataFrame after standardizing {data_type}"
+                    self.logger.error(error_msg)
+                    table_summary.add_parsing_error(error_msg)
+                    return pd.DataFrame()
+                
+                table_summary.processed_rows = len(df)
+                table_summary.processing_time = time.time() - start_time
+                
+                self.logger.info(f"Successfully processed {data_type} file. Input rows: {table_summary.total_rows:,}, Output rows: {table_summary.processed_rows:,}")
+                if table_summary.total_rows != table_summary.processed_rows:
+                    self.logger.warning(f"Row count changed during processing. {table_summary.total_rows - table_summary.processed_rows:,} rows were filtered out")
+                
+                return df
+                
+            except Exception as e:
+                error_msg = f"Error standardizing {data_type}: {str(e)}"
+                self.logger.error(error_msg)
+                table_summary.add_parsing_error(error_msg)
+                return pd.DataFrame()
             
         except Exception as e:
-            error_msg = f"Error processing DataFrame: {str(e)}"
+            error_msg = f"Unexpected error processing {data_type}: {str(e)}"
             self.logger.error(error_msg)
             table_summary.add_parsing_error(error_msg)
             return pd.DataFrame()
@@ -674,7 +707,7 @@ class FAERSProcessor:
                 # Check country standardization
                 if 'country' not in df.columns:
                     self.logger.warning("Country column not found, skipping country standardization")
-                
+            
             elif data_type == 'drug':
                 # Check for required drug fields
                 required_fields = ['drugname', 'prod_ai', 'route', 'dose_amt', 'dose_unit', 'dose_form']
