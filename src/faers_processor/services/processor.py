@@ -38,10 +38,10 @@ class FAERSProcessor:
         results = {}
         ascii_dir = quarter_dir / 'ascii'
         
-        # Find relevant files
-        demo_file = next(ascii_dir.glob('DEMO*.txt'), None)
-        drug_file = next(ascii_dir.glob('DRUG*.txt'), None)
-        reac_file = next(ascii_dir.glob('REAC*.txt'), None)
+        # Find relevant files (case-insensitive)
+        demo_file = next((f for f in ascii_dir.glob('[Dd][Ee][Mm][Oo]*.[Tt][Xx][Tt]')), None)
+        drug_file = next((f for f in ascii_dir.glob('[Dd][Rr][Uu][Gg]*.[Tt][Xx][Tt]')), None)
+        reac_file = next((f for f in ascii_dir.glob('[Rr][Ee][Aa][Cc]*.[Tt][Xx][Tt]')), None)
         
         if not all([demo_file, drug_file, reac_file]):
             logging.error(f"Missing required files in {quarter_dir}")
