@@ -112,6 +112,7 @@ class DataStandardizer:
             '%d/%m/%Y',    # DD/MM/YYYY
             '%m/%d/%Y',    # MM/DD/YYYY
             '%Y-%m-%d',    # YYYY-MM-DD
+            '%Y%m%d.0',    # YYYYMMDD.0 (from float conversion)
         ]
         
         def try_parse_date(date_str):
@@ -119,11 +120,16 @@ class DataStandardizer:
             if pd.isna(date_str):
                 return pd.NaT
                 
+            # Convert to string and clean
             date_str = str(date_str).strip()
             
             # Handle empty strings
-            if not date_str:
+            if not date_str or date_str == 'nan':
                 return pd.NaT
+                
+            # Remove .0 if present (from float conversion)
+            if date_str.endswith('.0'):
+                date_str = date_str[:-2]
                 
             # Try each format
             for fmt in date_formats:
@@ -147,6 +153,9 @@ class DataStandardizer:
                 continue
                 
             try:
+                # Convert column to string first to handle numeric dates
+                df[col] = df[col].astype(str)
+                
                 # Convert to datetime using our custom parser
                 df[col] = df[col].apply(try_parse_date)
                 
@@ -1133,7 +1142,11 @@ class DataStandardizer:
         # Basic column mapping (handle both upper and lower case)
         column_map = {
             'isr': 'primaryid',
+            'ISR': 'primaryid',
             'case': 'caseid',
+            'CASE': 'caseid',
+            'CASEID': 'caseid',
+            'CASE_ID': 'caseid',
             'i_f_code': 'i_f_code',
             'i_f_cod': 'i_f_code',
             'event_dt': 'event_dt',
@@ -1164,58 +1177,46 @@ class DataStandardizer:
             'occr_country': 'occr_country',
             'OCCR_COUNTRY': 'occr_country'
         }
+        
+        # Rename columns based on mapping
         df = df.rename(columns=column_map)
         
+        # Ensure required columns exist
+        required_cols = ['primaryid', 'caseid', 'i_f_code', 'event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
+        for col in required_cols:
+            if col not in df.columns:
+                logging.warning(f"Required column '{col}' not found, adding with NA values")
+                df[col] = pd.NA
+        
+        # Convert IDs to numeric and handle missing values
+        for id_col in ['primaryid', 'caseid']:
+            if id_col in df.columns:
+                # Convert to numeric, coercing errors to NaN
+                df[id_col] = pd.to_numeric(df[id_col], errors='coerce')
+                # Fill NaN with -1 and convert to int64
+                df[id_col] = df[id_col].fillna(-1).astype('int64')
+        
         # Convert numeric fields
-        numeric_cols = ['primaryid', 'caseid', 'age', 'wt']
+        numeric_cols = ['age', 'wt']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-                if col in ['primaryid', 'caseid']:
-                    df[col] = df[col].fillna(-1).astype('int64')
         
-        # Ensure required columns exist with defaults
-        required_cols = {
-            'sex': pd.NA,
-            'age': pd.NA,
-            'age_cod': 'YR',  # Default to years if missing
-            'wt': pd.NA,
-            'wt_cod': 'KG'    # Default to kilograms if missing
-        }
-        
-        for col, default in required_cols.items():
-            if col not in df.columns:
-                df[col] = default
-                logging.info(f"Added missing column '{col}' with default value: {default}")
-        
-        # Process in exact R script order
-        # 1. Standardize dates - only if the columns exist
+        # Process dates
         date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
         if any(col in df.columns for col in date_columns):
             df = self.standardize_dates(df)
         
-        # 2. Standardize sex
+        # Process other fields in order
         df = self.standardize_sex(df)
-        
-        # 3. Standardize age
         df = self.standardize_age(df)
-        
-        # 4. Standardize age groups
         df = self.standardize_age_groups(df)
-        
-        # 5. Standardize weight
         df = self.standardize_weight(df)
-        
-        # 6. Standardize country codes
         df = self.standardize_country(df)
-        
-        # 7. Standardize occupation codes
         df = self.standardize_occupation(df)
-        
-        # 8. Handle manufacturer records
         df = self.standardize_manufacturer(df)
         
-        # 9. Memory optimization
+        # Optimize memory usage
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].astype('category')
