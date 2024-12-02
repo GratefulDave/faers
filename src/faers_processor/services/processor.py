@@ -211,14 +211,18 @@ class FAERSProcessor:
                 try:
                     df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'], 
                                    keep_default_na=True, header=0, encoding='utf-8')
+                    logging.debug(f"Successfully read file with columns: {df.columns.tolist()}")
                 except UnicodeDecodeError:
                     # If UTF-8 fails, try with latin1 encoding
                     df = pd.read_csv(file_path, sep='$', dtype=str, na_values=['', 'NA', 'NULL'],
                                    keep_default_na=True, header=0, encoding='latin1')
+                    logging.debug(f"Successfully read file with latin1 encoding, columns: {df.columns.tolist()}")
                 
                 # Rename columns according to mapping
                 if data_type in column_mapping:
+                    logging.debug(f"Before mapping: {df.columns.tolist()}")
                     df = df.rename(columns=column_mapping[data_type])
+                    logging.debug(f"After mapping: {df.columns.tolist()}")
                 
                 # Convert numeric columns
                 if 'primaryid' in df.columns:
@@ -236,11 +240,15 @@ class FAERSProcessor:
                     result = self.standardizer.process_demographics(df)
                 elif data_type == 'drugs':
                     # First clean and standardize drug names (like R script)
-                    df['drugname'] = df['drugname'].str.lower().str.strip()
-                    df['drugname'] = df['drugname'].str.replace(r'\s+', ' ', regex=True)
-                    df['drugname'] = df['drugname'].str.replace(r'\.$', '', regex=True)
-                    df['drugname'] = df['drugname'].str.replace(r'\( ', '(', regex=True)
-                    df['drugname'] = df['drugname'].str.replace(r' \)', ')', regex=True)
+                    if 'drugname' in df.columns:
+                        df['drugname'] = df['drugname'].str.lower().str.strip()
+                        df['drugname'] = df['drugname'].str.replace(r'\s+', ' ', regex=True)
+                        df['drugname'] = df['drugname'].str.replace(r'\.$', '', regex=True)
+                        df['drugname'] = df['drugname'].str.replace(r'\( ', '(', regex=True)
+                        df['drugname'] = df['drugname'].str.replace(r' \)', ')', regex=True)
+                    else:
+                        logging.error(f"Required column 'drugname' not found in columns: {df.columns.tolist()}")
+                        return pd.DataFrame()
                     
                     # Then process through standardizer
                     result = self.standardizer.process_drugs(df)
