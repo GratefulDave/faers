@@ -203,31 +203,36 @@ def save_optimized_parquet(df: pd.DataFrame, output_file: Path) -> None:
         logging.error(f"Error saving parquet file: {str(e)}")
 
 
-def download_data(data_dir: Path, max_workers: int) -> None:
-    """Download FAERS quarterly data files."""
+def download_data(max_workers: int) -> None:
+    """Download FAERS quarterly data files.
+    
+    Args:
+        max_workers: Maximum number of parallel workers for downloading
+    """
     try:
-        # Create data directories if they don't exist
-        raw_dir = data_dir
-        raw_dir.mkdir(parents=True, exist_ok=True)
+        # Get absolute paths from project root
+        root_dir = Path(__file__).parent.parent.parent
+        data_dir = root_dir / 'data' / 'raw'
         
-        downloader = FAERSDownloader(raw_dir)
-        downloader.download_all_quarters(max_workers=max_workers)
+        # Create directory if it doesn't exist
+        data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize downloader and download files
+        downloader = FAERSDownloader(data_dir)
+        downloader.download_all(max_workers=max_workers)
+        
     except Exception as e:
-        logging.error(f"Error in download process: {str(e)}")
+        logging.error(f"Error downloading data: {str(e)}")
         raise
 
 
 def process_data(
-    data_dir: Path,
-    external_dir: Path,
     chunk_size: int,
     use_dask: bool = False
 ) -> None:
     """Process downloaded FAERS data with optimized parallel processing.
     
     Args:
-        data_dir: Path to raw data directory
-        external_dir: Path to external data directory
         chunk_size: Number of rows to process at once
         use_dask: Whether to use Dask for parallel processing
     """
@@ -276,70 +281,51 @@ def deduplicate_data(data_dir: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description='Process FAERS data with optimizations for Apple Silicon'
-    )
-
-    parser.add_argument(
-        '--data-dir',
-        type=Path,
-        required=True,
-        help='Base directory for data storage'
-    )
-
-    parser.add_argument(
-        '--external-dir',
-        type=Path,
-        required=True,
-        help='Directory for external reference data'
-    )
-
-    parser.add_argument(
-        '--download',
-        action='store_true',
-        help='Download latest FAERS data'
-    )
-
-    parser.add_argument(
-        '--process',
-        action='store_true',
-        help='Process downloaded data'
-    )
-
-    parser.add_argument(
-        '--deduplicate',
-        action='store_true',
-        help='Remove duplicate entries'
-    )
-
-    parser.add_argument(
-        '--max-workers',
-        type=int,
-        default=multiprocessing.cpu_count(),
-        help='Maximum number of parallel workers'
-    )
-
+    parser = argparse.ArgumentParser(description='Process FAERS data files.')
+    
+    # Processing options
     parser.add_argument(
         '--chunk-size',
         type=int,
         default=100000,
-        help='Size of data chunks for processing'
+        help='Number of rows to process at once'
     )
-
     parser.add_argument(
         '--use-dask',
         action='store_true',
-        help='Use Dask for out-of-core processing'
+        help='Use Dask for parallel processing'
     )
-
     parser.add_argument(
         '--log-level',
         type=str,
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         default='INFO',
-        help='Set logging level'
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Set the logging level'
     )
-
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        default=multiprocessing.cpu_count(),
+        help='Maximum number of parallel workers for downloading'
+    )
+    
+    # Action flags
+    parser.add_argument(
+        '--download',
+        action='store_true',
+        help='Download latest FAERS data using downloader.py'
+    )
+    parser.add_argument(
+        '--process',
+        action='store_true',
+        help='Process raw FAERS data files'
+    )
+    parser.add_argument(
+        '--deduplicate',
+        action='store_true',
+        help='Deduplicate processed data'
+    )
+    
     return parser.parse_args()
 
 
@@ -350,21 +336,18 @@ def main() -> None:
 
     try:
         if args.download:
-            download_data(
-                data_dir=args.data_dir,
-                max_workers=args.max_workers
-            )
+            download_data(max_workers=args.max_workers)
 
         if args.process:
             process_data(
-                data_dir=args.data_dir,
-                external_dir=args.external_dir,
                 chunk_size=args.chunk_size,
                 use_dask=args.use_dask
             )
 
         if args.deduplicate:
-            deduplicate_data(args.data_dir)
+            root_dir = Path(__file__).parent.parent.parent
+            clean_dir = root_dir / 'data' / 'clean'
+            deduplicate_data(clean_dir)
 
     except Exception as e:
         logging.error(f"Pipeline failed: {str(e)}")
