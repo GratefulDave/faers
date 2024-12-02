@@ -31,14 +31,25 @@ class DataStandardizer:
             external_dir: Path to external reference data
         """
         self.external_dir = external_dir
+        self._init_logging()
         self._load_reference_data()
+        self._load_meddra_data()
+        self._load_diana_dictionary()
         
-        # Configure NumPy optimizations
+        # Configure NumPy optimizations for Apple Silicon
         try:
             import numpy.distutils.system_info as sysinfo
             blas_info = sysinfo.get_info('blas_opt')
             if blas_info:
                 logging.info("Using optimized BLAS for Apple Silicon")
+                # Set NumPy threading to match physical cores for M1/M2
+                import multiprocessing as mp
+                physical_cores = mp.cpu_count() // 2  # Account for efficiency cores
+                os.environ["OMP_NUM_THREADS"] = str(physical_cores)
+                os.environ["OPENBLAS_NUM_THREADS"] = str(physical_cores)
+                os.environ["MKL_NUM_THREADS"] = str(physical_cores)
+                os.environ["VECLIB_MAXIMUM_THREADS"] = str(physical_cores)
+                os.environ["NUMEXPR_NUM_THREADS"] = str(physical_cores)
             else:
                 logging.info("Standard BLAS configuration in use")
         except Exception as e:
@@ -724,10 +735,9 @@ class DataStandardizer:
         # Load country mappings
         country_file = self.external_dir / 'manual_fix' / 'countries.csv'
         if country_file.exists():
-            self.country_map = pd.read_csv(country_file, sep=';', dtype=str).set_index('country')[
-                'Country_Name'].to_dict()
+            self.country_map = pd.read_csv(country_file, sep=';', dtype=str).set_index('country')['Country_Name'].to_dict()
 
-        # Load occupation codes
+        # Load occupation codes (matching R script)
         self.valid_occupations = {'MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN'}
 
         # Load route standardization
@@ -738,49 +748,43 @@ class DataStandardizer:
         # Load dose form standardization
         dose_form_file = self.external_dir / 'manual_fix' / 'dose_form_st.csv'
         if dose_form_file.exists():
-            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', dtype=str).set_index('dose_form')[
-                'dose_form_st'].to_dict()
+            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', dtype=str).set_index('dose_form')['dose_form_st'].to_dict()
 
         # Load dose frequency standardization
         dose_freq_file = self.external_dir / 'manual_fix' / 'dose_freq_st.csv'
         if dose_freq_file.exists():
-            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', dtype=str).set_index('dose_freq')[
-                'dose_freq_st'].to_dict()
+            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', dtype=str).set_index('dose_freq')['dose_freq_st'].to_dict()
 
     def _load_meddra_data(self):
         """Load MedDRA terminology data from external files."""
         meddra_dir = self.external_dir / 'meddra' / 'MedAscii'
 
-        # Load SOC (System Organ Class) data
+        # Load SOC data
         soc_file = meddra_dir / 'soc.asc'
         if soc_file.exists():
-            self.soc_data = pd.read_csv(soc_file, sep='$', dtype=str)
-            self.soc_data.columns = ['soc_code', 'soc_name', 'soc_abbrev', 'soc_whoart_code', 'soc_costart_sym',
-                                     'soc_harts_code', 'soc_costart_code', 'soc_icd9_code', 'soc_icd9cm_code',
-                                     'soc_icd10_code', 'soc_jart_code']
+            self.soc_data = pd.read_csv(soc_file, sep='$', dtype=str, usecols=[0,1,2])
+            self.soc_data.columns = ['soc_code', 'soc_name', 'soc_abbrev']
 
-        # Load PT (Preferred Term) data
+        # Load PT data
         pt_file = meddra_dir / 'pt.asc'
         if pt_file.exists():
-            self.pt_data = pd.read_csv(pt_file, sep='$', dtype=str)
-            self.pt_data.columns = ['pt_code', 'pt_name', 'null_field', 'pt_soc_code', 'pt_whoart_code',
-                                    'pt_harts_code', 'pt_costart_sym', 'pt_icd9_code', 'pt_icd9cm_code',
-                                    'pt_icd10_code', 'pt_jart_code']
+            self.pt_data = pd.read_csv(pt_file, sep='$', dtype=str, usecols=[0,1,3])
+            self.pt_data.columns = ['pt_code', 'pt_name', 'pt_soc_code']
 
-        # Load LLT (Lowest Level Term) data
+        # Load LLT data
         llt_file = meddra_dir / 'llt.asc'
         if llt_file.exists():
-            self.llt_data = pd.read_csv(llt_file, sep='$', dtype=str)
-            self.llt_data.columns = ['llt_code', 'llt_name', 'pt_code', 'llt_whoart_code', 'llt_harts_code',
-                                     'llt_costart_sym', 'llt_icd9_code', 'llt_icd9cm_code', 'llt_icd10_code',
-                                     'llt_currency', 'llt_jart_code']
+            self.llt_data = pd.read_csv(llt_file, sep='$', dtype=str, usecols=[0,1,2])
+            self.llt_data.columns = ['llt_code', 'llt_name', 'pt_code']
 
-        # Create PT to LLT mapping
+        # Create PT to LLT mapping (case-insensitive)
         self.pt_to_llt_map = {}
         if hasattr(self, 'llt_data') and hasattr(self, 'pt_data'):
-            pt_llt_merged = pd.merge(self.llt_data[['llt_name', 'pt_code']],
-                                     self.pt_data[['pt_code', 'pt_name']],
-                                     on='pt_code')
+            pt_llt_merged = pd.merge(
+                self.llt_data[['llt_name', 'pt_code']],
+                self.pt_data[['pt_code', 'pt_name']],
+                on='pt_code'
+            )
             for _, row in pt_llt_merged.iterrows():
                 self.pt_to_llt_map[row['llt_name'].lower()] = row['pt_name']
 
@@ -798,23 +802,20 @@ class DataStandardizer:
         manual_fix_file = self.external_dir / 'manual_fix' / 'pt_manual_fixes.csv'
         if manual_fix_file.exists():
             manual_fixes = pd.read_csv(manual_fix_file)
-            self.manual_pt_fixes = dict(zip(manual_fixes['original'].str.lower(),
-                                            manual_fixes['standardized']))
+            self.manual_pt_fixes = dict(zip(manual_fixes['original'].str.lower(), 
+                                          manual_fixes['standardized']))
 
     def _load_diana_dictionary(self):
         """Load and prepare the DiAna drug dictionary."""
         try:
-            # Try to load the dictionary
-            dict_path = os.path.join(self.external_dir, 'DiAna_dictionary', 'drugnames_standardized.csv')
-            if not os.path.exists(dict_path):
+            dict_path = self.external_dir / 'DiAna_dictionary' / 'drugnames_standardized.csv'
+            if not dict_path.exists():
                 logging.error(f"DiAna dictionary not found at {dict_path}")
                 return
             
-            self.diana_dict = pd.read_csv(dict_path, 
-                                        dtype={'drugname': str, 'Substance': str},
-                                        encoding='utf-8')
+            self.diana_dict = pd.read_csv(dict_path, dtype={'drugname': str, 'Substance': str})
             
-            # Clean dictionary entries
+            # Clean dictionary entries (matching R script)
             self.diana_dict['drugname'] = self.diana_dict['drugname'].apply(self._clean_drugname)
             self.diana_dict['Substance'] = self.diana_dict['Substance'].fillna('UNKNOWN')
             
@@ -823,189 +824,177 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Error loading DiAna dictionary: {str(e)}")
 
-    def _clean_drugname(self, name: str) -> str:
-        """Clean and standardize drug names.
+    def standardize_pt(self, df: pd.DataFrame, pt_variable: str) -> pd.DataFrame:
+        """Standardize Preferred Terms using MedDRA.
         
         Args:
-            name: Drug name to clean
-        
+            df: DataFrame containing PT column
+            pt_variable: Name of PT column
+            
         Returns:
-            Cleaned drug name
+            DataFrame with standardized PTs
         """
-        if pd.isna(name):
-            return name
-
-        # Convert to string and clean
-        name = str(name).strip().lower()
-
-        # Remove special characters and extra spaces
-        name = re.sub(r'[^\w\s-]', ' ', name)
-        name = re.sub(r'\s+', ' ', name)
-
-        # Remove common suffixes and prefixes
-        removals = [
-            r'\b(tab|caps|inj|sol|susp|cream|oint|patch)\b',
-            r'\b\d+\s*(mg|ml|g|mcg)\b',
-            r'\b(extended|immediate|delayed)\s*release\b'
-        ]
-        for pattern in removals:
-            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
-
-        return name.strip()
-
-    def check_date(self, date_series: pd.Series, max_date: int = 20230331) -> pd.Series:
-        """
-        Validate dates based on length and range criteria.
+        df = df.copy()
         
-        Args:
-            date_series: Series of date values
-            max_date: Maximum allowed date (YYYYMMDD format)
+        # Extract PTs and calculate frequencies
+        pt_series = df[pt_variable].str.lower().str.strip()
+        pt_freq = pt_series.value_counts().reset_index()
+        pt_freq.columns = ['pt', 'count']
         
-        Returns:
-            Series with invalid dates set to NA
-        """
-        result = date_series.copy()
+        # Check standardization status
+        pt_freq['standard_pt'] = pt_freq['pt'].map(lambda x: x if x in self.pt_data['pt_name'].str.lower().values else None)
+        
+        # Try LLT translations for non-standard terms
+        non_standard = pt_freq[pt_freq['standard_pt'].isna()]
+        llt_translations = non_standard['pt'].map(self.pt_to_llt_map)
+        
+        # Update statistics
+        self.standardization_stats['total_terms'] = len(pt_series.dropna())
+        self.standardization_stats['direct_pt_matches'] = len(pt_freq[pt_freq['standard_pt'].notna()])
+        self.standardization_stats['llt_translations'] = len(llt_translations.dropna())
+        
+        # Apply manual fixes for remaining terms
+        still_non_standard = non_standard[~non_standard['pt'].isin(llt_translations.dropna().index)]
+        manual_fixes = still_non_standard['pt'].map(self.manual_pt_fixes)
+        self.standardization_stats['manual_fixes'] = len(manual_fixes.dropna())
+        
+        # Combine all standardized terms
+        standardized_terms = pd.concat([
+            pt_freq[pt_freq['standard_pt'].notna()].set_index('pt')['standard_pt'],
+            llt_translations,
+            manual_fixes
+        ])
+        
+        # Update original dataframe
+        df[pt_variable] = df[pt_variable].str.lower().str.strip().map(standardized_terms)
+        
+        # Log statistics
+        unstandardized = len(pt_series.dropna()) - len(standardized_terms)
+        self.standardization_stats['unstandardized'] = unstandardized
+        logging.info(f"PT Standardization Results:")
+        logging.info(f"Total terms: {self.standardization_stats['total_terms']}")
+        logging.info(f"Direct matches: {self.standardization_stats['direct_pt_matches']}")
+        logging.info(f"LLT translations: {self.standardization_stats['llt_translations']}")
+        logging.info(f"Manual fixes: {self.standardization_stats['manual_fixes']}")
+        logging.info(f"Unstandardized: {unstandardized}")
+        
+        return df
 
-        # Convert to string and get lengths
-        date_lengths = result.astype(str).str.len()
-
-        # Get year components for comparison
-        max_year = int(str(max_date)[:4])
-
-        # Create masks for different date formats
-        invalid_4digit = (date_lengths == 4) & ((result < 1985) | (result > max_year))
-        invalid_6digit = (date_lengths == 6) & ((result < 198500) | (result > int(str(max_date)[:6])))
-        invalid_8digit = (date_lengths == 8) & ((result < 19850000) | (result > max_date))
-        invalid_length = ~date_lengths.isin([4, 6, 8])
-
-        # Combine all invalid conditions
-        invalid_dates = invalid_4digit | invalid_6digit | invalid_8digit | invalid_length
-
-        # Set invalid dates to NA
-        result[invalid_dates] = pd.NA
-
-        return result
-
-    def standardize_drugs(self, df: pd.DataFrame, drugname_col: str = 'drugname') -> pd.DataFrame:
-        """
-        Standardize drug names using DiAna dictionary and rules.
+    def standardize_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize drug names using DiAna dictionary.
         
         Args:
             df: DataFrame containing drug data
-            drugname_col: Name of the column containing drug names
-        
+            
         Returns:
             DataFrame with standardized drug names and substances
         """
         df = df.copy()
         
         # Clean drug names
-        df[drugname_col] = df[drugname_col].apply(self._clean_drugname)
+        df['drugname'] = df['drugname'].apply(self._clean_drugname)
         
-        # Load DiAna dictionary if not already loaded
-        if not hasattr(self, 'diana_dict'):
-            self._load_diana_dictionary()
+        # Map to standardized substances
+        drug_substance_map = dict(zip(self.diana_dict['drugname'], self.diana_dict['Substance']))
+        df['Substance'] = df['drugname'].map(drug_substance_map)
         
-        # Create mapping dictionary
-        if hasattr(self, 'diana_dict'):
-            drug_map = dict(zip(
-                self.diana_dict['drugname'].str.lower(),
-                self.diana_dict['Substance']
-            ))
-            # Apply standardization
-            df['standard_name'] = df[drugname_col].str.lower().map(drug_map)
-        else:
-            # If dictionary not available, use cleaned names
-            logging.warning("DiAna dictionary not available. Using cleaned drug names.")
-            df['standard_name'] = df[drugname_col]
+        # Handle multi-substance drugs
+        multi_substance = df[df['Substance'].str.contains(';', na=False)]
+        single_substance = df[~df['Substance'].str.contains(';', na=False)]
         
-        # Log statistics
-        total_drugs = len(df)
-        standardized_drugs = df['standard_name'].notna().sum()
-        logging.info(f"Total drugs: {total_drugs}")
-        logging.info(f"Standardized drugs: {standardized_drugs}")
-        logging.info(f"Standardization rate: {standardized_drugs/total_drugs*100:.1f}%")
+        # Split multi-substance drugs
+        if len(multi_substance) > 0:
+            split_substances = []
+            for _, row in multi_substance.iterrows():
+                substances = row['Substance'].split(';')
+                for substance in substances:
+                    new_row = row.copy()
+                    new_row['Substance'] = substance.strip()
+                    split_substances.append(new_row)
+            multi_substance_df = pd.DataFrame(split_substances)
+            
+            # Combine back with single substance drugs
+            df = pd.concat([single_substance, multi_substance_df])
+        
+        # Mark trial drugs
+        df['trial'] = df['Substance'].str.contains(', trial', na=False)
+        df['Substance'] = df['Substance'].str.replace(', trial', '')
+        
+        # Convert to categorical for memory efficiency
+        df['drugname'] = df['drugname'].astype('category')
+        df['Substance'] = df['Substance'].astype('category')
+        if 'prod_ai' in df.columns:
+            df['prod_ai'] = df['prod_ai'].astype('category')
         
         return df
 
-    def analyze_age_groups(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
-        """
-        Analyze and visualize age groups distribution.
+    def standardize_sex(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize sex values.
         
         Args:
-            df: DataFrame with age_in_years and age_grp columns
-        
+            df: DataFrame with sex column
+            
         Returns:
-            Tuple of (processed DataFrame, matplotlib figure with visualization)
+            DataFrame with standardized sex values
         """
-        # Create temp DataFrame for analysis
-        temp = df[df['age_grp'].notna() & df['age_in_years'].notna()].groupby(
-            ['age_in_years', 'age_grp']
-        ).size().reset_index(name='N')
+        df = df.copy()
+        df.loc[~df['sex'].isin(['F', 'M']), 'sex'] = pd.NA
+        return df
 
-        # Combine Neonate and Infant groups
-        temp.loc[temp['age_grp'].isin(['N', 'I']), 'age_grp'] = 'N&I'
-
-        # Set age group order
-        temp['age_grp'] = pd.Categorical(
-            temp['age_grp'],
-            categories=['N&I', 'C', 'T', 'A', 'E'],
-            ordered=True
-        )
-
-        # Define age thresholds
-        age_thresholds = pd.DataFrame({
-            'age_group': ['C', 'T', 'A', 'E'],
-            'age_threshold': [2, 12, 18, 65]
-        })
-
-        # Create visualization
-        fig, ax = plt.subplots(figsize=(10, 6))
-
-        # Plot points and density
-        for group in temp['age_grp'].unique():
-            group_data = temp[temp['age_grp'] == group]
-            ax.scatter(group_data['age_in_years'], group_data['N'],
-                       label=group, alpha=0.6)
-
-            # Add density curve
-            sns.kdeplot(data=group_data, x='age_in_years', weights='N',
-                        fill=True, alpha=0.3, ax=ax)
-
-        # Add threshold markers
-        ax.scatter(age_thresholds['age_threshold'],
-                   np.zeros_like(age_thresholds['age_threshold']),
-                   color='black', zorder=5)
-
-        # Add threshold labels
-        for _, row in age_thresholds.iterrows():
-            ax.text(row['age_threshold'], -500, str(row['age_threshold']),
-                    rotation=45, ha='right', va='top')
-
-        # Customize plot
-        ax.set_xlabel('Age (yr)')
-        ax.set_ylabel('Freq')
-        ax.legend(title='Age Group',
-                  labels=['Neonate&Infant', 'Child', 'Teenager', 'Adult', 'Elderly'])
-
-        return temp, fig
+    def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize age values to days and years.
+        
+        Args:
+            df: DataFrame with age columns
+            
+        Returns:
+            DataFrame with standardized age values
+        """
+        df = df.copy()
+        
+        # Define age unit conversion factors (matching R script)
+        age_factors = {
+            'DEC': 3650,
+            'YR': 365,
+            'MON': 30.41667,
+            'WK': 7,
+            'DY': 1,
+            'HR': 0.00011415525114155251,
+            'MIN': 1.9025875190259e-06,
+            'SEC': 3.1709791983764586e-08
+        }
+        
+        # Convert age to days
+        df['age_corrector'] = df['age_cod'].map(age_factors)
+        df['age_in_days'] = pd.to_numeric(df['age'].abs()) * df['age_corrector']
+        
+        # Handle plausible age range
+        max_age_days = 122 * 365  # Maximum recorded human age
+        df.loc[df['age_in_days'] > max_age_days, 'age_in_days'] = pd.NA
+        
+        # Convert to years
+        df['age_in_years'] = (df['age_in_days'] / 365).round()
+        
+        # Clean up temporary columns
+        df = df.drop(columns=['age_corrector', 'age', 'age_cod'])
+        
+        return df
 
     def standardize_age_groups(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Standardize age groups based on age thresholds.
+        """Standardize age groups based on thresholds.
         
         Args:
-            df: DataFrame with age_in_years and age_in_days columns
-        
+            df: DataFrame with age values
+            
         Returns:
             DataFrame with standardized age groups
         """
         df = df.copy()
-
-        # Initialize age_grp_st column with NA
+        
+        # Initialize age group column
         df['age_grp_st'] = pd.NA
-
-        # Apply age group rules
+        
+        # Apply age group rules (matching R script)
         mask = df['age_in_years'].notna()
         df.loc[mask, 'age_grp_st'] = 'E'  # Default to Elderly
         df.loc[mask & (df['age_in_years'] < 65), 'age_grp_st'] = 'A'
@@ -1013,21 +1002,19 @@ class DataStandardizer:
         df.loc[mask & (df['age_in_years'] < 12), 'age_grp_st'] = 'C'
         df.loc[mask & (df['age_in_years'] < 2), 'age_grp_st'] = 'I'
         df.loc[df['age_in_days'] < 28, 'age_grp_st'] = 'N'
-
-        # Calculate and log age group distribution
-        age_dist = df['age_grp_st'].value_counts().reset_index()
-        age_dist.columns = ['age_grp_st', 'N']
-        age_dist['perc'] = np.round(100 * age_dist['N'] / age_dist['N'].sum(), 2)
-
-        logging.info("Age group distribution:")
-        for _, row in age_dist.iterrows():
-            logging.info(f"{row['age_grp_st']}: {row['N']} ({row['perc']}%)")
-
-        # Drop original age_grp and rename age_grp_st
+        
+        # Log distribution
+        dist = df['age_grp_st'].value_counts()
+        total = len(df)
+        for group, count in dist.items():
+            percent = round(100 * count / total, 2)
+            logging.info(f"{group}: {count} ({percent}%)")
+        
+        # Update column name
         if 'age_grp' in df.columns:
             df = df.drop(columns=['age_grp'])
         df = df.rename(columns={'age_grp_st': 'age_grp'})
-
+        
         return df
 
     def process_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1301,7 +1288,7 @@ class DataStandardizer:
             df['occupation'] = self.standardize_occupation(df['occp_cod'])
             
         return df
-
+        
     def process_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process drug data.
         
@@ -1329,7 +1316,7 @@ class DataStandardizer:
             df['dose_std'] = self.standardize_dose(df['dose_amt'], df['dose_unit'])
             
         return df
-
+        
     def process_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process reaction data.
         
@@ -1349,4 +1336,211 @@ class DataStandardizer:
         if 'outc_cod' in df.columns:
             df['severity'] = self.standardize_outcome(df['outc_cod'])
             
+        return df
+
+    def _clean_drugname(self, name: str) -> str:
+        """Clean and standardize drug names.
+        
+        Args:
+            name: Drug name to clean
+        
+        Returns:
+            Cleaned drug name
+        """
+        if pd.isna(name):
+            return name
+
+        # Convert to string and clean
+        name = str(name).strip().lower()
+
+        # Remove special characters and extra spaces
+        name = re.sub(r'[^\w\s-]', ' ', name)
+        name = re.sub(r'\s+', ' ', name)
+
+        # Remove common suffixes and prefixes
+        removals = [
+            r'\b(tab|caps|inj|sol|susp|cream|oint|patch)\b',
+            r'\b\d+\s*(mg|ml|g|mcg)\b',
+            r'\b(extended|immediate|delayed)\s*release\b'
+        ]
+        for pattern in removals:
+            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+
+        return name.strip()
+
+    def check_date(self, date_series: pd.Series, max_date: int = 20230331) -> pd.Series:
+        """
+        Validate dates based on length and range criteria.
+        
+        Args:
+            date_series: Series of date values
+            max_date: Maximum allowed date (YYYYMMDD format)
+        
+        Returns:
+            Series with invalid dates set to NA
+        """
+        result = date_series.copy()
+
+        # Convert to string and get lengths
+        date_lengths = result.astype(str).str.len()
+
+        # Get year components for comparison
+        max_year = int(str(max_date)[:4])
+
+        # Create masks for different date formats
+        invalid_4digit = (date_lengths == 4) & ((result < 1985) | (result > max_year))
+        invalid_6digit = (date_lengths == 6) & ((result < 198500) | (result > int(str(max_date)[:6])))
+        invalid_8digit = (date_lengths == 8) & ((result < 19850000) | (result > max_date))
+        invalid_length = ~date_lengths.isin([4, 6, 8])
+
+        # Combine all invalid conditions
+        invalid_dates = invalid_4digit | invalid_6digit | invalid_8digit | invalid_length
+
+        # Set invalid dates to NA
+        result[invalid_dates] = pd.NA
+
+        return result
+
+    def standardize_drugs(self, df: pd.DataFrame, drugname_col: str = 'drugname') -> pd.DataFrame:
+        """
+        Standardize drug names using DiAna dictionary and rules.
+        
+        Args:
+            df: DataFrame containing drug data
+            drugname_col: Name of the column containing drug names
+        
+        Returns:
+            DataFrame with standardized drug names and substances
+        """
+        df = df.copy()
+        
+        # Clean drug names
+        df[drugname_col] = df[drugname_col].apply(self._clean_drugname)
+        
+        # Load DiAna dictionary if not already loaded
+        if not hasattr(self, 'diana_dict'):
+            self._load_diana_dictionary()
+        
+        # Create mapping dictionary
+        if hasattr(self, 'diana_dict'):
+            drug_map = dict(zip(
+                self.diana_dict['drugname'].str.lower(),
+                self.diana_dict['Substance']
+            ))
+            # Apply standardization
+            df['standard_name'] = df[drugname_col].str.lower().map(drug_map)
+        else:
+            # If dictionary not available, use cleaned names
+            logging.warning("DiAna dictionary not available. Using cleaned drug names.")
+            df['standard_name'] = df[drugname_col]
+        
+        # Log statistics
+        total_drugs = len(df)
+        standardized_drugs = df['standard_name'].notna().sum()
+        logging.info(f"Total drugs: {total_drugs}")
+        logging.info(f"Standardized drugs: {standardized_drugs}")
+        logging.info(f"Standardization rate: {standardized_drugs/total_drugs*100:.1f}%")
+        
+        return df
+
+    def analyze_age_groups(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, plt.Figure]:
+        """
+        Analyze and visualize age groups distribution.
+        
+        Args:
+            df: DataFrame with age_in_years and age_grp columns
+        
+        Returns:
+            Tuple of (processed DataFrame, matplotlib figure with visualization)
+        """
+        # Create temp DataFrame for analysis
+        temp = df[df['age_grp'].notna() & df['age_in_years'].notna()].groupby(
+            ['age_in_years', 'age_grp']
+        ).size().reset_index(name='N')
+
+        # Combine Neonate and Infant groups
+        temp.loc[temp['age_grp'].isin(['N', 'I']), 'age_grp'] = 'N&I'
+
+        # Set age group order
+        temp['age_grp'] = pd.Categorical(
+            temp['age_grp'],
+            categories=['N&I', 'C', 'T', 'A', 'E'],
+            ordered=True
+        )
+
+        # Define age thresholds
+        age_thresholds = pd.DataFrame({
+            'age_group': ['C', 'T', 'A', 'E'],
+            'age_threshold': [2, 12, 18, 65]
+        })
+
+        # Create visualization
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot points and density
+        for group in temp['age_grp'].unique():
+            group_data = temp[temp['age_grp'] == group]
+            ax.scatter(group_data['age_in_years'], group_data['N'],
+                       label=group, alpha=0.6)
+
+            # Add density curve
+            sns.kdeplot(data=group_data, x='age_in_years', weights='N',
+                        fill=True, alpha=0.3, ax=ax)
+
+        # Add threshold markers
+        ax.scatter(age_thresholds['age_threshold'],
+                   np.zeros_like(age_thresholds['age_threshold']),
+                   color='black', zorder=5)
+
+        # Add threshold labels
+        for _, row in age_thresholds.iterrows():
+            ax.text(row['age_threshold'], -500, str(row['age_threshold']),
+                    rotation=45, ha='right', va='top')
+
+        # Customize plot
+        ax.set_xlabel('Age (yr)')
+        ax.set_ylabel('Freq')
+        ax.legend(title='Age Group',
+                  labels=['Neonate&Infant', 'Child', 'Teenager', 'Adult', 'Elderly'])
+
+        return temp, fig
+
+    def standardize_age_groups(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Standardize age groups based on age thresholds.
+        
+        Args:
+            df: DataFrame with age_in_years and age_in_days columns
+        
+        Returns:
+            DataFrame with standardized age groups
+        """
+        df = df.copy()
+
+        # Initialize age_grp_st column with NA
+        df['age_grp_st'] = pd.NA
+
+        # Apply age group rules
+        mask = df['age_in_years'].notna()
+        df.loc[mask, 'age_grp_st'] = 'E'  # Default to Elderly
+        df.loc[mask & (df['age_in_years'] < 65), 'age_grp_st'] = 'A'
+        df.loc[mask & (df['age_in_years'] < 18), 'age_grp_st'] = 'T'
+        df.loc[mask & (df['age_in_years'] < 12), 'age_grp_st'] = 'C'
+        df.loc[mask & (df['age_in_years'] < 2), 'age_grp_st'] = 'I'
+        df.loc[df['age_in_days'] < 28, 'age_grp_st'] = 'N'
+
+        # Log statistics
+        age_dist = df['age_grp_st'].value_counts().reset_index()
+        age_dist.columns = ['age_grp_st', 'N']
+        age_dist['perc'] = np.round(100 * age_dist['N'] / age_dist['N'].sum(), 2)
+
+        logging.info("Age group distribution:")
+        for _, row in age_dist.iterrows():
+            logging.info(f"{row['age_grp_st']}: {row['N']} ({row['perc']}%)")
+
+        # Drop original age_grp and rename age_grp_st
+        if 'age_grp' in df.columns:
+            df = df.drop(columns=['age_grp'])
+        df = df.rename(columns={'age_grp_st': 'age_grp'})
+
         return df
