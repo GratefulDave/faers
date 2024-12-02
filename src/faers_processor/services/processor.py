@@ -481,10 +481,14 @@ class FAERSProcessor:
         def read_problematic_line(line_num: int, encoding: str) -> str:
             """Read a specific line from the file using given encoding."""
             try:
-                with open(file_path, 'r', encoding=encoding) as f:
+                with open(file_path, 'rb') as f:  # Open in binary mode
                     for i, line in enumerate(f, 1):
                         if i == line_num:
-                            return line.strip()
+                            try:
+                                return line.decode(encoding).strip()
+                            except UnicodeDecodeError:
+                                # If specific line fails to decode, try to show hex
+                                return f"[Binary data: {line.hex()}]"
             except Exception as e:
                 logging.warning(f"Could not read line {line_num} with {encoding} encoding: {str(e)}")
                 return None
@@ -513,12 +517,41 @@ class FAERSProcessor:
         warnings.showwarning = warning_handler
         
         try:
-            # Detect encoding and set up fallback sequence
+            # Special handling for known problematic files
+            if "DRUG19Q3" in str(file_path):
+                logging.info(f"Using special handling for known problematic file: {file_path.name}")
+                try:
+                    # Try reading with error_bad_lines=False first
+                    df = pd.read_csv(
+                        file_path,
+                        delimiter='$',
+                        dtype=str,
+                        na_values=['', 'NULL', 'null'],
+                        keep_default_na=False,
+                        encoding='latin1',  # Try latin1 first for DRUG files
+                        on_bad_lines='skip',  # Skip bad lines
+                        engine='python',
+                        quoting=3,  # QUOTE_NONE
+                        escapechar=None
+                    )
+                    logging.info(f"Successfully read {file_path.name} with special handling")
+                    logging.info(f"Read {len(df)} rows from {file_path.name}")
+                    return df
+                except Exception as e:
+                    logging.error(f"Special handling failed for {file_path.name}: {str(e)}")
+                    # Fall through to normal processing
+            
+            # Normal processing with encoding detection
             detected = detect_encoding(file_path)
             encodings = []
             if detected and detected.lower() not in ['utf-8', 'ascii', 'latin1', 'cp1252', 'iso-8859-1']:
                 encodings.append(detected)
-            encodings.extend(['utf-8', 'latin1', 'cp1252', 'iso-8859-1'])
+            
+            # For DRUG files, try latin1 first as it's often correct
+            if "DRUG" in str(file_path):
+                encodings = ['latin1', 'utf-8', 'cp1252', 'iso-8859-1']
+            else:
+                encodings.extend(['utf-8', 'latin1', 'cp1252', 'iso-8859-1'])
             
             # Try each encoding
             last_error = None
