@@ -225,9 +225,9 @@ def process_data(
 ) -> None:
     """Process downloaded FAERS data with optimized parallel processing."""
     try:
-        # Create clean data directory if it doesn't exist
-        clean_dir = data_dir
-        clean_dir.mkdir(parents=True, exist_ok=True)
+        # Resolve paths to absolute paths
+        data_dir = Path(data_dir).resolve()
+        external_dir = Path(external_dir).resolve()
         
         processor = FAERSProcessor(
             data_dir=data_dir,
