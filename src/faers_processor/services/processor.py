@@ -77,9 +77,13 @@ class FAERSProcessor:
         
         # Initialize dictionaries to store DataFrames for each data type
         all_data = {
-            'demographics': [],
-            'drugs': [],
-            'reactions': []
+            'demo': [],
+            'drug': [],
+            'reac': [],
+            'outc': [],
+            'rpsr': [],
+            'ther': [],
+            'indi': []
         }
         
         # Create progress bar for total quarters
@@ -155,12 +159,12 @@ class FAERSProcessor:
                     # Convert numeric columns
                     if 'primaryid' in merged_df.columns:
                         merged_df['primaryid'] = pd.to_numeric(merged_df['primaryid'], errors='coerce')
-                    if data_type == 'demographics':
+                    if data_type == 'demo':
                         if 'caseid' in merged_df.columns:
                             merged_df['caseid'] = pd.to_numeric(merged_df['caseid'], errors='coerce')
                         if 'age' in merged_df.columns:
                             merged_df['age'] = pd.to_numeric(merged_df['age'], errors='coerce')
-                    elif data_type == 'drugs' and 'drug_seq' in merged_df.columns:
+                    elif data_type == 'drug' and 'drug_seq' in merged_df.columns:
                         merged_df['drug_seq'] = pd.to_numeric(merged_df['drug_seq'], errors='coerce')
                     
                     # Sort by primaryid and quarter
@@ -274,18 +278,26 @@ class FAERSProcessor:
         logging.info(f"Processing quarter directory: {quarter_dir}")
         logging.info(f"Using ASCII directory: {ascii_dir}")
         
-        # Initialize results dictionary
+        # Initialize results dictionary for all FAERS file types
         results = {
-            'demographics': pd.DataFrame(),
-            'drugs': pd.DataFrame(),
-            'reactions': pd.DataFrame()
+            'demo': pd.DataFrame(),      # Demographics
+            'drug': pd.DataFrame(),      # Drug information
+            'reac': pd.DataFrame(),      # Reactions
+            'outc': pd.DataFrame(),      # Outcomes
+            'rpsr': pd.DataFrame(),      # Report sources
+            'ther': pd.DataFrame(),      # Therapy information
+            'indi': pd.DataFrame()       # Indications
         }
         
         # Process each file type
         file_types = {
-            'DEMO': ('demographics', ['demo', 'demog']),
-            'DRUG': ('drugs', ['drug']),
-            'REAC': ('reactions', ['reac', 'reaction'])
+            'DEMO': ('demo', ['demo', 'demog']),
+            'DRUG': ('drug', ['drug']),
+            'REAC': ('reac', ['reac', 'reaction']),
+            'OUTC': ('outc', ['outc', 'outcome']),
+            'RPSR': ('rpsr', ['rpsr', 'source']),
+            'THER': ('ther', ['ther', 'therapy']),
+            'INDI': ('indi', ['indi', 'indic'])
         }
         
         for base_name, (data_type, patterns) in file_types.items():
@@ -553,11 +565,11 @@ class FAERSProcessor:
             df = df.astype(str)
             
             # Standardize based on type
-            if data_type == 'demographics':
+            if data_type == 'demo':
                 return self.standardizer.standardize_demographics(df)
-            elif data_type == 'drugs':
+            elif data_type == 'drug':
                 return self.standardizer.standardize_drugs(df)
-            elif data_type == 'reactions':
+            elif data_type == 'reac':
                 return self.standardizer.standardize_reactions(df)
             else:
                 logging.warning(f"Unknown data type: {data_type}")
