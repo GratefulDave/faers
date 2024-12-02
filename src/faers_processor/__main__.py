@@ -225,9 +225,13 @@ def process_data(
 ) -> None:
     """Process downloaded FAERS data with optimized parallel processing."""
     try:
-        # Resolve paths to absolute paths
-        data_dir = Path(data_dir).resolve()
-        external_dir = Path(external_dir).resolve()
+        # Resolve paths relative to current working directory
+        cwd = Path.cwd()
+        data_dir = (cwd / data_dir).resolve()
+        external_dir = (cwd / external_dir).resolve()
+        
+        logging.info(f"Processing data from: {data_dir}")
+        logging.info(f"Using external data from: {external_dir}")
         
         processor = FAERSProcessor(
             data_dir=data_dir,
