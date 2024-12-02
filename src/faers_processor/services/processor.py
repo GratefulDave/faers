@@ -621,11 +621,7 @@ class FAERSProcessor:
         """Process all FAERS data files."""
         try:
             # Get list of all quarters from raw directory
-            raw_dir = self.data_dir / 'raw'
-            clean_dir = self.data_dir / 'clean'
-            clean_dir.mkdir(exist_ok=True)
-            
-            quarters = [d.name for d in raw_dir.iterdir() if d.is_dir()]
+            quarters = [d.name for d in self.data_dir.iterdir() if d.is_dir() and d.name != 'clean']
             
             if not quarters:
                 logging.warning("No quarters found to process")
@@ -637,9 +633,10 @@ class FAERSProcessor:
             with tqdm(total=len(quarters), desc="Processing quarters") as pbar:
                 for quarter in quarters:
                     try:
-                        demo_file = next(raw_dir.glob(f"{quarter}/*DEMO*.txt"), None)
-                        drug_file = next(raw_dir.glob(f"{quarter}/*DRUG*.txt"), None)
-                        reac_file = next(raw_dir.glob(f"{quarter}/*REAC*.txt"), None)
+                        quarter_dir = self.data_dir / quarter
+                        demo_file = next(quarter_dir.glob("*DEMO*.txt"), None)
+                        drug_file = next(quarter_dir.glob("*DRUG*.txt"), None)
+                        reac_file = next(quarter_dir.glob("*REAC*.txt"), None)
                         
                         if not all([demo_file, drug_file, reac_file]):
                             logging.warning(f"Missing files for quarter {quarter}")
@@ -648,19 +645,19 @@ class FAERSProcessor:
                         # Process demographics
                         demo_df = self.process_file(demo_file, 'demographics')
                         if not demo_df.empty:
-                            save_path = clean_dir / f"{quarter}_demographics.txt"
+                            save_path = self.output_dir / f"{quarter}_demographics.txt"
                             demo_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
                         
                         # Process drugs
                         drug_df = self.process_file(drug_file, 'drugs')
                         if not drug_df.empty:
-                            save_path = clean_dir / f"{quarter}_drugs.txt"
+                            save_path = self.output_dir / f"{quarter}_drugs.txt"
                             drug_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
                         
                         # Process reactions
                         reac_df = self.process_file(reac_file, 'reactions')
                         if not reac_df.empty:
-                            save_path = clean_dir / f"{quarter}_reactions.txt"
+                            save_path = self.output_dir / f"{quarter}_reactions.txt"
                             reac_df.to_csv(save_path, sep='$', index=False, encoding='utf-8')
                         
                         logging.info(f"Successfully processed quarter {quarter}")
