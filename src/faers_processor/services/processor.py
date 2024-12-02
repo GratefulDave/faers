@@ -22,6 +22,45 @@ import chardet
 from .standardizer import DataStandardizer
 
 
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter adding colors to log levels."""
+    
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    
+    FORMATS = {
+        logging.DEBUG: grey + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
+        logging.INFO: grey + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
+        logging.WARNING: yellow + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
+        logging.ERROR: red + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
+        logging.CRITICAL: bold_red + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset
+    }
+    
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt, datefmt='%y-%m-%d %H:%M:%S')
+        return formatter.format(record)
+
+def setup_logging():
+    """Setup logging with colors and proper formatting."""
+    # Get the root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Remove any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Create console handler with colored formatting
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(ColoredFormatter())
+    logger.addHandler(console_handler)
+    
+    return logger
+
 @dataclass
 class TableSummary:
     """Summary statistics for a single FAERS table."""
@@ -185,6 +224,7 @@ class FAERSProcessor:
         """
         self.standardizer = standardizer
         self.use_parallel = use_parallel
+        self.logger = setup_logging()
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
         """Process all quarters in the input directory and save merged results in output_dir."""
@@ -195,9 +235,9 @@ class FAERSProcessor:
         input_dir = input_dir.resolve()
         output_dir = output_dir.resolve()
 
-        logging.info(f"Using absolute paths:")
-        logging.info(f"Input directory: {input_dir}")
-        logging.info(f"Output directory: {output_dir}")
+        self.logger.info(f"Using absolute paths:")
+        self.logger.info(f"Input directory: {input_dir}")
+        self.logger.info(f"Output directory: {output_dir}")
 
         # Initialize results tracking
         results = {
@@ -212,7 +252,7 @@ class FAERSProcessor:
 
         # Ensure output directory exists and is clean
         if output_dir.exists():
-            logging.info(f"Cleaning output directory: {output_dir}")
+            self.logger.info(f"Cleaning output directory: {output_dir}")
             for file in output_dir.glob('*.txt'):
                 file.unlink()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,10 +263,10 @@ class FAERSProcessor:
         results['total_quarters'] = total_quarters
 
         if not quarter_dirs:
-            logging.error(f"No quarter directories found in {input_dir}")
+            self.logger.error(f"No quarter directories found in {input_dir}")
             return
 
-        logging.info(f"Found {total_quarters} quarters to process")
+        self.logger.info(f"Found {total_quarters} quarters to process")
 
         # Initialize dictionaries to store DataFrames for each data type
         all_data = {
@@ -274,7 +314,7 @@ class FAERSProcessor:
 
                     except Exception as e:
                         results['failed'].append((quarter, str(e)))
-                        logging.error(f"Error processing {quarter}: {str(e)}")
+                        self.logger.error(f"Error processing {quarter}: {str(e)}")
                         pbar.update(1)
                         pbar.set_postfix({"quarter": quarter, "status": "failed"}, refresh=True)
         else:
@@ -296,7 +336,7 @@ class FAERSProcessor:
 
                 except Exception as e:
                     results['failed'].append((quarter, str(e)))
-                    logging.error(f"Error processing {quarter}: {str(e)}")
+                    self.logger.error(f"Error processing {quarter}: {str(e)}")
                     pbar.update(1)
                     pbar.set_postfix({"quarter": quarter, "status": "failed"}, refresh=True)
 
@@ -306,7 +346,7 @@ class FAERSProcessor:
         for data_type, dfs in all_data.items():
             if dfs:
                 try:
-                    logging.info(f"Merging {len(dfs)} quarters for {data_type}")
+                    self.logger.info(f"Merging {len(dfs)} quarters for {data_type}")
                     merged_df = pd.concat(dfs, ignore_index=True)
 
                     # Convert numeric columns
@@ -325,12 +365,12 @@ class FAERSProcessor:
 
                     # Save merged file
                     output_file = output_dir.resolve() / f'{data_type}.txt'
-                    logging.info(f"Saving {data_type} to: {output_file}")
+                    self.logger.info(f"Saving {data_type} to: {output_file}")
                     merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
-                    logging.info(f"Successfully saved {data_type} to {output_file}")
-                    logging.info(f"Shape: {merged_df.shape}")
+                    self.logger.info(f"Successfully saved {data_type} to {output_file}")
+                    self.logger.info(f"Shape: {merged_df.shape}")
                 except Exception as e:
-                    logging.error(f"Error merging {data_type}: {str(e)}")
+                    self.logger.error(f"Error merging {data_type}: {str(e)}")
 
         # Record end time and duration
         results['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -359,7 +399,7 @@ class FAERSProcessor:
 
         summary.save_report(output_dir)
 
-        logging.info(f"Generated processing report: {report_path}")
+        self.logger.info(f"Generated processing report: {report_path}")
 
     def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
         """Find the ASCII directory - it's always ASCII or ascii.
@@ -367,15 +407,15 @@ class FAERSProcessor:
         NOTE: DO NOT MODIFY THIS METHOD - case insensitive directory finding is working as intended.
         """
         # Log current directory for debugging
-        logging.info(f"Searching for ASCII directory in: {quarter_dir}")
+        self.logger.info(f"Searching for ASCII directory in: {quarter_dir}")
         
         # Use rglob to find any variation of 'ascii' directory
         for item in quarter_dir.rglob('[aA][sS][cC][iI][iI]'):
             if item.is_dir():
-                logging.info(f"Found ASCII directory: {item}")
+                self.logger.info(f"Found ASCII directory: {item}")
                 return item
                 
-        logging.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
+        self.logger.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
         return None
 
     def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
@@ -386,8 +426,8 @@ class FAERSProcessor:
         if not ascii_dir:
             raise ValueError(f"No ASCII directory found in {quarter_dir}")
             
-        logging.info(f"Processing quarter directory: {quarter_dir}")
-        logging.info(f"Using ASCII directory: {ascii_dir}")
+        self.logger.info(f"Processing quarter directory: {quarter_dir}")
+        self.logger.info(f"Using ASCII directory: {ascii_dir}")
         
         # Initialize results dictionary for all FAERS file types
         results = {
@@ -424,29 +464,29 @@ class FAERSProcessor:
                     file_name = file.name.lower()
                     if any(pat.lower() in file_name for pat in patterns):
                         matched_files.append(file)
-                        logging.info(f"Found {data_type} file: {file}")
+                        self.logger.info(f"Found {data_type} file: {file}")
                         break  # Take the first matching file
                 
                 if not matched_files:
-                    logging.warning(f"No {data_type} files found in {ascii_dir}")
+                    self.logger.warning(f"No {data_type} files found in {ascii_dir}")
                     continue
                     
                 # Process the file
                 file_path = matched_files[0]
-                logging.info(f"Processing {data_type} file: {file_path}")
+                self.logger.info(f"Processing {data_type} file: {file_path}")
                 
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
                 df = self.process_file(file_path, data_type, table_summary)
                 
                 if not df.empty:
                     results[data_type] = df
-                    logging.info(f"Successfully processed {data_type} file. Shape: {df.shape}")
+                    self.logger.info(f"Successfully processed {data_type} file. Shape: {df.shape}")
                 else:
-                    logging.warning(f"Empty DataFrame returned for {data_type}")
+                    self.logger.warning(f"Empty DataFrame returned for {data_type}")
                     
             except Exception as e:
                 error_msg = f"Error processing {data_type}: {str(e)}"
-                logging.error(error_msg)
+                self.logger.error(error_msg)
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
                 table_summary.add_parsing_error(error_msg)
         
@@ -469,8 +509,22 @@ class FAERSProcessor:
         start_time = time.time()
         
         try:
-            # Read the file
-            df = pd.read_csv(file_path, delimiter='$', encoding='latin1')
+            # Read the file with error handling like R's read.delim
+            df = pd.read_csv(
+                file_path,
+                delimiter='$',
+                encoding='latin1',
+                on_bad_lines='skip',  # Skip bad lines like R does
+                low_memory=False,  # Avoid mixed type inference warnings
+                dtype=str  # Read all columns as string initially like R
+            )
+            
+            if df.empty:
+                error_msg = f"Empty DataFrame after reading {file_path}"
+                self.logger.error(error_msg)
+                table_summary.add_parsing_error(error_msg)
+                return df
+                
             table_summary.total_rows = len(df)
             
             # Process based on data type
@@ -496,7 +550,7 @@ class FAERSProcessor:
             
         except Exception as e:
             error_msg = f"Error processing DataFrame: {str(e)}"
-            logging.error(error_msg)
+            self.logger.error(error_msg)
             table_summary.add_parsing_error(error_msg)
             return pd.DataFrame()
 
@@ -601,12 +655,12 @@ class FAERSProcessor:
                 if 'i_f_code' not in df.columns:
                     table_summary.add_missing_column('i_f_code', 'I')
                     df['i_f_code'] = 'I'
-                    logging.warning("Required column 'i_f_code' not found, adding with default value: I")
+                    self.logger.warning("Required column 'i_f_code' not found, adding with default value: I")
                     
                 if 'sex' not in df.columns:
                     table_summary.add_missing_column('sex', '<NA>')
                     df['sex'] = '<NA>'
-                    logging.warning("Required column 'sex' not found, adding with default value: <NA>")
+                    self.logger.warning("Required column 'sex' not found, adding with default value: <NA>")
                 
                 # Validate dates
                 date_fields = ['event_dt', 'fda_dt', 'rept_dt']
@@ -615,11 +669,11 @@ class FAERSProcessor:
                         invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
                         if invalid_dates > 0:
                             table_summary.add_invalid_date(field, invalid_dates)
-                            logging.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
+                            self.logger.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
                 
                 # Check country standardization
                 if 'country' not in df.columns:
-                    logging.warning("Country column not found, skipping country standardization")
+                    self.logger.warning("Country column not found, skipping country standardization")
                 
             elif data_type == 'drug':
                 # Check for required drug fields
@@ -628,25 +682,25 @@ class FAERSProcessor:
                     if field not in df.columns:
                         table_summary.add_missing_column(field, '<NA>')
                         df[field] = '<NA>'
-                        logging.warning(f"Required column '{field}' not found, adding with default value: <NA>")
+                        self.logger.warning(f"Required column '{field}' not found, adding with default value: <NA>")
                 
             elif data_type == 'reac':
                 if 'pt' not in df.columns:
                     table_summary.add_missing_column('pt', '<NA>')
                     df['pt'] = '<NA>'
-                    logging.warning("Required column 'pt' not found, adding with default value: <NA>")
+                    self.logger.warning("Required column 'pt' not found, adding with default value: <NA>")
                     
             elif data_type == 'outc':
                 if 'outc_cod' not in df.columns:
                     table_summary.add_missing_column('outc_cod', '<NA>')
                     df['outc_cod'] = '<NA>'
-                    logging.warning("Required column 'outc_cod' not found, adding with default value: <NA>")
+                    self.logger.warning("Required column 'outc_cod' not found, adding with default value: <NA>")
                     
             elif data_type == 'rpsr':
                 if 'rpsr_cod' not in df.columns:
                     table_summary.add_missing_column('rpsr_cod', '<NA>')
                     df['rpsr_cod'] = '<NA>'
-                    logging.warning("Required column 'rpsr_cod' not found, adding with default value: <NA>")
+                    self.logger.warning("Required column 'rpsr_cod' not found, adding with default value: <NA>")
                     
             elif data_type == 'ther':
                 # Check for required therapy fields
@@ -655,7 +709,7 @@ class FAERSProcessor:
                     if field not in df.columns:
                         table_summary.add_missing_column(field, '<NA>')
                         df[field] = '<NA>'
-                        logging.warning(f"Required column '{field}' not found, adding with default value: <NA>")
+                        self.logger.warning(f"Required column '{field}' not found, adding with default value: <NA>")
                         
                 # Validate dates
                 date_fields = ['start_dt', 'end_dt']
@@ -664,13 +718,13 @@ class FAERSProcessor:
                         invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
                         if invalid_dates > 0:
                             table_summary.add_invalid_date(field, invalid_dates)
-                            logging.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
+                            self.logger.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
                             
             elif data_type == 'indi':
                 if 'indi_pt' not in df.columns:
                     table_summary.add_missing_column('indi_pt', '<NA>')
                     df['indi_pt'] = '<NA>'
-                    logging.warning("Required column 'indi_pt' not found, adding with default value: <NA>")
+                    self.logger.warning("Required column 'indi_pt' not found, adding with default value: <NA>")
             
             # Call standardizer for final processing
             df = self.standardizer.standardize_data(df, data_type)
@@ -678,7 +732,7 @@ class FAERSProcessor:
         except Exception as e:
             error_msg = f"Error processing DataFrame: {str(e)}"
             table_summary.add_parsing_error(error_msg)
-            logging.error(error_msg)
+            self.logger.error(error_msg)
             return pd.DataFrame()
             
         return df

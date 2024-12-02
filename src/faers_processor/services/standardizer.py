@@ -509,12 +509,12 @@ class DataStandardizer:
             self.diana_dict = pd.DataFrame(columns=['drugname', 'Substance'])
             self.drug_map = {}
 
-    def standardize_pt(self, df: pd.DataFrame, pt_variable: str) -> pd.DataFrame:
+    def standardize_pt(self, df: pd.DataFrame, pt_variable: str = 'pt') -> pd.DataFrame:
         """Standardize PT terms exactly as in R script.
         
         Args:
             df: DataFrame with PT terms
-            pt_variable: Name of the PT column
+            pt_variable: Name of the PT column (default: 'pt')
             
         Returns:
             DataFrame with standardized PT terms
