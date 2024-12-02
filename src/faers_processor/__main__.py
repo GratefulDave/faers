@@ -273,7 +273,7 @@ def download_data(data_dir: Path, max_workers: int) -> None:
     """Download FAERS quarterly data files."""
     try:
         # Create data directories if they don't exist
-        raw_dir = data_dir / 'raw'
+        raw_dir = data_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
         
         downloader = FAERSDownloader(raw_dir)
@@ -292,7 +292,7 @@ def process_data(
     """Process downloaded FAERS data with optimized parallel processing."""
     try:
         # Create clean data directory if it doesn't exist
-        clean_dir = data_dir / 'clean'
+        clean_dir = data_dir
         clean_dir.mkdir(parents=True, exist_ok=True)
         
         processor = FAERSProcessor(
