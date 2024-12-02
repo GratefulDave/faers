@@ -17,28 +17,25 @@ from .standardizer import DataStandardizer
 
 
 class FAERSProcessor:
-    """Processes FAERS data files."""
-
-    def __init__(
-            self,
-            standardizer: DataStandardizer,
-            use_dask: bool = False
-    ):
-        """Initialize processor with standardizer.
+    """Processor for FAERS data files."""
+    
+    def __init__(self, standardizer: DataStandardizer, use_parallel: bool = False):
+        """Initialize the FAERS processor.
         
         Args:
-            standardizer: DataStandardizer instance initialized with external data
-            use_dask: Whether to use Dask for parallel processing
+            standardizer: DataStandardizer instance for data cleaning
+            use_parallel: Whether to use parallel processing
         """
         self.standardizer = standardizer
-        self.use_dask = use_dask
+        self.use_parallel = use_parallel
 
-    def process_all(self, input_dir: Path, output_dir: Path) -> None:
+    def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
         """Process all quarters in the input directory.
         
         Args:
             input_dir: Directory containing quarter subdirectories
             output_dir: Directory to save processed files
+            max_workers: Maximum number of worker processes to use
         """
         # Find all quarter directories
         quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
@@ -49,9 +46,10 @@ class FAERSProcessor:
             
         logging.info(f"Found {len(quarter_dirs)} quarters to process")
         
-        if self.use_dask:
-            # Use ProcessPoolExecutor instead of dask
-            max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
+        if self.use_parallel:
+            # Use ProcessPoolExecutor for parallel processing
+            if max_workers is None:
+                max_workers = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
             
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 # Process quarters in batches to control memory
