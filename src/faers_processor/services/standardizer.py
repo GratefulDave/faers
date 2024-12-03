@@ -664,47 +664,42 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized sex values
         """
-        if 'sex' not in df.columns:
-            logging.warning("Sex column not found in DataFrame")
-            df['sex'] = pd.NA
+        try:
+            if 'sex' not in df.columns:
+                return df
+                
+            df = df.copy()
+            
+            # Standardize sex codes
+            sex_map = {
+                'M': 'Male',
+                'F': 'Female',
+                'UNK': 'Unknown',
+                'NS': 'Not Specified'
+            }
+            
+            # Convert to uppercase and map
+            df['sex'] = df['sex'].str.upper().map(sex_map)
+            
+            # Convert unknown values to Unknown
+            df.loc[df['sex'].isna(), 'sex'] = 'Unknown'
+            
+            # Convert to categorical
+            df['sex'] = df['sex'].astype('category')
+            
+            # Log distribution
+            sex_dist = df['sex'].value_counts()
+            total = len(df)
+            logging.info("Sex distribution:")
+            for sex, count in sex_dist.items():
+                pct = round(100 * count / total, 2)
+                logging.info(f"  {sex}: {count} ({pct}%)")
+            
             return df
             
-        df = df.copy()
-        
-        # Convert to uppercase and strip whitespace
-        df['sex'] = df['sex'].str.upper().str.strip()
-        
-        # Map values
-        sex_map = {
-            'M': 'M',
-            'MALE': 'M',
-            '1': 'M',
-            'F': 'F',
-            'FEMALE': 'F',
-            '2': 'F',
-            'U': 'U',
-            'UNK': 'U',
-            'UNKNOWN': 'U',
-            '0': 'U',
-            'NS': 'U'
-        }
-        
-        df['sex'] = df['sex'].map(sex_map)
-        
-        # Set invalid values to Unknown
-        df.loc[~df['sex'].isin(['M', 'F', 'U']), 'sex'] = 'U'
-        
-        # Convert to category
-        df['sex'] = df['sex'].astype('category')
-        
-        # Log distribution
-        sex_dist = df['sex'].value_counts(dropna=False)
-        total = len(df)
-        logging.info("Sex distribution:")
-        for sex, count in sex_dist.items():
-            logging.info(f"  {sex}: {count} ({100*count/total:.1f}%)")
-        
-        return df
+        except Exception as e:
+            logging.error(f"Error standardizing sex: {str(e)}")
+            return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize age values to days and years.
@@ -1654,6 +1649,52 @@ class DataStandardizer:
             logging.error(f"Error standardizing indications: {str(e)}")
             return df
 
+    def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize demographics data following R script exactly.
+        
+        Args:
+            df: Raw demographics DataFrame
+            
+        Returns:
+            Processed demographics DataFrame
+        """
+        try:
+            df = df.copy()
+            
+            # Standardize dates
+            date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
+            df = self.standardize_dates(df)
+            
+            # Standardize sex values
+            df = self.standardize_sex(df)
+            
+            # Standardize age values
+            df = self.standardize_age(df)
+            
+            # Standardize age groups
+            df = self.standardize_age_groups(df)
+            
+            # Standardize weight values
+            df = self.standardize_weight(df)
+            
+            # Standardize country codes
+            df = self.standardize_country(df)
+            
+            # Standardize occupation codes
+            df = self.standardize_occupation(df)
+            
+            # Process manufacturer information
+            df = self.standardize_manufacturer(df)
+            
+            # Remove duplicates
+            df = df.drop_duplicates()
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing demographics: {str(e)}")
+            return df
+
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
         """Process all FAERS quarters with summary reporting.
         
@@ -1859,7 +1900,7 @@ class DataStandardizer:
             
             # Type-specific standardization
             if data_type == 'demo':
-                df = self.process_demographics(df)
+                df = self.standardize_demographics(df)
             elif data_type == 'drug':
                 df = self.standardize_drugs(df)
             elif data_type == 'reac':
