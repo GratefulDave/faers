@@ -7,6 +7,8 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Optional
+import re
+from datetime import datetime
 
 from faers_processor.services.standardizer import DataStandardizer
 from faers_processor.services.downloader import FAERSDownloader
@@ -30,11 +32,18 @@ class ProjectPaths:
         """Get path to quarter directory in raw data."""
         return self.raw / quarter / 'ascii'
         
-    def find_text_files(self, quarter: str, prefix: str) -> list[Path]:
-        """Find text files case-insensitively."""
-        quarter_dir = self.get_quarter_dir(quarter)
-        pattern = f"{prefix}*.[Tt][Xx][Tt]"
-        return list(quarter_dir.glob(pattern))
+    def find_text_files(self, prefix: str) -> list[Path]:
+        """Find text files case-insensitively across all quarters."""
+        pattern = f"**/{prefix}*.[Tt][Xx][Tt]"
+        return list(self.raw.glob(pattern))
+        
+    def get_all_quarters(self) -> list[str]:
+        """Get all available quarters in raw data directory."""
+        quarters = []
+        for quarter_dir in self.raw.iterdir():
+            if quarter_dir.is_dir() and re.match(r'\d{4}q[1-4]', quarter_dir.name.lower()):
+                quarters.append(quarter_dir.name.lower())
+        return sorted(quarters)
 
 def setup_logging(level: str) -> None:
     """Configure logging."""
@@ -43,28 +52,74 @@ def setup_logging(level: str) -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-def download_data(paths: ProjectPaths, quarters: list[str], max_date: Optional[str] = None) -> None:
-    """Download FAERS quarterly data."""
+def download_data(paths: ProjectPaths, max_date: Optional[str] = None) -> None:
+    """Download all FAERS quarterly data."""
     downloader = FAERSDownloader(paths.raw)
+    
+    # Calculate quarters to download based on max_date
+    if max_date:
+        year = int(max_date[:4])
+        month = int(max_date[4:6])
+        quarter = (month - 1) // 3 + 1
+        current_year = datetime.now().year
+        
+        quarters = []
+        for y in range(2004, year + 1):
+            if y == year:
+                max_q = quarter
+            else:
+                max_q = 4
+            for q in range(1, max_q + 1):
+                quarters.append(f"{y}q{q}")
+    else:
+        # Download up to current quarter
+        current_year = datetime.now().year
+        current_quarter = (datetime.now().month - 1) // 3 + 1
+        quarters = []
+        for y in range(2004, current_year + 1):
+            if y == current_year:
+                max_q = current_quarter
+            else:
+                max_q = 4
+            for q in range(1, max_q + 1):
+                quarters.append(f"{y}q{q}")
+    
     for quarter in quarters:
-        downloader.download_quarter(quarter, max_date)
+        try:
+            logging.info(f"Downloading quarter {quarter}...")
+            downloader.download_quarter(quarter)
+        except Exception as e:
+            logging.error(f"Error downloading quarter {quarter}: {str(e)}")
 
-def process_data(paths: ProjectPaths, quarters: list[str], max_date: Optional[str] = None,
+def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
                 parallel: bool = False, workers: Optional[int] = None) -> None:
-    """Process FAERS data."""
+    """Process all FAERS data."""
     standardizer = DataStandardizer(paths.external, paths.clean)
+    
+    # Process all available quarters
+    quarters = paths.get_all_quarters()
     for quarter in quarters:
-        standardizer.process_quarter(
-            paths.get_quarter_dir(quarter),
-            max_date=max_date,
-            parallel=parallel,
-            n_workers=workers
-        )
+        try:
+            quarter_dir = paths.get_quarter_dir(quarter)
+            if quarter_dir.exists():
+                logging.info(f"Processing quarter {quarter}...")
+                standardizer.process_quarter(
+                    quarter_dir,
+                    max_date=max_date,
+                    parallel=parallel,
+                    n_workers=workers
+                )
+        except Exception as e:
+            logging.error(f"Error processing quarter {quarter}: {str(e)}")
 
 def deduplicate_data(paths: ProjectPaths, max_date: Optional[str] = None) -> None:
-    """Deduplicate processed FAERS data."""
-    deduplicator = FAERSDeduplicator(paths.clean)
-    deduplicator.deduplicate_all(max_date)
+    """Deduplicate all processed FAERS data."""
+    try:
+        logging.info("Starting deduplication of all processed data...")
+        deduplicator = FAERSDeduplicator(paths.clean)
+        deduplicator.deduplicate_all(max_date)
+    except Exception as e:
+        logging.error(f"Error during deduplication: {str(e)}")
 
 def main():
     """Main CLI entrypoint."""
@@ -75,12 +130,6 @@ def main():
         type=Path,
         required=True,
         help='Root directory of the project'
-    )
-    
-    parser.add_argument(
-        '--quarters',
-        nargs='+',
-        help='List of quarters to process (e.g., 2004q1 2004q2)'
     )
     
     parser.add_argument(
@@ -122,18 +171,18 @@ def main():
     paths = ProjectPaths(args.project_root)
     
     # Execute requested steps
-    steps = args.steps[0] if args.steps[0] != 'all' else ['download', 'process', 'deduplicate']
+    steps = args.steps if 'all' not in args.steps else ['download', 'process', 'deduplicate']
     
     if 'download' in steps:
-        logging.info("Starting download step...")
-        download_data(paths, args.quarters, args.max_date)
+        logging.info("Starting download of all quarters...")
+        download_data(paths, args.max_date)
     
     if 'process' in steps:
-        logging.info("Starting processing step...")
-        process_data(paths, args.quarters, args.max_date, args.parallel, args.workers)
+        logging.info("Starting processing of all quarters...")
+        process_data(paths, args.max_date, args.parallel, args.workers)
     
     if 'deduplicate' in steps:
-        logging.info("Starting deduplication step...")
+        logging.info("Starting deduplication of all data...")
         deduplicate_data(paths, args.max_date)
     
     logging.info("All requested steps completed successfully")
