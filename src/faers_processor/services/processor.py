@@ -356,7 +356,7 @@ class FAERSProcessor:
         except Exception as e:
             self.logger.error(f"({quarter_dir.name}) Error processing {file_prefix} files: {str(e)}")
 
-    def _read_and_clean_file(self, file_path: Path, chunk_size: Optional[int] = None) -> pd.DataFrame:
+    def _read_and_clean_file(self, file_path: Path, chunk_size: Optional[int] = None) -> Optional[pd.DataFrame]:
         """Read and clean a file, handling different formats and encodings.
         
         Args:
@@ -364,61 +364,64 @@ class FAERSProcessor:
             chunk_size: Size of chunks for processing large files
             
         Returns:
-            Cleaned DataFrame
+            Cleaned DataFrame or None if reading fails
         """
         try:
-            # Determine file extension
-            extension = file_path.suffix.lower()
+            # Try different encodings
+            encodings = ['utf-8', 'latin1', 'cp1252']
+            delimiter = '$'  # FAERS files use $ as delimiter
+            df = None
             
-            if extension == '.txt':
-                # Try different encodings
-                encodings = ['utf-8', 'latin1', 'cp1252']
-                df = None
-                
-                for encoding in encodings:
-                    try:
-                        if chunk_size:
-                            # Process in chunks
-                            chunks = []
-                            for chunk in pd.read_csv(file_path, sep='$', encoding=encoding, chunksize=chunk_size):
-                                cleaned_chunk = self._clean_dataframe(chunk)
-                                chunks.append(cleaned_chunk)
-                            df = pd.concat(chunks, ignore_index=True)
-                        else:
-                            # Read entire file at once
-                            df = pd.read_csv(file_path, sep='$', encoding=encoding)
-                            df = self._clean_dataframe(df)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                    except Exception as e:
-                        self.logger.error(f"Error reading file {file_path} with encoding {encoding}: {str(e)}")
-                        continue
-                
-                if df is None:
-                    raise ValueError(f"Could not read file {file_path} with any supported encoding")
-                
-            elif extension == '.xml':
-                # XML files typically don't need chunked processing
+            for encoding in encodings:
                 try:
-                    tree = ET.parse(file_path)
-                    root = tree.getroot()
-                    data = []
-                    for child in root:
-                        data.append({elem.tag: elem.text for elem in child})
-                    df = pd.DataFrame(data)
-                    df = self._clean_dataframe(df)
-                except Exception as e:
-                    raise ValueError(f"Error parsing XML file {file_path}: {str(e)}")
+                    if chunk_size:
+                        chunks = []
+                        # Process in chunks
+                        for chunk in pd.read_csv(file_path, sep=delimiter, dtype=str, 
+                                               na_values=[''], keep_default_na=False,
+                                               encoding=encoding, chunksize=chunk_size,
+                                               on_bad_lines='warn'):
+                            # Basic cleaning for each chunk
+                            chunk = chunk.replace(r'^\s*$', '', regex=True)  # Replace empty strings
+                            chunk = chunk.replace(r'\s+', ' ', regex=True)   # Normalize whitespace
+                            chunks.append(chunk)
+                        
+                        if chunks:
+                            df = pd.concat(chunks, ignore_index=True)
+                            break
+                    else:
+                        # Read entire file at once
+                        df = pd.read_csv(file_path, sep=delimiter, dtype=str, 
+                                       na_values=[''], keep_default_na=False,
+                                       encoding=encoding, on_bad_lines='warn')
+                        
+                        if df.empty:
+                            self.logger.warning(f"Empty file: {file_path.name}")
+                            continue
+                            
+                        # Basic cleaning
+                        df = df.replace(r'^\s*$', '', regex=True)  # Replace empty strings
+                        df = df.replace(r'\s+', ' ', regex=True)   # Normalize whitespace
+                        break
                     
-            else:
-                raise ValueError(f"Unsupported file extension: {extension}")
+                except UnicodeDecodeError:
+                    continue
+                except pd.errors.EmptyDataError:
+                    self.logger.warning(f"Empty file: {file_path.name}")
+                    continue
+                except Exception as e:
+                    self.logger.error(f"Error reading file {file_path.name} with encoding {encoding}: {str(e)}")
+                    continue
+            
+            if df is None:
+                self.logger.error(f"Could not read file {file_path.name} with any supported encoding")
+                return None
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error reading file {file_path}: {str(e)}")
-            raise
+            self.logger.error(f"Error reading file {file_path.name}: {str(e)}")
+            return None
 
     def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
         """Process a dataset with error tracking and validation."""
@@ -522,26 +525,6 @@ class FAERSProcessor:
             elif "Invalid routes" in warning:
                 self.logger.warning("Routes should be standardized according to FDA specifications")
                 
-    def _read_and_clean_file(self, file_path: Path) -> Optional[pd.DataFrame]:
-        """Read and perform initial cleaning of a FAERS data file."""
-        try:
-            # Read the file
-            df = pd.read_csv(file_path, dtype=str, na_values=[''], keep_default_na=False)
-            
-            if df.empty:
-                self.logger.warning(f"Empty file: {file_path.name}")
-                return None
-                
-            # Basic cleaning
-            df = df.replace(r'^\s*$', '', regex=True)  # Replace empty strings
-            df = df.replace(r'\s+', ' ', regex=True)   # Normalize whitespace
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Error reading file {file_path.name}: {str(e)}")
-            return None
-
     def _normalize_quarter_path(self, quarter_dir: Path) -> Path:
         """Normalize quarter directory path to handle case sensitivity.
 
