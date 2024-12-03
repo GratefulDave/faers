@@ -400,32 +400,46 @@ class FAERSProcessor:
         self.logger.info(f"Generated processing report: {report_path}")
 
     def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
-        """Find the ASCII directory - it's always ASCII or ascii.
-        
-        NOTE: DO NOT MODIFY THIS METHOD - case insensitive directory finding is working as intended.
-        """
-        # Log current directory for debugging
-        self.logger.info(f"Searching for ASCII directory in: {quarter_dir}")
-        
-        # Use rglob to find any variation of 'ascii' directory
-        for item in quarter_dir.rglob('[aA][sS][cC][iI][iI]'):
-            if item.is_dir():
-                self.logger.info(f"Found ASCII directory: {item}")
+        """Find the ASCII directory - case insensitive search."""
+        if not quarter_dir.exists():
+            self.logger.warning(f"Quarter directory {quarter_dir} does not exist")
+            return None
+            
+        # Case insensitive search for 'ascii' directory
+        for item in quarter_dir.iterdir():
+            if item.is_dir() and item.name.lower() == 'ascii':
                 return item
                 
+        # Also check one level deeper
+        for item in quarter_dir.iterdir():
+            if item.is_dir():
+                for subitem in item.iterdir():
+                    if subitem.is_dir() and subitem.name.lower() == 'ascii':
+                        return subitem
+        
         self.logger.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
+        return None
+
+    def _find_data_file(self, directory: Path, patterns: List[str]) -> Optional[Path]:
+        """Find a data file matching any of the patterns case-insensitively."""
+        if not directory.exists():
+            return None
+            
+        # Convert patterns to lowercase for comparison
+        patterns = [p.lower() for p in patterns]
+        
+        # Search for .txt files case-insensitively
+        for file in directory.glob('*'):
+            if file.is_file() and file.suffix.lower() == '.txt':
+                file_name = file.stem.lower()
+                if any(pattern in file_name for pattern in patterns):
+                    return file
+        
         return None
 
     def process_quarter(self, quarter_dir: Path, parallel: bool = True, 
                        max_workers: Optional[int] = None, chunk_size: int = 50000) -> Dict[str, pd.DataFrame]:
-        """Process a single quarter directory.
-        
-        Args:
-            quarter_dir: Path to quarter directory
-            parallel: Whether to use parallel processing
-            max_workers: Number of worker processes for parallel processing
-            chunk_size: Size of chunks for parallel processing
-        """
+        """Process a single quarter directory."""
         quarter_dir = self._normalize_quarter_path(quarter_dir)
         ascii_dir = self._find_ascii_directory(quarter_dir)
         
@@ -463,22 +477,14 @@ class FAERSProcessor:
         
         for base_name, (data_type, patterns) in file_types.items():
             try:
-                # Find matching files case-insensitively
-                matched_files = []
-                # Use rglob to find all .txt files (case insensitive)
-                for file in ascii_dir.rglob('*.[tT][xX][tT]'):
-                    file_name = file.name.lower()
-                    if any(pat.lower() in file_name for pat in patterns):
-                        matched_files.append(file)
-                        self.logger.info(f"Found {data_type} file: {file}")
-                        break  # Take the first matching file
+                # Find matching file case-insensitively
+                file_path = self._find_data_file(ascii_dir, patterns)
                 
-                if not matched_files:
+                if not file_path:
                     self.logger.warning(f"No {data_type} files found in {ascii_dir}")
                     continue
                     
                 # Process the file
-                file_path = matched_files[0]
                 self.logger.info(f"Processing {data_type} file: {file_path}")
                 
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
@@ -511,10 +517,7 @@ class FAERSProcessor:
     def process_file(self, file_path: Path, data_type: str, table_summary: TableSummary, 
                     parallel: bool = True, max_workers: Optional[int] = None, 
                     chunk_size: int = 50000) -> pd.DataFrame:
-        """Process a single FAERS file with enhanced error tracking.
-        
-        NOTE: DO NOT MODIFY FILE FINDING LOGIC - case insensitive file matching is working as intended.
-        """
+        """Process a single FAERS file with enhanced error tracking."""
         start_time = time.time()
         
         try:
