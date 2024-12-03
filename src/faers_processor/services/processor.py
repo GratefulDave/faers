@@ -115,7 +115,7 @@ class FAERSProcessor:
                 # Use ThreadPoolExecutor for parallel processing
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_quarter = {
-                        executor.submit(self.process_quarter, quarter_dir): quarter_dir
+                        executor.submit(self.process_quarter, quarter_dir, parallel): quarter_dir
                         for quarter_dir in quarter_dirs
                     }
                     
@@ -131,7 +131,7 @@ class FAERSProcessor:
                 # Process sequentially
                 for quarter_dir in quarter_dirs:
                     try:
-                        summary = self.process_quarter(quarter_dir)
+                        summary = self.process_quarter(quarter_dir, parallel)
                         if summary:
                             self.processing_summary.add_quarter_summary(quarter_dir.name, summary)
                     except Exception as e:
@@ -232,15 +232,24 @@ class FAERSProcessor:
         
         return None
 
-    def process_quarter(self, quarter_dir: Path) -> Optional[QuarterSummary]:
-        """Process all files in a FAERS quarter directory."""
+    def process_quarter(self, quarter_dir: Path, parallel: bool = False) -> Optional[QuarterSummary]:
+        """Process all files in a FAERS quarter directory.
+        
+        Args:
+            quarter_dir: Path to quarter directory
+            parallel: Whether to process files in parallel
+            
+        Returns:
+            QuarterSummary if successful, None if failed
+        """
+        quarter_name = quarter_dir.name
+        self.logger.info(f"Processing quarter: {quarter_name}")
+        self.logger.info(f"Quarter directory: {quarter_dir}")
+        
+        start_time = time.time()
+        quarter_summary = QuarterSummary(quarter=quarter_name)
+        
         try:
-            start_time = time.time()
-            quarter_name = quarter_dir.name
-            
-            # Initialize quarter summary
-            quarter_summary = QuarterSummary(quarter=quarter_name)
-            
             # Process each file type
             file_types = {
                 'DEMO': ('demo', quarter_summary.demo_summary),
@@ -252,36 +261,28 @@ class FAERSProcessor:
                 'INDI': ('indi', quarter_summary.indi_summary)
             }
             
-            for file_prefix, (data_type, summary) in file_types.items():
-                try:
-                    # Find matching files
-                    pattern = f"{file_prefix}*.txt"
-                    matching_files = list(quarter_dir.glob(pattern))
+            if parallel:
+                # Use ThreadPoolExecutor for parallel processing
+                with ThreadPoolExecutor() as executor:
+                    future_to_file_type = {
+                        executor.submit(self._process_file_type, quarter_dir, file_prefix, data_type, summary): (file_prefix, data_type)
+                        for file_prefix, (data_type, summary) in file_types.items()
+                    }
                     
-                    if not matching_files:
-                        self.logger.warning(f"({quarter_name}) No {file_prefix} files found")
-                        continue
-                        
-                    # Process each matching file
-                    for file_path in matching_files:
-                        file_start_time = time.time()
-                        
+                    for future in as_completed(future_to_file_type):
+                        file_prefix, data_type = future_to_file_type[future]
                         try:
-                            df, table_summary = self._process_dataset(pd.read_csv(file_path, delimiter='$', dtype=str), data_type, quarter_name, file_path.name)
-                            
-                            if df is not None:
-                                summary.total_rows += len(df)
-                                summary.processed_rows += len(df)
-                                summary.processing_time += time.time() - file_start_time
-                                
+                            future.result()
                         except Exception as e:
-                            error_msg = f"Error processing {file_path.name}: {str(e)}"
-                            summary.add_parsing_error(error_msg)
-                            self.logger.error(error_msg)
-                            
-                except Exception as e:
-                    self.logger.error(f"({quarter_name}) Error processing {file_prefix} files: {str(e)}")
-                    
+                            self.logger.error(f"({quarter_name}) Error processing {file_prefix} files: {str(e)}")
+            else:
+                # Process sequentially
+                for file_prefix, (data_type, summary) in file_types.items():
+                    try:
+                        self._process_file_type(quarter_dir, file_prefix, data_type, summary)
+                    except Exception as e:
+                        self.logger.error(f"({quarter_name}) Error processing {file_prefix} files: {str(e)}")
+            
             # Set total processing time
             quarter_summary.processing_time = time.time() - start_time
             
@@ -294,6 +295,37 @@ class FAERSProcessor:
             self.logger.error(f"({quarter_name}) Error processing quarter: {str(e)}")
             self.logger.error(f"Quarter directory that failed: {quarter_dir}")
             return None
+
+    def _process_file_type(self, quarter_dir: Path, file_prefix: str, data_type: str, summary: TableSummary) -> None:
+        """Process files of a specific type in a quarter directory."""
+        try:
+            # Find matching files
+            pattern = f"{file_prefix}*.txt"
+            matching_files = list(quarter_dir.glob(pattern))
+            
+            if not matching_files:
+                self.logger.warning(f"({quarter_dir.name}) No {file_prefix} files found")
+                return
+                
+            # Process each matching file
+            for file_path in matching_files:
+                file_start_time = time.time()
+                
+                try:
+                    df, table_summary = self._process_dataset(pd.read_csv(file_path, delimiter='$', dtype=str), data_type, quarter_dir.name, file_path.name)
+                    
+                    if df is not None:
+                        summary.total_rows += len(df)
+                        summary.processed_rows += len(df)
+                        summary.processing_time += time.time() - file_start_time
+                        
+                except Exception as e:
+                    error_msg = f"Error processing {file_path.name}: {str(e)}"
+                    summary.add_parsing_error(error_msg)
+                    self.logger.error(error_msg)
+                    
+        except Exception as e:
+            self.logger.error(f"({quarter_dir.name}) Error processing {file_prefix} files: {str(e)}")
 
     def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
         """Process a dataset with error tracking and validation."""
