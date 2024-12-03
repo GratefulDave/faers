@@ -1,9 +1,11 @@
 """Service for processing FAERS data files."""
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
+from dataclasses import dataclass, field
 from collections import defaultdict
 import pandas as pd
 import numpy as np
@@ -11,6 +13,72 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .standardizer import DataStandardizer
 from .validator import DataValidator, ValidationResult
+
+@dataclass
+class TableSummary:
+    """Summary statistics for a single FAERS table."""
+    total_rows: int = 0
+    processed_rows: int = 0
+    invalid_dates: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    missing_columns: Dict[str, str] = field(default_factory=dict)  # column -> default value
+    parsing_errors: List[str] = field(default_factory=list)
+    data_errors: Dict[str, int] = field(default_factory=lambda: defaultdict(int))  # error type -> count
+    processing_time: float = 0.0
+
+    def add_missing_column(self, col: str, default_value: str):
+        """Track missing column and its default value."""
+        self.missing_columns[col] = default_value
+        logging.warning(f"Required column '{col}' not found, adding with default value: {default_value}")
+
+    def add_invalid_date(self, field: str, count: int):
+        """Track invalid dates by field."""
+        self.invalid_dates[field] = count
+        logging.warning(f"{count}/{self.total_rows} rows ({count/self.total_rows*100:.1f}%) had invalid dates in {field}")
+
+    def add_data_error(self, error_type: str):
+        """Track data validation errors."""
+        self.data_errors[error_type] += 1
+        
+    def add_parsing_error(self, error: str):
+        """Track parsing errors."""
+        self.parsing_errors.append(error)
+        logging.error(f"Parsing error: {error}")
+
+@dataclass
+class QuarterSummary:
+    """Summary statistics for a FAERS quarter."""
+    quarter: str
+    demo_summary: TableSummary = field(default_factory=TableSummary)
+    drug_summary: TableSummary = field(default_factory=TableSummary)
+    reac_summary: TableSummary = field(default_factory=TableSummary)
+    outc_summary: TableSummary = field(default_factory=TableSummary)
+    rpsr_summary: TableSummary = field(default_factory=TableSummary)
+    ther_summary: TableSummary = field(default_factory=TableSummary)
+    indi_summary: TableSummary = field(default_factory=TableSummary)
+    processing_time: float = 0.0
+
+    def log_summary(self):
+        """Log processing summary for this quarter."""
+        logging.info(f"\nProcessing Summary for Quarter {self.quarter}:")
+        for data_type in ['demo', 'drug', 'reac', 'outc', 'rpsr', 'ther', 'indi']:
+            summary = getattr(self, f"{data_type}_summary")
+            if summary.total_rows > 0:
+                logging.info(f"\n{data_type.upper()} Summary:")
+                logging.info(f"Total Rows: {summary.total_rows}")
+                logging.info(f"Processed Rows: {summary.processed_rows}")
+                if summary.missing_columns:
+                    logging.info("Missing Columns:")
+                    for col, default in summary.missing_columns.items():
+                        logging.info(f"  - {col} (default: {default})")
+                if summary.invalid_dates:
+                    logging.info("Invalid Dates:")
+                    for field, count in summary.invalid_dates.items():
+                        pct = (count/summary.total_rows*100) if summary.total_rows > 0 else 0
+                        logging.info(f"  - {field}: {count}/{summary.total_rows} rows ({pct:.1f}%)")
+                if summary.parsing_errors:
+                    logging.info("Parsing Errors:")
+                    for error in summary.parsing_errors:
+                        logging.info(f"  - {error}")
 
 class FAERSProcessor:
     """Processor for FAERS data files."""
@@ -20,165 +88,72 @@ class FAERSProcessor:
         self.standardizer = standardizer
         self.validator = DataValidator()
         self.logger = logging.getLogger(__name__)
+        self.processing_summary = FAERSProcessingSummary()
         # Set current date in YYYYMMDD format
         self.current_date = datetime.now().strftime("%Y%m%d")
 
-    def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
-        """Process all quarters in the input directory and save merged results in output_dir."""
-        import time
-        from datetime import datetime
-
-        # Convert to absolute paths and resolve any symlinks
-        input_dir = input_dir.resolve()
-        output_dir = output_dir.resolve()
-
-        self.logger.info(f"Using absolute paths:")
-        self.logger.info(f"Input directory: {input_dir}")
-        self.logger.info(f"Output directory: {output_dir}")
-
-        # Initialize results tracking
-        results = {
-            'total_quarters': 0,
-            'success': [],
-            'failed': [],
-            'skipped': [],
-            'start_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'max_workers': max_workers
-        }
-        start_time = time.time()
-
-        # Ensure output directory exists and is clean
-        if output_dir.exists():
-            self.logger.info(f"Cleaning output directory: {output_dir}")
-            for file in output_dir.glob('*.txt'):
-                file.unlink()
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Find all quarter directories
-        quarter_dirs = [d for d in input_dir.iterdir() if d.is_dir() and re.match(r'\d{4}Q[1-4]', d.name, re.IGNORECASE)]
-        total_quarters = len(quarter_dirs)
-        results['total_quarters'] = total_quarters
-
-        if not quarter_dirs:
-            self.logger.error(f"No quarter directories found in {input_dir}")
-            return
-
-        self.logger.info(f"Found {total_quarters} quarters to process")
-
-        # Initialize dictionaries to store DataFrames for each data type
-        all_data = {
-            'demo': [],
-            'drug': [],
-            'reac': [],
-            'outc': [],
-            'rpsr': [],
-            'ther': [],
-            'indi': []
-        }
-
-        # Create progress bar for total quarters
-        pbar = tqdm(total=total_quarters, desc="Processing FAERS quarters", 
-                   unit="quarter", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} quarters "
-                   "[{elapsed}<{remaining}, {rate_fmt}]")
-
-        if self.use_parallel:
-            if max_workers is None:
-                max_workers = max(1, multiprocessing.cpu_count() - 1)
-
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                # Process all quarters with futures
-                futures = {
-                    executor.submit(self.process_quarter, quarter_dir): quarter_dir 
-                    for quarter_dir in quarter_dirs
-                }
-
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(futures):
-                    quarter_dir = futures[future]
-                    quarter = quarter_dir.name
+    def process_all(self, quarters_dir: Path, output_dir: Path, parallel: bool = True, max_workers: Optional[int] = None) -> Dict[str, List[QuarterSummary]]:
+        """Process multiple FAERS quarters in parallel."""
+        try:
+            quarters_dir = Path(quarters_dir)
+            output_dir = Path(output_dir)
+            if not quarters_dir.exists():
+                raise ValueError(f"Quarters directory does not exist: {quarters_dir}")
+                
+            # Create output directory if it doesn't exist
+            output_dir.mkdir(parents=True, exist_ok=True)
+                
+            # Find all quarter directories
+            quarter_dirs = [d for d in quarters_dir.iterdir() if d.is_dir()]
+            if not quarter_dirs:
+                raise ValueError(f"No quarter directories found in {quarters_dir}")
+                
+            self.logger.info(f"Found {len(quarter_dirs)} quarter directories")
+            
+            # Process quarters
+            if parallel and len(quarter_dirs) > 1:
+                # Use ThreadPoolExecutor for parallel processing
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_quarter = {
+                        executor.submit(self.process_quarter, quarter_dir): quarter_dir
+                        for quarter_dir in quarter_dirs
+                    }
+                    
+                    for future in as_completed(future_to_quarter):
+                        quarter_dir = future_to_quarter[future]
+                        try:
+                            summary = future.result()
+                            if summary:
+                                self.processing_summary.add_quarter_summary(quarter_dir.name, summary)
+                        except Exception as e:
+                            self.logger.error(f"Error processing quarter {quarter_dir.name}: {str(e)}")
+            else:
+                # Process sequentially
+                for quarter_dir in quarter_dirs:
                     try:
-                        results_dict = future.result()
-
-                        # Add quarter column and append to all_data
-                        for data_type, df in results_dict.items():
-                            if not df.empty:
-                                df['quarter'] = quarter
-                                all_data[data_type].append(df)
-
-                        results['success'].append(quarter)
-                        pbar.update(1)
-                        pbar.set_postfix({"quarter": quarter, "status": "success"}, refresh=True)
-
+                        summary = self.process_quarter(quarter_dir)
+                        if summary:
+                            self.processing_summary.add_quarter_summary(quarter_dir.name, summary)
                     except Exception as e:
-                        results['failed'].append((quarter, str(e)))
-                        self.logger.error(f"Error processing {quarter}: {str(e)}")
-                        pbar.update(1)
-                        pbar.set_postfix({"quarter": quarter, "status": "failed"}, refresh=True)
-        else:
-            # Sequential processing
-            for quarter_dir in quarter_dirs:
-                quarter = quarter_dir.name
-                try:
-                    results_dict = self.process_quarter(quarter_dir)
-
-                    # Add quarter column and append to all_data
-                    for data_type, df in results_dict.items():
-                        if not df.empty:
-                            df['quarter'] = quarter
-                            all_data[data_type].append(df)
-
-                    results['success'].append(quarter)
-                    pbar.update(1)
-                    pbar.set_postfix({"quarter": quarter, "status": "success"}, refresh=True)
-
-                except Exception as e:
-                    results['failed'].append((quarter, str(e)))
-                    self.logger.error(f"Error processing {quarter}: {str(e)}")
-                    pbar.update(1)
-                    pbar.set_postfix({"quarter": quarter, "status": "failed"}, refresh=True)
-
-        pbar.close()
-
-        # Merge and save all data types
-        for data_type, dfs in all_data.items():
-            if dfs:
-                try:
-                    self.logger.info(f"Merging {len(dfs)} quarters for {data_type}")
-                    merged_df = pd.concat(dfs, ignore_index=True)
-
-                    # Convert numeric columns
-                    if 'primaryid' in merged_df.columns:
-                        merged_df['primaryid'] = pd.to_numeric(merged_df['primaryid'], errors='coerce')
-                    if data_type == 'demo':
-                        if 'caseid' in merged_df.columns:
-                            merged_df['caseid'] = pd.to_numeric(merged_df['caseid'], errors='coerce')
-                        if 'age' in merged_df.columns:
-                            merged_df['age'] = pd.to_numeric(merged_df['age'], errors='coerce')
-                    elif data_type == 'drug' and 'drug_seq' in merged_df.columns:
-                        merged_df['drug_seq'] = pd.to_numeric(merged_df['drug_seq'], errors='coerce')
-
-                    # Sort by primaryid and quarter
-                    merged_df = merged_df.sort_values(['primaryid', 'quarter'])
-
-                    # Save merged file
-                    output_file = output_dir.resolve() / f'{data_type}.txt'
-                    self.logger.info(f"Saving {data_type} to: {output_file}")
-                    merged_df.to_csv(output_file, sep='$', index=False, encoding='utf-8')
-                    self.logger.info(f"Successfully saved {data_type} to {output_file}")
-                    self.logger.info(f"Shape: {merged_df.shape}")
-                except Exception as e:
-                    self.logger.error(f"Error merging {data_type}: {str(e)}")
-
-        # Record end time and duration
-        results['end_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        results['duration'] = time.time() - start_time
-
-        # Generate summary report
-        self.generate_summary_report(output_dir, results)
-
-        # Print final summary
-        print(f"\nProcessing completed in {results['duration']:.2f} seconds")
-        print(f"See detailed report at: {output_dir}/processing_report.md")
+                        self.logger.error(f"Error processing quarter {quarter_dir.name}: {str(e)}")
+            
+            # Generate and save processing report
+            self.processing_summary.generate_markdown_report(output_dir)
+            
+            # Get overall statistics
+            stats = self.processing_summary.get_summary_stats()
+            self.logger.info("\nProcessing Summary:")
+            self.logger.info(f"Total Quarters Processed: {stats['total_quarters']}")
+            self.logger.info(f"Total Processing Time: {stats['total_time']:.2f} seconds")
+            for data_type, success_rate in stats['success_rates'].items():
+                if stats['total_rows'][data_type] > 0:
+                    self.logger.info(f"{data_type.upper()} Success Rate: {success_rate:.1f}%")
+            
+            return {'summaries': list(self.processing_summary.quarter_summaries.values())}
+            
+        except Exception as e:
+            self.logger.error(f"Error processing quarters: {str(e)}")
+            return {'summaries': []}
 
     def generate_summary_report(self, output_dir: Path, results: Dict) -> None:
         """Generate a markdown summary report of processing results.
@@ -257,131 +232,142 @@ class FAERSProcessor:
         
         return None
 
-    def process_quarter(self, quarter_dir: Path, parallel: bool = True, max_workers: Optional[int] = None, chunk_size: int = 50000) -> Dict[str, pd.DataFrame]:
-        """Process a single quarter directory."""
-        quarter_dir = self._normalize_quarter_path(quarter_dir)
-        ascii_dir = self._find_ascii_directory(quarter_dir)
-        quarter_name = quarter_dir.name
-        
-        if not ascii_dir:
-            self.logger.error(f"({quarter_name}) No ASCII directory found in {quarter_dir}")
-            raise ValueError(f"No ASCII directory found in {quarter_dir}")
-            
-        self.logger.info(f"\nProcessing quarter: {quarter_name}")
-        self.logger.info(f"Using ASCII directory: {ascii_dir}")
-        
-        # Initialize results dictionary for all FAERS file types
-        results = {
-            'demo': pd.DataFrame(),      # Demographics
-            'drug': pd.DataFrame(),      # Drug information
-            'reac': pd.DataFrame(),      # Reactions
-            'outc': pd.DataFrame(),      # Outcomes
-            'rpsr': pd.DataFrame(),      # Report sources
-            'ther': pd.DataFrame(),      # Therapy information
-            'indi': pd.DataFrame()       # Indications
-        }
-        
-        # Create quarter summary
-        quarter_summary = QuarterSummary(quarter=quarter_name)
-        start_time = time.time()
-        
-        # Process each file type
-        file_types = {
-            'DEMO': ('demo', ['demo', 'demog']),
-            'DRUG': ('drug', ['drug']),
-            'REAC': ('reac', ['reac', 'reaction']),
-            'OUTC': ('outc', ['outc', 'outcome']),
-            'RPSR': ('rpsr', ['rpsr', 'source']),
-            'THER': ('ther', ['ther', 'therapy']),
-            'INDI': ('indi', ['indi', 'indic'])
-        }
-        
-        for base_name, (data_type, patterns) in file_types.items():
-            try:
-                # Find matching file case-insensitively
-                file_path = self._find_data_file(ascii_dir, patterns)
-                
-                if not file_path:
-                    self.logger.warning(f"({quarter_name}) No {data_type} files found in {ascii_dir}")
-                    continue
-                    
-                # Process the file
-                self.logger.info(f"({quarter_name}) Processing {data_type} file: {file_path}")
-                
-                table_summary = getattr(quarter_summary, f"{data_type}_summary")
-                df = self.process_file(file_path, data_type, quarter_name)
-                
-                if not df.empty:
-                    results[data_type] = df
-                    self.logger.info(f"({quarter_name}) Successfully processed {data_type} file. Shape: {df.shape}")
-                else:
-                    self.logger.warning(f"({quarter_name}) Empty DataFrame returned for {data_type}")
-                    
-            except Exception as e:
-                error_msg = f"({quarter_name}) Error processing {data_type}: {str(e)}"
-                self.logger.error(error_msg)
-                table_summary = getattr(quarter_summary, f"{data_type}_summary")
-                table_summary.add_parsing_error(error_msg)
-        
-        # Update quarter processing time and log summary
-        quarter_summary.processing_time = time.time() - start_time
-        quarter_summary.log_summary()
-        
-        # Add quarter summary to processing summary
-        if not hasattr(self, 'processing_summary'):
-            self.processing_summary = FAERSProcessingSummary()
-        self.processing_summary.add_quarter_summary(quarter_dir.name, quarter_summary)
-        
-        return results
-
-    def process_file(self, file_path: Path, data_type: str, quarter_name: str) -> Optional[pd.DataFrame]:
-        """Process a single FAERS data file."""
+    def process_quarter(self, quarter_dir: Path) -> Optional[QuarterSummary]:
+        """Process all files in a FAERS quarter directory."""
         try:
-            self.logger.info(f"Processing {data_type} file: {file_path.name}")
+            start_time = time.time()
+            quarter_name = quarter_dir.name
             
-            # Read the file
-            df = self._read_and_clean_file(file_path)
-            if df is None or df.empty:
-                self.logger.error(f"Failed to read or empty file: {file_path.name}")
-                return None
-                
-            # Process the data
-            df = self._process_common(df, data_type, quarter_name, file_path.name)
+            # Initialize quarter summary
+            quarter_summary = QuarterSummary(quarter=quarter_name)
             
-            # Log processing completion
-            self.logger.info(f"Successfully processed {len(df)} rows from {file_path.name}")
+            # Process each file type
+            file_types = {
+                'DEMO': ('demo', quarter_summary.demo_summary),
+                'DRUG': ('drug', quarter_summary.drug_summary),
+                'REAC': ('reac', quarter_summary.reac_summary),
+                'OUTC': ('outc', quarter_summary.outc_summary),
+                'RPSR': ('rpsr', quarter_summary.rpsr_summary),
+                'THER': ('ther', quarter_summary.ther_summary),
+                'INDI': ('indi', quarter_summary.indi_summary)
+            }
             
-            return df
+            for file_prefix, (data_type, summary) in file_types.items():
+                try:
+                    # Find matching files
+                    pattern = f"{file_prefix}*.txt"
+                    matching_files = list(quarter_dir.glob(pattern))
+                    
+                    if not matching_files:
+                        self.logger.warning(f"({quarter_name}) No {file_prefix} files found")
+                        continue
+                        
+                    # Process each matching file
+                    for file_path in matching_files:
+                        file_start_time = time.time()
+                        
+                        try:
+                            df, table_summary = self._process_dataset(pd.read_csv(file_path, delimiter='$', dtype=str), data_type, quarter_name, file_path.name)
+                            
+                            if df is not None:
+                                summary.total_rows += len(df)
+                                summary.processed_rows += len(df)
+                                summary.processing_time += time.time() - file_start_time
+                                
+                        except Exception as e:
+                            error_msg = f"Error processing {file_path.name}: {str(e)}"
+                            summary.add_parsing_error(error_msg)
+                            self.logger.error(error_msg)
+                            
+                except Exception as e:
+                    self.logger.error(f"({quarter_name}) Error processing {file_prefix} files: {str(e)}")
+                    
+            # Set total processing time
+            quarter_summary.processing_time = time.time() - start_time
+            
+            # Log summary
+            quarter_summary.log_summary()
+            
+            return quarter_summary
             
         except Exception as e:
-            self.logger.error(f"Error processing {file_path.name}: {str(e)}")
+            self.logger.error(f"({quarter_name}) Error processing quarter: {str(e)}")
+            self.logger.error(f"Quarter directory that failed: {quarter_dir}")
             return None
 
-    def _process_common(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Common processing steps for all data types."""
+    def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
+        """Process a dataset with error tracking and validation."""
+        table_summary = TableSummary()
+        start_time = time.time()
+        
         try:
-            # Standardize column names to lowercase
-            df.columns = df.columns.str.lower()
+            # Record initial stats
+            table_summary.total_rows = len(df)
             
-            # Validate data before standardization
+            # Basic data cleaning
+            df = self._clean_dataframe(df)
+            
+            # Validate data
             validation_result = self.validator.validate_data(df, data_type)
-            
-            # Handle validation errors
             if not validation_result.valid:
                 self._handle_validation_errors(validation_result, quarter_name, file_name)
-                
-            # Log validation warnings
             self._log_validation_warnings(validation_result, quarter_name, file_name)
             
             # Process the data based on type
             df = self.standardizer.standardize_data(df, data_type, file_name, quarter_name)
             
+            # Update summary
+            table_summary.processed_rows = len(df)
+            table_summary.processing_time = time.time() - start_time
+            
+            return df, table_summary
+            
+        except Exception as e:
+            error_msg = f"Error processing {data_type} dataset: {str(e)}"
+            table_summary.add_parsing_error(error_msg)
+            self.logger.error(f"({quarter_name}) {error_msg}")
+            return df, table_summary
+            
+    def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Perform basic DataFrame cleaning."""
+        try:
+            # Convert column names to lowercase
+            df.columns = df.columns.str.lower()
+            
+            # Remove leading/trailing whitespace from string columns
+            for col in df.select_dtypes(include=['object']).columns:
+                df[col] = df[col].str.strip()
+                
+            # Replace empty strings with empty values
+            df = df.replace(r'^\s*$', '', regex=True)
+            
+            # Normalize whitespace in string columns
+            for col in df.select_dtypes(include=['object']).columns:
+                df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
+                
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) Error processing {file_name}: {str(e)}")
+            self.logger.warning(f"Error during DataFrame cleaning: {str(e)}")
             return df
             
+    def _handle_dataset_errors(self, error: Exception, data_type: str, quarter_name: str, file_name: str, table_summary: TableSummary):
+        """Handle dataset processing errors."""
+        error_msg = f"Error processing {data_type} file {file_name}: {str(error)}"
+        table_summary.add_parsing_error(error_msg)
+        self.logger.error(f"({quarter_name}) {error_msg}")
+        
+        # Add specific error handling based on error type
+        if isinstance(error, ValueError):
+            if "Missing required columns" in str(error):
+                table_summary.add_data_error("missing_columns")
+            elif "Invalid data format" in str(error):
+                table_summary.add_data_error("invalid_format")
+        elif isinstance(error, pd.errors.EmptyDataError):
+            table_summary.add_data_error("empty_file")
+        else:
+            table_summary.add_data_error("unknown_error")
+
     def _handle_validation_errors(self, validation_result: ValidationResult, quarter_name: str, file_name: str):
         """Handle validation errors with detailed logging."""
         for error in validation_result.errors:
@@ -1545,3 +1531,123 @@ class FAERSProcessor:
         except Exception as e:
             self.logger.error(f"({file_name}) Error processing file: {str(e)}")
             return None
+
+class FAERSProcessingSummary:
+    """Tracks and generates summary reports for FAERS data processing."""
+
+    def __init__(self):
+        """Initialize processing summary."""
+        self.quarter_summaries: Dict[str, QuarterSummary] = {}
+        self.logger = logging.getLogger(__name__)
+
+    def add_quarter_summary(self, quarter: str, summary: QuarterSummary):
+        """Add summary for a processed quarter."""
+        self.quarter_summaries[quarter] = summary
+
+    def generate_markdown_report(self, output_dir: Path) -> str:
+        """Generate a detailed markdown report of all processing results."""
+        report = ["# FAERS Processing Summary Report\n"]
+        
+        # Add timestamp
+        report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        # Sort quarters for consistent reporting
+        sorted_quarters = sorted(self.quarter_summaries.keys())
+        
+        # Overall statistics
+        total_quarters = len(sorted_quarters)
+        total_time = sum(summary.processing_time for summary in self.quarter_summaries.values())
+        report.append(f"## Overall Statistics")
+        report.append(f"- Total Quarters Processed: {total_quarters}")
+        report.append(f"- Total Processing Time: {total_time:.2f} seconds")
+        report.append(f"- Average Time per Quarter: {(total_time/total_quarters if total_quarters > 0 else 0):.2f} seconds\n")
+        
+        # Per-quarter details
+        for quarter in sorted_quarters:
+            summary = self.quarter_summaries[quarter]
+            report.append(f"\n## Quarter: {quarter}")
+            report.append(f"Processing Time: {summary.processing_time:.2f} seconds\n")
+            
+            # Process each file type
+            for data_type in ['demo', 'drug', 'reac', 'outc', 'rpsr', 'ther', 'indi']:
+                table_summary = getattr(summary, f"{data_type}_summary")
+                if table_summary.total_rows > 0:
+                    report.append(f"\n### {data_type.upper()} File")
+                    
+                    # Basic statistics
+                    report.append("#### Processing Statistics")
+                    report.append(f"- Total Rows: {table_summary.total_rows:,}")
+                    report.append(f"- Processed Rows: {table_summary.processed_rows:,}")
+                    report.append(f"- Success Rate: {(table_summary.processed_rows/table_summary.total_rows*100):.1f}%")
+                    report.append(f"- Processing Time: {table_summary.processing_time:.2f} seconds")
+                    
+                    # Missing Columns
+                    if table_summary.missing_columns:
+                        report.append("\n#### Missing Columns")
+                        report.append("| Column | Default Value |")
+                        report.append("|--------|---------------|")
+                        for col, default in table_summary.missing_columns.items():
+                            report.append(f"| {col} | {default} |")
+                    
+                    # Invalid Dates
+                    if table_summary.invalid_dates:
+                        report.append("\n#### Invalid Dates")
+                        report.append("| Field | Invalid Count | Percentage |")
+                        report.append("|-------|---------------|------------|")
+                        for field, count in table_summary.invalid_dates.items():
+                            pct = (count/table_summary.total_rows*100)
+                            report.append(f"| {field} | {count:,}/{table_summary.total_rows:,} | {pct:.1f}% |")
+                    
+                    # Data Errors
+                    if table_summary.data_errors:
+                        report.append("\n#### Data Validation Errors")
+                        report.append("| Error Type | Count |")
+                        report.append("|------------|--------|")
+                        for error_type, count in table_summary.data_errors.items():
+                            report.append(f"| {error_type} | {count:,} |")
+                    
+                    # Parsing Errors
+                    if table_summary.parsing_errors:
+                        report.append("\n#### Parsing Errors")
+                        for error in table_summary.parsing_errors:
+                            report.append(f"- {error}")
+                            
+        # Write report to file
+        report_text = "\n".join(report)
+        report_path = output_dir / f"faers_processing_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        report_path.write_text(report_text)
+        
+        self.logger.info(f"Saved processing report to: {report_path}")
+        return report_text
+
+    def get_summary_stats(self) -> Dict:
+        """Get summary statistics for all processed quarters."""
+        stats = {
+            'total_quarters': len(self.quarter_summaries),
+            'total_time': sum(s.processing_time for s in self.quarter_summaries.values()),
+            'total_rows': {
+                'demo': sum(s.demo_summary.total_rows for s in self.quarter_summaries.values()),
+                'drug': sum(s.drug_summary.total_rows for s in self.quarter_summaries.values()),
+                'reac': sum(s.reac_summary.total_rows for s in self.quarter_summaries.values()),
+                'outc': sum(s.outc_summary.total_rows for s in self.quarter_summaries.values()),
+                'rpsr': sum(s.rpsr_summary.total_rows for s in self.quarter_summaries.values()),
+                'ther': sum(s.ther_summary.total_rows for s in self.quarter_summaries.values()),
+                'indi': sum(s.indi_summary.total_rows for s in self.quarter_summaries.values())
+            },
+            'success_rates': {
+                'demo': self._calculate_success_rate('demo'),
+                'drug': self._calculate_success_rate('drug'),
+                'reac': self._calculate_success_rate('reac'),
+                'outc': self._calculate_success_rate('outc'),
+                'rpsr': self._calculate_success_rate('rpsr'),
+                'ther': self._calculate_success_rate('ther'),
+                'indi': self._calculate_success_rate('indi')
+            }
+        }
+        return stats
+        
+    def _calculate_success_rate(self, data_type: str) -> float:
+        """Calculate success rate for a specific data type across all quarters."""
+        total_rows = sum(getattr(s, f"{data_type}_summary").total_rows for s in self.quarter_summaries.values())
+        processed_rows = sum(getattr(s, f"{data_type}_summary").processed_rows for s in self.quarter_summaries.values())
+        return (processed_rows / total_rows * 100) if total_rows > 0 else 0.0
