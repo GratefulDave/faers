@@ -92,8 +92,19 @@ class FAERSProcessor:
         # Set current date in YYYYMMDD format
         self.current_date = datetime.now().strftime("%Y%m%d")
 
-    def process_all(self, quarters_dir: Path, output_dir: Path, parallel: bool = True, max_workers: Optional[int] = None) -> Dict[str, List[QuarterSummary]]:
-        """Process multiple FAERS quarters in parallel."""
+    def process_all(self, quarters_dir: Path, output_dir: Path, parallel: bool = True, max_workers: Optional[int] = None, chunk_size: Optional[int] = None) -> Dict[str, List[QuarterSummary]]:
+        """Process multiple FAERS quarters in parallel.
+        
+        Args:
+            quarters_dir: Directory containing quarter directories
+            output_dir: Directory to save processed files
+            parallel: Whether to process files in parallel
+            max_workers: Maximum number of worker threads for parallel processing
+            chunk_size: Size of chunks for processing large files
+            
+        Returns:
+            Dictionary containing processing summaries
+        """
         try:
             quarters_dir = Path(quarters_dir)
             output_dir = Path(output_dir)
@@ -115,7 +126,7 @@ class FAERSProcessor:
                 # Use ThreadPoolExecutor for parallel processing
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_quarter = {
-                        executor.submit(self.process_quarter, quarter_dir, parallel, max_workers): quarter_dir
+                        executor.submit(self.process_quarter, quarter_dir, parallel, max_workers, chunk_size): quarter_dir
                         for quarter_dir in quarter_dirs
                     }
                     
@@ -131,7 +142,7 @@ class FAERSProcessor:
                 # Process sequentially
                 for quarter_dir in quarter_dirs:
                     try:
-                        summary = self.process_quarter(quarter_dir, parallel, max_workers)
+                        summary = self.process_quarter(quarter_dir, parallel, max_workers, chunk_size)
                         if summary:
                             self.processing_summary.add_quarter_summary(quarter_dir.name, summary)
                     except Exception as e:
@@ -235,13 +246,14 @@ class FAERSProcessor:
         self.logger.warning(f"No files found matching patterns {patterns} in {directory}")
         return None
 
-    def process_quarter(self, quarter_dir: Path, parallel: bool = False, max_workers: Optional[int] = None) -> Optional[QuarterSummary]:
+    def process_quarter(self, quarter_dir: Path, parallel: bool = False, max_workers: Optional[int] = None, chunk_size: Optional[int] = None) -> Optional[QuarterSummary]:
         """Process all files in a FAERS quarter directory.
         
         Args:
             quarter_dir: Path to quarter directory
             parallel: Whether to process files in parallel
             max_workers: Maximum number of worker threads for parallel processing
+            chunk_size: Size of chunks for processing large files
             
         Returns:
             QuarterSummary if successful, None if failed
@@ -269,7 +281,7 @@ class FAERSProcessor:
                 # Use ThreadPoolExecutor for parallel processing
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_file_type = {
-                        executor.submit(self._process_file_type, quarter_dir, file_prefix, data_type, summary): (file_prefix, data_type)
+                        executor.submit(self._process_file_type, quarter_dir, file_prefix, data_type, summary, chunk_size): (file_prefix, data_type)
                         for file_prefix, (data_type, summary) in file_types.items()
                     }
                     
@@ -283,7 +295,7 @@ class FAERSProcessor:
                 # Process sequentially
                 for file_prefix, (data_type, summary) in file_types.items():
                     try:
-                        self._process_file_type(quarter_dir, file_prefix, data_type, summary)
+                        self._process_file_type(quarter_dir, file_prefix, data_type, summary, chunk_size)
                     except Exception as e:
                         self.logger.error(f"({quarter_name}) Error processing {file_prefix} files: {str(e)}")
             
@@ -300,7 +312,7 @@ class FAERSProcessor:
             self.logger.error(f"Quarter directory that failed: {quarter_dir}")
             return None
 
-    def _process_file_type(self, quarter_dir: Path, file_prefix: str, data_type: str, summary: TableSummary) -> None:
+    def _process_file_type(self, quarter_dir: Path, file_prefix: str, data_type: str, summary: TableSummary, chunk_size: Optional[int] = None) -> None:
         """Process files of a specific type in a quarter directory."""
         try:
             # First find the ASCII directory
@@ -326,7 +338,7 @@ class FAERSProcessor:
                 
                 try:
                     # Read and clean file
-                    df = self._read_and_clean_file(file_path)
+                    df = self._read_and_clean_file(file_path, chunk_size)
                     
                     if df is not None:
                         df, table_summary = self._process_dataset(df, data_type, quarter_dir.name, file_path.name)
@@ -344,14 +356,63 @@ class FAERSProcessor:
         except Exception as e:
             self.logger.error(f"({quarter_dir.name}) Error processing {file_prefix} files: {str(e)}")
 
-    def _read_and_clean_file(self, file_path: Path) -> Optional[pd.DataFrame]:
-        """Read and perform initial cleaning of a FAERS data file."""
-        try:
-            # Read file with case-insensitive column handling
-            df = pd.read_csv(file_path, delimiter='$', dtype=str)
+    def _read_and_clean_file(self, file_path: Path, chunk_size: Optional[int] = None) -> pd.DataFrame:
+        """Read and clean a file, handling different formats and encodings.
+        
+        Args:
+            file_path: Path to the file
+            chunk_size: Size of chunks for processing large files
             
-            # Clean the DataFrame
-            df = self._clean_dataframe(df)
+        Returns:
+            Cleaned DataFrame
+        """
+        try:
+            # Determine file extension
+            extension = file_path.suffix.lower()
+            
+            if extension == '.txt':
+                # Try different encodings
+                encodings = ['utf-8', 'latin1', 'cp1252']
+                df = None
+                
+                for encoding in encodings:
+                    try:
+                        if chunk_size:
+                            # Process in chunks
+                            chunks = []
+                            for chunk in pd.read_csv(file_path, sep='$', encoding=encoding, chunksize=chunk_size):
+                                cleaned_chunk = self._clean_dataframe(chunk)
+                                chunks.append(cleaned_chunk)
+                            df = pd.concat(chunks, ignore_index=True)
+                        else:
+                            # Read entire file at once
+                            df = pd.read_csv(file_path, sep='$', encoding=encoding)
+                            df = self._clean_dataframe(df)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                    except Exception as e:
+                        self.logger.error(f"Error reading file {file_path} with encoding {encoding}: {str(e)}")
+                        continue
+                
+                if df is None:
+                    raise ValueError(f"Could not read file {file_path} with any supported encoding")
+                
+            elif extension == '.xml':
+                # XML files typically don't need chunked processing
+                try:
+                    tree = ET.parse(file_path)
+                    root = tree.getroot()
+                    data = []
+                    for child in root:
+                        data.append({elem.tag: elem.text for elem in child})
+                    df = pd.DataFrame(data)
+                    df = self._clean_dataframe(df)
+                except Exception as e:
+                    raise ValueError(f"Error parsing XML file {file_path}: {str(e)}")
+                    
+            else:
+                raise ValueError(f"Unsupported file extension: {extension}")
             
             return df
             
@@ -361,13 +422,13 @@ class FAERSProcessor:
 
     def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
         """Process a dataset with error tracking and validation."""
-        table_summary = TableSummary()
-        start_time = time.time()
+        table_summary = TableSummary(
+            file_name=file_name,
+            start_time=time.time(),
+            total_rows=len(df)
+        )
         
         try:
-            # Record initial stats
-            table_summary.total_rows = len(df)
-            
             # Validate data
             validation_result = self.validator.validate_data(df, data_type)
             if not validation_result.valid:
@@ -378,14 +439,17 @@ class FAERSProcessor:
             df = self.standardizer.standardize_data(df, data_type, file_name, quarter_name)
             
             # Update summary
+            table_summary.success = True
             table_summary.processed_rows = len(df)
-            table_summary.processing_time = time.time() - start_time
+            table_summary.end_time = time.time()
             
             return df, table_summary
             
         except Exception as e:
             error_msg = f"Error processing {data_type} dataset: {str(e)}"
-            table_summary.add_parsing_error(error_msg)
+            table_summary.success = False
+            table_summary.error = str(e)
+            table_summary.end_time = time.time()
             self.logger.error(f"({quarter_name}) {error_msg}")
             return df, table_summary
             
