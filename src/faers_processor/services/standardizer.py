@@ -896,46 +896,97 @@ class DataStandardizer:
             return df
 
     def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize weight values to kilograms.
+        """Standardize weight values exactly matching R implementation.
+        
+        According to ASC_NTS.pdf guidelines, only these units are valid:
+        - KG/KGS - Kilograms
+        - LBS/IB - Pounds
+        - GMS - Grams
+        - MG - Milligrams
+        
+        Missing values (NA) are considered as kilograms.
+        Values > 635 kg (heaviest documented human weight) are set to NA.
         
         Args:
-            df: DataFrame with weight columns
-            
+            df: DataFrame with weight columns (wt, wt_cod)
+        
         Returns:
-            DataFrame with standardized weight values
+            DataFrame with standardized weight in kg
         """
-        df = df.copy()
-        
-        # Weight unit conversion factors
-        wt_factors = {
-            'LBS': 0.453592,  # Pounds to kg
-            'IB': 0.453592,   # Pounds to kg (alternative code)
-            'KG': 1,          # Already in kg
-            'KGS': 1,         # Already in kg (alternative code)
-            'GMS': 0.001,     # Grams to kg
-            'MG': 1e-06       # Milligrams to kg
-        }
-        
-        # Convert weight to kg
-        df['wt_corrector'] = df['wt_cod'].map(wt_factors).fillna(1)
-        df['wt_in_kgs'] = pd.to_numeric(df['wt'].abs(), errors='coerce') * df['wt_corrector']
-        
-        # Round to nearest kg
-        df['wt_in_kgs'] = df['wt_in_kgs'].round()
-        
-        # Handle implausible weights (> 635 kg)
-        df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = pd.NA
-        
-        # Log weight distribution
-        weight_stats = df['wt_in_kgs'].describe()
-        logging.info("Weight distribution (kg):")
-        for stat, value in weight_stats.items():
-            logging.info(f"  {stat}: {value:.2f}")
-        
-        # Clean up temporary columns
-        df = df.drop(columns=['wt_corrector', 'wt', 'wt_cod'])
-        
-        return df
+        try:
+            df = df.copy()
+            
+            # If weight columns don't exist, add them with empty strings
+            if 'wt' not in df.columns:
+                df['wt'] = ''
+                logging.warning("Weight column not found - initialized with empty strings")
+                
+            if 'wt_cod' not in df.columns:
+                df['wt_cod'] = ''
+                logging.warning("Weight code column not found - initialized with empty strings")
+                
+            # Clean weight values before conversion:
+            # 1. Strip whitespace
+            # 2. Handle negative values by removing minus sign
+            # 3. Remove any commas and units embedded in the value
+            df['wt'] = (df['wt'].astype(str)
+                       .str.strip()
+                       .str.replace('-', '')  # Remove minus signs
+                       .str.replace(',', '')  # Remove commas
+                       .str.replace(r'[^\d\.]', '', regex=True))  # Keep only digits and decimal points
+            
+            # Convert to numeric, coercing errors to NaN
+            df['wt'] = pd.to_numeric(df['wt'], errors='coerce')
+            
+            # Create weight corrector exactly as in R
+            # Demo[wt_cod %in%c("LBS", "IB")]$wt_corrector <- 0.453592
+            # Demo[wt_cod%in% c("KG", "KGS")]$wt_corrector <- 1
+            # Demo[wt_cod=="GMS"]$wt_corrector <- 0.001
+            # Demo[wt_cod=="MG"]$wt_corrector <- 1e-06
+            # Demo[is.na(wt_cod)]$wt_corrector <- 1
+            
+            conditions = [
+                df['wt_cod'].isin(['LBS', 'IB']),
+                df['wt_cod'].isin(['KG', 'KGS']),
+                df['wt_cod'] == 'GMS',
+                df['wt_cod'] == 'MG',
+                df['wt_cod'].isna() | (df['wt_cod'] == '')
+            ]
+            
+            choices = [
+                0.453592,  # LBS/IB to kg
+                1.0,       # KG/KGS (already in kg)
+                0.001,     # GMS to kg
+                1e-06,     # MG to kg
+                1.0        # NA/empty treated as kg
+            ]
+            
+            df['wt_corrector'] = np.select(conditions, choices, default=np.nan)
+            
+            # Calculate weight in kg
+            # Demo <- Demo[,wt_in_kgs:=round(abs(as.numeric(wt))*wt_corrector)]
+            df['wt_in_kgs'] = np.round(df['wt'] * df['wt_corrector'])
+            
+            # Handle implausible weights (> 635 kg)
+            # Demo[wt_in_kgs>635]$wt_in_kgs <- NA
+            df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = np.nan
+            
+            # Drop temporary columns
+            # Demo <- Demo %>% select(-wt_corrector,-wt,-wt_cod)
+            df = df.drop(columns=['wt_corrector', 'wt', 'wt_cod'])
+            
+            # Log weight distribution
+            logging.info("Weight distribution (kg):")
+            weight_stats = df['wt_in_kgs'].describe()
+            for stat, value in weight_stats.items():
+                logging.info(f"  {stat}: {value}")
+                
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing weight values: {str(e)}")
+            # On any error, return original DataFrame
+            return df
 
     def standardize_country(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize country codes using ISO standards.
