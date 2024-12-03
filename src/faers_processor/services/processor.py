@@ -1090,6 +1090,63 @@ class FAERSProcessor:
             self.logger.error(f"Error processing DEMO dataset: {str(e)}")
             raise
 
+    def process_indi_dataset(self) -> None:
+        """Process INDI dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Process INDI files
+        2. Remove rows with no indication specified (NA indi_pt)
+        3. Save to RDS/pickle format
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing INDI dataset")
+        
+        # Find INDI files (str_detect(faers_list, regex("indi", ignore_case = T)))
+        indi_files = []
+        for quarter_dir in paths["raw"].iterdir():
+            if quarter_dir.is_dir():
+                ascii_dir = quarter_dir / "ascii"
+                if ascii_dir.exists():
+                    for file in ascii_dir.glob("*.[tT][xX][tT]"):
+                        if re.search(r'indi', file.name, re.IGNORECASE):
+                            indi_files.append(file)
+        
+        if not indi_files:
+            raise ValueError("No INDI files found in the ascii directories")
+            
+        try:
+            # Process INDI dataset with exact R parameters
+            indi_df = self.unify_data(
+                files_list=indi_files,
+                namekey={
+                    "ISR": "primaryid",
+                    "DRUG_SEQ": "drug_seq",
+                    "indi_drug_seq": "drug_seq",
+                    "INDI_PT": "indi_pt"
+                },
+                column_subset=[
+                    "primaryid",
+                    "drug_seq",
+                    "indi_pt"
+                ],
+                duplicated_cols_x=None,  # NA in R
+                duplicated_cols_y=None   # NA in R
+            )
+            
+            # Remove rows with NA indi_pt (INDΙ <- INDΙ[!is.na(indi_pt)])
+            indi_df = indi_df.dropna(subset=['indi_pt'])
+            
+            # Save processed INDI dataset
+            output_path = paths["clean"] / "INDI.rds"
+            indi_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed INDI dataset to {output_path}")
+            self.logger.info(f"INDI shape: {indi_df.shape}")
+            self.logger.info(f"INDI columns: {', '.join(indi_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing INDI dataset: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         
