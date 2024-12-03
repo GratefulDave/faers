@@ -321,8 +321,13 @@ class DataStandardizer:
 
     def _standardize_columns(self, df: pd.DataFrame, mapping: Dict[str, str], required_cols: Set[str]) -> pd.DataFrame:
         """Standardize column names using case-insensitive mapping."""
+        # Log all column names and their case
+        self.logger.debug(f"Original columns in DataFrame: {list(df.columns)}")
+        self.logger.debug(f"Looking for mappings: {mapping}")
+        
         # Create case-insensitive column lookup
         df_cols = {col.upper(): col for col in df.columns}
+        self.logger.debug(f"Case-insensitive column lookup: {df_cols}")
         
         # Map columns case-insensitively
         new_columns = {}
@@ -332,15 +337,21 @@ class DataStandardizer:
             for src, target in mapping.items():
                 if src.upper() == col_upper:
                     new_columns[col] = target
+                    self.logger.debug(f"Mapped column '{col}' to '{target}'")
                     break
             
             # Special case for ISR -> primaryid
             if col_upper == 'ISR':
                 new_columns[col] = 'primaryid'
+                self.logger.debug(f"Mapped ISR column '{col}' to 'primaryid'")
+        
+        # Log final mappings
+        self.logger.debug(f"Final column mappings: {new_columns}")
         
         # Apply the mapping if we found any
         if new_columns:
             df = df.rename(columns=new_columns)
+            self.logger.debug(f"Final columns after mapping: {list(df.columns)}")
         
         return df
 
@@ -1812,7 +1823,8 @@ class DataStandardizer:
                 raise FileNotFoundError(f"Quarter directory not found at {quarter_dir}")
             
             quarter_name = quarter_dir.name
-            self.logger.info(f"Processing quarter {quarter_name}")
+            self.logger.info(f"Processing quarter: {quarter_name}")
+            self.logger.info(f"Quarter directory: {quarter_dir}")
             
             # Initialize quarter summary
             summary = QuarterSummary(quarter=quarter_name)
@@ -1839,27 +1851,27 @@ class DataStandardizer:
                         self.logger.warning(f"No {desc} files found in {quarter_name}")
                         continue
                         
-                    # Process each file
                     for file_path in files:
+                        self.logger.info(f"Processing file: {file_path}")
                         try:
-                            df = self.read_file(file_path)
+                            # Read the file and get header info
+                            df = pd.read_csv(file_path, delimiter='$', dtype=str, encoding='latin1', nrows=0)
+                            self.logger.info(f"File headers found: {list(df.columns)}")
+                            
+                            # Now read the full file
+                            df = pd.read_csv(file_path, delimiter='$', dtype=str, encoding='latin1')
+                            
                             if df is not None and not df.empty:
                                 df = self.standardize_data(df, file_type, str(file_path), quarter_name)
                                 processed_data[file_type] = df
+                            else:
+                                self.logger.error(f"({quarter_name}) Empty or invalid DataFrame from {file_path}")
                                 
-                                # Update summary statistics
-                                if file_type == 'demo':
-                                    summary.demo_summary.total_rows = len(df)
-                                elif file_type == 'drug':
-                                    summary.drug_summary.total_rows = len(df)
-                                elif file_type == 'reac':
-                                    summary.reac_summary.total_rows = len(df)
-                                    
                         except Exception as e:
-                            self.logger.error(f"Error processing {desc} file {file_path}: {str(e)}")
+                            self.logger.error(f"({quarter_name}) Error processing file {file_path}: {str(e)}")
                             
                 except Exception as e:
-                    self.logger.error(f"Error processing {desc} files for {quarter_name}: {str(e)}")
+                    self.logger.error(f"({quarter_name}) Error processing {desc} files: {str(e)}")
             
             # Save processed data
             quarter_output_dir = self.output_dir / quarter_name
