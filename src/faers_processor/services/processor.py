@@ -1006,6 +1006,18 @@ class FAERSProcessor:
             self.logger.error(f"Error processing DRUG datasets: {str(e)}")
             raise
 
+    def process_drug_info(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process drug information data.
+        
+        Args:
+            df: Raw drug information DataFrame
+        
+        Returns:
+            Processed DataFrame with standardized therapy regimen
+        """
+        df = self.standardizer.standardize_drug_info(df, self.max_date)
+        return df
+
     def process_demo_dataset(self, input_dir: Path, output_dir: Path) -> None:
         """Process DEMO dataset exactly as in the R implementation.
         

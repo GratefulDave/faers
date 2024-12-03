@@ -2080,6 +2080,151 @@ class DataStandardizer:
             # On any error, return original DataFrame
             return df
 
+    def standardize_drug_info(self, df: pd.DataFrame, max_date: int = None) -> pd.DataFrame:
+        """Standardize drug information exactly matching R implementation.
+        
+        Standardizes:
+        - Route of administration using route_st.csv
+        - Dechallenge/rechallenge (Y/N/D only)
+        - Dose form using dose_form_st.csv
+        - Dose frequency using dose_freq_st.csv
+        - Route-form combinations using route_form_st.csv
+        - Expiration date validation
+        
+        Args:
+            df: Drug information DataFrame
+            max_date: Maximum valid date for exp_dt validation
+        
+        Returns:
+            DataFrame with standardized drug information
+        """
+        try:
+            df = df.copy()
+            
+            # 1. Standardize route of administration
+            if 'route' in df.columns:
+                df['route'] = df['route'].str.lower().str.strip()
+                
+                # Load route standardization mapping
+                route_st = pd.read_csv(
+                    os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        'external_data', 'manual_fixes', 'route_st.csv'
+                    ),
+                    sep=';'
+                )
+                route_st = route_st[['route', 'route_st']].drop_duplicates()
+                
+                # Map routes
+                df = pd.merge(df, route_st, on='route', how='left')
+                
+                # Log unmapped routes
+                unmapped = df[df['route_st'].isna()]['route'].unique()
+                if len(unmapped) > 0:
+                    logging.warning(f"Unmapped routes found: {'; '.join(unmapped)}")
+            
+            # 2. Standardize dechallenge/rechallenge
+            valid_responses = ['Y', 'N', 'D']
+            if 'dechal' in df.columns:
+                df.loc[~df['dechal'].isin(valid_responses), 'dechal'] = pd.NA
+                
+            if 'rechal' in df.columns:
+                df.loc[~df['rechal'].isin(valid_responses), 'rechal'] = pd.NA
+            
+            # 3. Standardize dose form
+            if 'dose_form' in df.columns:
+                df['dose_form'] = df['dose_form'].str.lower().str.strip()
+                
+                # Load dose form standardization
+                dose_form_st = pd.read_csv(
+                    os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        'external_data', 'manual_fixes', 'dose_form_st.csv'
+                    ),
+                    sep=';'
+                )
+                dose_form_st = dose_form_st[['dose_form', 'dose_form_st']].drop_duplicates()
+                
+                # Map dose forms
+                df = pd.merge(df, dose_form_st, on='dose_form', how='left')
+                
+                # Log unmapped dose forms
+                unmapped = df[df['dose_form_st'].isna()]['dose_form'].unique()
+                if len(unmapped) > 0:
+                    logging.warning(f"Unmapped dose forms found: {'; '.join(unmapped)}")
+            
+            # 4. Standardize dose frequency
+            if 'dose_freq' in df.columns:
+                # Load dose frequency standardization
+                dose_freq_st = pd.read_csv(
+                    os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        'external_data', 'manual_fixes', 'dose_freq_st.csv'
+                    ),
+                    sep=';'
+                )
+                dose_freq_st = dose_freq_st[['dose_freq', 'dose_freq_st']].dropna().drop_duplicates()
+                
+                # Map frequencies
+                df = pd.merge(df, dose_freq_st, on='dose_freq', how='left')
+                
+                # Log unmapped frequencies
+                unmapped = df[df['dose_freq_st'].isna()]['dose_freq'].unique()
+                if len(unmapped) > 0:
+                    logging.warning(f"Unmapped dose frequencies found: {'; '.join(unmapped)}")
+            
+            # 5. Handle route-form combinations
+            if 'dose_form_st' in df.columns:
+                # Load route-form standardization
+                route_form_st = pd.read_csv(
+                    os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                        'external_data', 'manual_fixes', 'route_form_st.csv'
+                    ),
+                    sep=';'
+                )
+                route_form_st = route_form_st[['dose_form_st', 'route_plus']].drop_duplicates()
+                
+                # Map route-form combinations
+                df = pd.merge(df, route_form_st, on='dose_form_st', how='left')
+                
+                # Update route_st with route_plus where appropriate
+                mask = (df['route_st'].isna() | (df['route_st'] == 'unknown'))
+                df.loc[mask, 'route_st'] = df.loc[mask, 'route_plus']
+            
+            # 6. Clean up temporary columns
+            drop_cols = ['route', 'dose_form', 'dose_freq', 'route_plus']
+            df = df.drop(columns=[col for col in drop_cols if col in df.columns])
+            
+            # 7. Validate expiration date
+            if 'exp_dt' in df.columns:
+                def check_date(dt_series):
+                    n = dt_series.astype(str).str.len()
+                    invalid_dates = (
+                        ((n == 4) & ((dt_series < 1985) | (dt_series > int(str(max_date)[:4])))) |
+                        ((n == 6) & ((dt_series < 198500) | (dt_series > int(str(max_date)[:6])))) |
+                        ((n == 8) & ((dt_series < 19850000) | (dt_series > max_date))) |
+                        (~n.isin([4, 6, 8]))
+                    )
+                    return dt_series.where(~invalid_dates)
+                
+                df['exp_dt'] = check_date(pd.to_numeric(df['exp_dt'], errors='coerce'))
+            
+            # 8. Keep required columns in correct order
+            keep_cols = [
+                'primaryid', 'drug_seq', 'val_vbm', 'route_st', 'dose_vbm',
+                'cum_dose_unit', 'cum_dose_chr', 'dose_amt', 'dose_unit',
+                'dose_form_st', 'dose_freq_st', 'dechal', 'rechal',
+                'lot_num', 'nda_num', 'exp_dt'
+            ]
+            df = df[[col for col in keep_cols if col in df.columns]]
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing drug information: {str(e)}")
+            return df
+
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
         """Process all FAERS quarters with summary reporting.
         
