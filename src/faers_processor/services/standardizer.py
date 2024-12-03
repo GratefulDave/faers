@@ -700,11 +700,12 @@ class DataStandardizer:
         
         return df
 
-    def standardize_sex(self, df: pd.DataFrame) -> pd.DataFrame:
+    def standardize_sex(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
         """Standardize sex values.
         
         Args:
             df: DataFrame with sex column
+            categories: List of valid sex categories
             
         Returns:
             DataFrame with standardized sex values
@@ -714,6 +715,9 @@ class DataStandardizer:
                 return df
                 
             df = df.copy()
+            
+            if categories is None:
+                categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
             
             # Standardize sex codes
             sex_map = {
@@ -729,11 +733,13 @@ class DataStandardizer:
             # Convert unknown values to Unknown
             df.loc[df['sex'].isna(), 'sex'] = 'Unknown'
             
-            # Convert to categorical
-            df['sex'] = df['sex'].astype('category')
+            # Ensure empty string is in categories and convert to categorical
+            if '' not in categories:
+                categories = list(categories) + ['']
+            df['sex'] = pd.Categorical(df['sex'], categories=categories)
             
             # Log distribution
-            sex_dist = df['sex'].value_counts()
+            sex_dist = df['sex'].value_counts(dropna=False)
             total = len(df)
             logging.info("Sex distribution:")
             for sex, count in sex_dist.items():
@@ -810,42 +816,64 @@ class DataStandardizer:
         
         return df
 
-    def standardize_age_groups(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize age groups based on thresholds.
+    def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
+        """Add standardized age groups based on age in years.
         
         Args:
-            df: DataFrame with age values
+            df: DataFrame with age_in_years column
+            categories: List of valid age group categories
             
         Returns:
-            DataFrame with standardized age groups
+            DataFrame with age groups added
         """
-        df = df.copy()
-        
-        # Initialize age group column
-        df['age_grp_st'] = pd.NA
-        
-        # Apply age group rules
-        mask = df['age_in_years'].notna()
-        df.loc[mask, 'age_grp_st'] = 'E'  # Default to Elderly
-        df.loc[mask & (df['age_in_years'] < 65), 'age_grp_st'] = 'A'
-        df.loc[mask & (df['age_in_years'] < 18), 'age_grp_st'] = 'T'
-        df.loc[mask & (df['age_in_years'] < 12), 'age_grp_st'] = 'C'
-        df.loc[mask & (df['age_in_years'] < 2), 'age_grp_st'] = 'I'
-        df.loc[df['age_in_days'] < 28, 'age_grp_st'] = 'N'
-        
-        # Log distribution
-        dist = df['age_grp_st'].value_counts()
-        total = len(df)
-        for group, count in dist.items():
-            percent = round(100 * count / total, 2)
-            logging.info(f"{group}: {count} ({percent}%)")
-        
-        # Update column name
-        if 'age_grp' in df.columns:
-            df = df.drop(columns=['age_grp'])
-        df = df.rename(columns={'age_grp_st': 'age_grp'})
-        
-        return df
+        try:
+            if 'age_in_years' not in df.columns:
+                return df
+                
+            df = df.copy()
+            
+            if categories is None:
+                categories = [
+                    'Prenatal',
+                    'Infant (0-2)',
+                    'Child (2-12)',
+                    'Adolescent (12-18)',
+                    'Young Adult (18-35)',
+                    'Adult (35-50)',
+                    'Middle Age (50-65)',
+                    'Elderly (65+)',
+                    ''
+                ]
+            
+            # Define age group bins and labels
+            bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
+            labels = [cat for cat in categories if cat != '']  # Exclude empty string for pd.cut
+            
+            # Create age groups
+            df['age_group'] = pd.cut(
+                df['age_in_years'],
+                bins=bins,
+                labels=labels,
+                right=False
+            )
+            
+            # Convert to categorical with all categories (including empty string)
+            df['age_group'] = df['age_group'].astype(str).replace('nan', '')
+            df['age_group'] = pd.Categorical(df['age_group'], categories=categories)
+            
+            # Log distribution
+            age_dist = df['age_group'].value_counts(dropna=False)
+            total = len(df)
+            logging.info("Age group distribution:")
+            for group, count in age_dist.items():
+                pct = round(100 * count / total, 2)
+                logging.info(f"  {group}: {count} ({pct}%)")
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error creating age groups: {str(e)}")
+            return df
 
     def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize weight values to kilograms.
@@ -1060,8 +1088,6 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized dose forms
         """
-        df = df.copy()
-        
         if 'dose_form' not in df.columns:
             return df
         
@@ -1091,7 +1117,8 @@ class DataStandardizer:
         df['dose_form_st'] = df['dose_form_st'].astype('category')
         
         # Update column name
-        df = df.drop(columns=['dose_form']).rename(columns={'dose_form_st': 'dose_form'})
+        if 'dose_form' in df.columns:
+            df = df.drop(columns=['dose_form']).rename(columns={'dose_form_st': 'dose_form'})
         
         return df
 
@@ -1706,18 +1733,35 @@ class DataStandardizer:
         try:
             df = df.copy()
             
+            # Pre-define all possible categories for categorical columns
+            sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
+            age_group_categories = [
+                'Prenatal',
+                'Infant (0-2)',
+                'Child (2-12)',
+                'Adolescent (12-18)',
+                'Young Adult (18-35)',
+                'Adult (35-50)',
+                'Middle Age (50-65)',
+                'Elderly (65+)',
+                ''
+            ]
+            
+            # Initialize categorical columns with empty string category
+            if 'sex' in df.columns:
+                df['sex'] = pd.Categorical(df['sex'], categories=sex_categories)
+            
             # Standardize dates
-            date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
             df = self.standardize_dates(df)
             
             # Standardize sex values
-            df = self.standardize_sex(df)
+            df = self.standardize_sex(df, sex_categories)
             
-            # Standardize age values
+            # Standardize age values and create age groups
             df = self.standardize_age(df)
-            
-            # Standardize age groups
-            df = self.standardize_age_groups(df)
+            if 'age_group' not in df.columns:
+                df['age_group'] = pd.Categorical('', categories=age_group_categories)
+            df = self.standardize_age_groups(df, age_group_categories)
             
             # Standardize weight values
             df = self.standardize_weight(df)
