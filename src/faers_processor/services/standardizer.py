@@ -726,7 +726,25 @@ class DataStandardizer:
             return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize age values while preserving ALL rows."""
+        """Standardize age values exactly matching R implementation.
+        
+        Handles three fields:
+        - age (numeric value)
+        - age_cod (unit: YR, MON, WK, DY, HR)
+        - age_group (category)
+        
+        Converts all ages to days and years, handling special cases:
+        - Converts character values to NA
+        - Converts negative numbers to positive
+        - Handles decimal ages > 122 as compilation errors
+        - Validates against max age of 122 years
+        
+        Args:
+            df: DataFrame with age columns
+            
+        Returns:
+            DataFrame with standardized age values
+        """
         try:
             df = df.copy()
             
@@ -734,35 +752,64 @@ class DataStandardizer:
             if 'age' not in df.columns:
                 df['age'] = ''
                 logging.warning("Age column not found - initialized with empty strings")
-                return df
+                
+            if 'age_cod' not in df.columns:
+                df['age_cod'] = ''
+                logging.warning("Age code column not found - initialized with empty strings")
+                
+            # Convert age to numeric, handling special cases
+            df['age'] = df['age'].fillna('')
+            df['age'] = pd.to_numeric(df['age'].str.strip().abs(), errors='coerce')
             
-            # First convert to string and clean
-            df['age'] = df['age'].fillna('').astype(str)
-            df['age'] = df['age'].str.strip()
+            # Create age corrector exactly as in R
+            conditions = [
+                df['age_cod'] == 'DEC',
+                df['age_cod'].isin(['YR', '']) | df['age_cod'].isna(),
+                df['age_cod'] == 'MON',
+                df['age_cod'] == 'WK',
+                df['age_cod'] == 'DY',
+                df['age_cod'] == 'HR',
+                df['age_cod'] == 'SEC',
+                df['age_cod'] == 'MIN'
+            ]
             
-            # Try to convert to numeric, keeping original value if fails
-            def safe_convert(x):
-                try:
-                    # Remove any commas first
-                    x = str(x).replace(',', '')
-                    return pd.to_numeric(x)
-                except:
-                    return np.nan
+            choices = [
+                3650,                          # DEC
+                365,                           # YR or NA
+                30.41667,                      # MON
+                7,                             # WK
+                1,                             # DY
+                0.00011415525114155251,        # HR
+                3.1709791983764586e-08,        # SEC
+                1.9025875190259e-06            # MIN
+            ]
             
-            df['age'] = df['age'].apply(safe_convert)
+            df['age_corrector'] = np.select(conditions, choices, default=np.nan)
             
-            # Log age distribution for non-null values
-            non_null = df['age'].dropna()
-            if len(non_null) > 0:
-                logging.info("Age distribution after standardization:")
-                logging.info(f"  Total values: {len(df)}")
-                logging.info(f"  Non-null values: {len(non_null)}")
-                logging.info(f"  Mean: {non_null.mean():.1f}")
-                logging.info(f"  Min: {non_null.min():.1f}")
-                logging.info(f"  Max: {non_null.max():.1f}")
-            else:
-                logging.warning("No valid numeric age values found")
+            # Calculate age in days
+            df['age_in_days'] = np.round(df['age'].abs() * df['age_corrector'])
             
+            # Handle plausible compilation error (age > 122 years)
+            max_age_days = 122 * 365
+            df.loc[df['age_in_days'] > max_age_days, 'age_in_days'] = np.where(
+                df.loc[df['age_in_days'] > max_age_days, 'age_cod'] == 'DEC',
+                df.loc[df['age_in_days'] > max_age_days, 'age_in_days'] / 
+                df.loc[df['age_in_days'] > max_age_days, 'age_corrector'],
+                np.nan
+            )
+            
+            # Calculate age in years
+            df['age_in_years'] = np.round(df['age_in_days'] / 365)
+            
+            # Drop temporary columns
+            df = df.drop(columns=['age_corrector', 'age', 'age_cod'])
+            
+            # Log age distribution
+            logging.info("Age distribution (years):")
+            age_stats = df['age_in_years'].describe()
+            for stat, value in age_stats.items():
+                logging.info(f"  {stat}: {value}")
+                
             return df
             
         except Exception as e:
@@ -773,6 +820,9 @@ class DataStandardizer:
     def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
         """Add standardized age groups based on age values."""
         try:
+            if 'age' not in df.columns:
+                return df
+                
             df = df.copy()
             
             if categories is None:
