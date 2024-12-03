@@ -1836,3 +1836,49 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
             return pd.DataFrame()  # Return empty DataFrame on failure
+
+    def standardize_data(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
+        """Standardize data based on its type.
+        
+        Args:
+            df: DataFrame to standardize
+            data_type: Type of data ('demo', 'drug', 'reac', etc.)
+            
+        Returns:
+            Standardized DataFrame
+        """
+        try:
+            if df.empty:
+                return df
+                
+            df = df.copy()
+            
+            # Common standardization for all types
+            # Replace empty strings with NaN for better processing
+            df = df.replace(r'^\s*$', np.nan, regex=True)
+            
+            # Type-specific standardization
+            if data_type == 'demo':
+                df = self.process_demographics(df)
+            elif data_type == 'drug':
+                df = self.standardize_drugs(df)
+            elif data_type == 'reac':
+                df = self.standardize_reactions(df)
+            elif data_type == 'outc':
+                df = self.standardize_outcomes(df)
+            elif data_type == 'rpsr':
+                df = self.standardize_sources(df)
+            elif data_type == 'ther':
+                df = self.standardize_therapies(df)
+            elif data_type == 'indi':
+                df = self.standardize_indications(df)
+                
+            # Final cleanup
+            # Replace NaN back with empty strings for consistency
+            df = df.fillna('')
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error in standardize_data for {data_type}: {str(e)}")
+            return df
