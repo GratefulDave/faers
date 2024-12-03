@@ -133,13 +133,34 @@ class FAERSProcessingSummary:
 class DataStandardizer:
     """Standardizes FAERS data according to FDA specifications."""
     
-    def __init__(self):
+    def __init__(self, external_dir: Path, output_dir: Path):
+        """Initialize the standardizer.
+        
+        Args:
+            external_dir: Path to external data directory
+            output_dir: Path to output directory
+        """
+        self.external_dir = external_dir.resolve()
+        self.output_dir = output_dir.resolve()
         self.logger = logging.getLogger(__name__)
+        
+        # Create output directory if it doesn't exist
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
         # Valid values for standardization
         self.valid_routes = {'ORAL', 'INTRAVENOUS', 'SUBCUTANEOUS', 'INTRAMUSCULAR', 'TOPICAL'}
         self.valid_roles = {'PS', 'SS', 'C', 'I'}
         self.valid_outcomes = {'DE', 'LT', 'HO', 'DS', 'CA', 'RI', 'OT'}
-    
+        
+        # Initialize logging
+        self.logger.info(f"Using external data from: {self.external_dir}")
+        self.logger.info(f"Saving processed data to: {self.output_dir}")
+        
+        # Load reference data
+        self._load_reference_data()
+        self._load_meddra_data()
+        self._load_diana_dictionary()
+        
     def _get_column_case_insensitive(self, df: pd.DataFrame, column_names: list) -> Optional[str]:
         """Find column name case-insensitively from a list of possible names."""
         df_cols = {col.lower(): col for col in df.columns}
@@ -369,134 +390,135 @@ class DataStandardizer:
     def _load_reference_data(self):
         """Load reference data for standardization."""
         try:
-            # Manual fix files are under external_data/manual_fixes
-            manual_fix_dir = Path(__file__).parent.parent / 'external_data' / 'manual_fixes'
+            # Load route standardization data
+            route_path = self.external_dir / 'manual_fixes' / 'route_st.csv'
+            if not route_path.exists():
+                raise FileNotFoundError(f"Route standardization file not found at {route_path}")
             
-            if not manual_fix_dir.exists():
-                raise FileNotFoundError(f"Manual fix directory not found at {manual_fix_dir}")
+            self.route_map = pd.read_csv(route_path, sep=';', dtype=str)
+            self.route_map = dict(zip(
+                self.route_map['route'].str.lower().str.strip(),
+                self.route_map['route_st'].str.strip()
+            ))
             
-            # Load country mappings
-            countries_file = manual_fix_dir / 'countries.csv'
-            if not countries_file.exists():
-                raise FileNotFoundError(f"Countries file not found at {countries_file}")
-            self.country_map = pd.read_csv(countries_file, sep=';', low_memory=False)
-            logging.info(f"Loaded {len(self.country_map)} country mappings")
+            # Load dose form standardization data
+            dose_form_path = self.external_dir / 'manual_fixes' / 'dose_form_st.csv'
+            if not dose_form_path.exists():
+                raise FileNotFoundError(f"Dose form standardization file not found at {dose_form_path}")
             
-            # Load route standardization
-            route_file = manual_fix_dir / 'route_st.csv'
-            if not route_file.exists():
-                raise FileNotFoundError(f"Route file not found at {route_file}")
-            self.route_map = pd.read_csv(route_file, sep=';', low_memory=False)
-            logging.info(f"Loaded {len(self.route_map)} route mappings")
+            self.dose_form_map = pd.read_csv(dose_form_path, sep=';', dtype=str)
+            self.dose_form_map = dict(zip(
+                self.dose_form_map['dose_form'].str.lower().str.strip(),
+                self.dose_form_map['dose_form_st'].str.strip()
+            ))
             
-            # Load dose form standardization
-            dose_form_file = manual_fix_dir / 'dose_form_st.csv'
-            if not dose_form_file.exists():
-                raise FileNotFoundError(f"Dose form file not found at {dose_form_file}")
-            self.dose_form_map = pd.read_csv(dose_form_file, sep=';', low_memory=False)
-            logging.info(f"Loaded {len(self.dose_form_map)} dose form mappings")
+            # Load dose frequency standardization data
+            dose_freq_path = self.external_dir / 'manual_fixes' / 'dose_freq_st.csv'
+            if not dose_freq_path.exists():
+                raise FileNotFoundError(f"Dose frequency standardization file not found at {dose_freq_path}")
             
-            # Load dose frequency standardization
-            dose_freq_file = manual_fix_dir / 'dose_freq_st.csv'
-            if not dose_freq_file.exists():
-                raise FileNotFoundError(f"Dose frequency file not found at {dose_freq_file}")
-            self.dose_freq_map = pd.read_csv(dose_freq_file, sep=';', low_memory=False)
-            logging.info(f"Loaded {len(self.dose_freq_map)} dose frequency mappings")
+            self.dose_freq_map = pd.read_csv(dose_freq_path, sep=';', dtype=str)
+            self.dose_freq_map = dict(zip(
+                self.dose_freq_map['dose_freq'].str.lower().str.strip(),
+                self.dose_freq_map['dose_freq_st'].str.strip()
+            ))
             
-            # Load PT fixes
-            pt_file = manual_fix_dir / 'pt_fixed.csv'
-            if not pt_file.exists():
-                raise FileNotFoundError(f"PT file not found at {pt_file}")
-            self.pt_fixes = pd.read_csv(pt_file, sep=';', low_memory=False)
-            logging.info(f"Loaded {len(self.pt_fixes)} PT fixes")
+            # Load country standardization data
+            country_path = self.external_dir / 'manual_fixes' / 'countries.csv'
+            if not country_path.exists():
+                raise FileNotFoundError(f"Country standardization file not found at {country_path}")
             
-            # Load route form standardization
-            route_form_file = manual_fix_dir / 'route_form_st.csv'
-            if not route_form_file.exists():
-                raise FileNotFoundError(f"Route form file not found at {route_form_file}")
-            self.route_form_map = pd.read_csv(route_form_file, sep=';', low_memory=False)
-            logging.info(f"Loaded {len(self.route_form_map)} route form mappings")
+            self.country_map = pd.read_csv(country_path, sep=';', dtype=str)
+            self.country_map = dict(zip(
+                self.country_map['country'].str.lower().str.strip(),
+                self.country_map['Country_Name'].str.strip()
+            ))
+            
+            self.logger.info("Successfully loaded reference data")
             
         except Exception as e:
-            logging.error(f"Error loading reference data: {str(e)}")
-            raise
+            self.logger.error(f"Error loading reference data: {str(e)}")
+            # Initialize empty mappings as fallback
+            self.route_map = {}
+            self.dose_form_map = {}
+            self.dose_freq_map = {}
+            self.country_map = {}
 
     def _load_meddra_data(self):
         """Load and process MedDRA data from ASC files."""
         try:
-            meddra_dir = Path(__file__).parent.parent / 'external_data' / 'meddra' / 'MedAscii'
+            meddra_dir = self.external_dir / 'meddra'
+            if not meddra_dir.exists():
+                raise FileNotFoundError(f"MedDRA directory not found at {meddra_dir}")
             
-            # Read all MedDRA files with proper ASC file handling
-            soc = pd.read_csv(meddra_dir / 'soc.asc', sep='\$', engine='python', header=None, usecols=[0,1,2])
-            soc.columns = ['soc_cod', 'soc', 'def']
+            # Read MedDRA files
+            llt_path = meddra_dir / 'llt.asc'
+            pt_path = meddra_dir / 'pt.asc'
             
-            soc_hlgt = pd.read_csv(meddra_dir / 'soc_hlgt.asc', sep='\$', engine='python', header=None, usecols=[0,1])
-            soc_hlgt.columns = ['soc_cod', 'hlgt_cod']
+            if not llt_path.exists():
+                raise FileNotFoundError(f"LLT file not found at {llt_path}")
+            if not pt_path.exists():
+                raise FileNotFoundError(f"PT file not found at {pt_path}")
             
-            hlgt = pd.read_csv(meddra_dir / 'hlgt.asc', sep='\$', engine='python', header=None, usecols=[0,1])
-            hlgt.columns = ['hlgt_cod', 'hlgt']
+            # Read LLT data
+            meddra = pd.read_csv(
+                llt_path,
+                sep='$',
+                names=['llt_code', 'llt_name', 'pt_code', 'llt_whoart_code',
+                      'llt_harts_code', 'llt_costart_sym', 'llt_icd9_code',
+                      'llt_icd9cm_code', 'llt_icd10_code', 'llt_currency',
+                      'llt_jart_code'],
+                dtype=str,
+                quoting=3
+            )
             
-            hlgt_hlt = pd.read_csv(meddra_dir / 'hlgt_hlt.asc', sep='\$', engine='python', header=None, usecols=[0,1])
-            hlgt_hlt.columns = ['hlgt_cod', 'hlt_cod']
+            # Read PT data
+            pt = pd.read_csv(
+                pt_path,
+                sep='$',
+                names=['pt_code', 'pt_name', 'null_field', 'pt_whoart_code',
+                      'pt_harts_code', 'pt_costart_sym', 'pt_icd9_code',
+                      'pt_icd9cm_code', 'pt_icd10_code', 'pt_jart_code'],
+                dtype=str,
+                quoting=3
+            )
             
-            hlt = pd.read_csv(meddra_dir / 'hlt.asc', sep='\$', engine='python', header=None, usecols=[0,1])
-            hlt.columns = ['hlt_cod', 'hlt']
+            # Merge LLT and PT data
+            meddra = meddra.merge(
+                pt[['pt_code', 'pt_name']],
+                on='pt_code',
+                how='left'
+            )
             
-            hlt_pt = pd.read_csv(meddra_dir / 'hlt_pt.asc', sep='\$', engine='python', header=None, usecols=[0,1])
-            hlt_pt.columns = ['hlt_cod', 'pt_cod']
+            # Create standardized columns
+            meddra['llt'] = meddra['llt_name'].str.upper()
+            meddra['pt'] = meddra['pt_name'].str.upper()
             
-            pts = pd.read_csv(meddra_dir / 'pt.asc', sep='\$', engine='python', header=None, usecols=[0,1,3])
-            pts.columns = ['pt_cod', 'pt', 'primary_soc_cod']
+            # Get distinct PTs
+            meddra_distinct = meddra[['pt']].drop_duplicates()
             
-            llt = pd.read_csv(meddra_dir / 'llt.asc', sep='\$', engine='python', header=None, usecols=[0,1,2])
-            llt.columns = ['llt_cod', 'llt', 'pt_cod']
-            
-            # Merge all MedDRA tables
-            meddra = (soc.merge(soc_hlgt, on='soc_cod', how='outer')
-                     .merge(hlgt, on='hlgt_cod', how='outer')
-                     .merge(hlgt_hlt, on='hlgt_cod', how='outer')
-                     .merge(hlt, on='hlt_cod', how='outer')
-                     .merge(hlt_pt, on='hlt_cod', how='outer')
-                     .merge(pts, on='pt_cod', how='outer')
-                     .merge(llt, on='pt_cod', how='outer'))
-            
-            # Convert all text columns to lowercase
-            text_columns = ['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']
-            for col in text_columns:
-                if col in meddra.columns:
-                    meddra[col] = meddra[col].str.lower()
-            
-            # Save distinct combinations
-            meddra_distinct = (meddra[['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']]
-                             .drop_duplicates())
-            
-            # Save primary SOC relationships
-            meddra_primary = (meddra[meddra['soc_cod'] == meddra['primary_soc_cod']]
-                            [['def', 'soc', 'hlgt', 'hlt', 'pt']]
-                            .drop_duplicates())
-            
-            # Save to CSV files
-            meddra_distinct.to_csv(Path(__file__).parent.parent / 'external_data' / 'meddra' / 'meddra.csv', 
+            # Save processed data
+            meddra.to_csv(self.external_dir / 'meddra' / 'meddra.csv', 
+                         sep=';', index=False)
+            meddra_distinct.to_csv(self.external_dir / 'meddra' / 'meddra_primary.csv', 
                                  sep=';', index=False)
-            meddra_primary.to_csv(Path(__file__).parent.parent / 'external_data' / 'meddra' / 'meddra_primary.csv', 
-                                sep=';', index=False)
             
             # Create PT list for standardization
             self.pt_list = meddra_distinct['pt'].dropna().unique()
             self.llt_to_pt = dict(zip(meddra['llt'].str.lower(), meddra['pt'].str.lower()))
             
-            logging.info(f"Loaded {len(self.pt_list):,} unique PTs from MedDRA")
-            logging.info(f"Loaded {len(self.llt_to_pt):,} LLT to PT mappings")
+            self.logger.info(f"Loaded {len(self.pt_list):,} unique PTs from MedDRA")
+            self.logger.info(f"Loaded {len(self.llt_to_pt):,} LLT to PT mappings")
             
         except Exception as e:
-            logging.error(f"Error loading MedDRA data: {str(e)}")
+            self.logger.error(f"Error loading MedDRA data: {str(e)}")
             self.pt_list = []
             self.llt_to_pt = {}
 
     def _load_diana_dictionary(self):
         """Load and prepare the DiAna drug dictionary."""
         try:
-            dict_path = Path(__file__).parent.parent / 'external_data' / 'DiAna_dictionary' / 'drugnames_standardized.csv'
+            dict_path = self.external_dir / 'DiAna_dictionary' / 'drugnames_standardized.csv'
             if not dict_path.exists():
                 raise FileNotFoundError(f"DiAna dictionary not found at {dict_path}")
             
@@ -519,10 +541,10 @@ class DataStandardizer:
                 self.diana_dict['Substance']
             ))
             
-            logging.info(f"Loaded DiAna dictionary with {len(self.diana_dict)} entries")
+            self.logger.info(f"Loaded DiAna dictionary with {len(self.diana_dict)} entries")
             
         except Exception as e:
-            logging.error(f"Error loading DiAna dictionary: {str(e)}")
+            self.logger.error(f"Error loading DiAna dictionary: {str(e)}")
             self.diana_dict = pd.DataFrame(columns=['drugname', 'Substance'])
             self.drug_map = {}
 
@@ -573,7 +595,7 @@ class DataStandardizer:
             
             # Try manual fixes
             manual_fixes = pd.read_csv(
-                Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'pt_fixed.csv',  # Updated path
+                self.external_dir / 'manual_fixes' / 'pt_fixed.csv',  # Updated path
                 sep=';', 
                 low_memory=False
             )
@@ -605,7 +627,7 @@ class DataStandardizer:
                 })
                 manual_fixes = pd.concat([manual_fixes, new_manual_fixes]).drop_duplicates()
                 manual_fixes.to_csv(
-                    Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'pt_fixed.csv',  # Updated path
+                    self.external_dir / 'manual_fixes' / 'pt_fixed.csv',  # Updated path
                     sep=';',
                     index=False
                 )
@@ -986,7 +1008,6 @@ class DataStandardizer:
             df.loc[df['wt_in_kgs'] > 635, 'wt_in_kgs'] = np.nan
             
             # Drop temporary columns
-            # Demo <- Demo %>% select(-wt_corrector,-wt,-wt_cod)
             df = df.drop(columns=['wt_corrector', 'wt', 'wt_cod'])
             
             # Log weight distribution
@@ -1037,7 +1058,7 @@ class DataStandardizer:
                 
             try:
                 # Read country mapping file using the correct path
-                countries_file = Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'countries.csv'
+                countries_file = self.external_dir / 'manual_fixes' / 'countries.csv'
                 
                 countries_df = pd.read_csv(
                     countries_file, 
@@ -1210,7 +1231,7 @@ class DataStandardizer:
         df = df.copy()
         
         # Load route mappings (case-sensitive as in R script)
-        route_map = pd.read_csv(Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'routes.csv', 
+        route_map = pd.read_csv(self.external_dir / 'manual_fixes' / 'routes.csv', 
                               sep=';', low_memory=False)
         
         # Create route mapping dictionary preserving original case
@@ -1259,7 +1280,7 @@ class DataStandardizer:
         
         # Load dose form standardization mapping
         dose_form_st = pd.read_csv(
-            Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'dose_form_st.csv',
+            self.external_dir / 'manual_fixes' / 'dose_form_st.csv',
             sep=';',
             usecols=['dose_form', 'dose_form_st'],
             low_memory=False
@@ -1298,7 +1319,7 @@ class DataStandardizer:
         
         # Load unit standardization mapping
         unit_st = pd.read_csv(
-            Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'unit_st.csv',
+            self.external_dir / 'manual_fixes' / 'unit_st.csv',
             sep=';',
             usecols=['unit', 'unit_st', 'conversion_factor'],
             low_memory=False
@@ -1884,109 +1905,6 @@ class DataStandardizer:
             logging.error(f"Error standardizing indications: {str(e)}")
             return df
 
-    def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize demographics data."""
-        try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'i_f_code': ['i_f_code', 'i_f_cod'],
-                'sex': ['sex', 'gndr_cod'],
-                'age': ['age'],
-                'age_cod': ['age_cod'],
-                'age_grp': ['age_group'],
-                'wt': ['weight'],
-                'wt_cod': ['weight_code'],
-                'reporter_country': ['reporter_country'],
-                'occr_country': ['occurrence_country'],
-                'event_dt': ['event_date'],
-                'rept_dt': ['report_date'],
-                'fda_dt': ['fda_date'],
-                'mfr_dt': ['manufacturer_date'],
-                'init_fda_dt': ['initial_fda_date']
-            }
-            
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if any(col.lower() == name.lower() for col in df.columns):
-                        # Get the actual column name with original case
-                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with default value")
-                    df[std_name] = pd.NA
-                    if std_name == 'i_f_code':
-                        df[std_name] = 'I'
-            
-            # Standardize dates
-            date_columns = ['fda_dt', 'rept_dt', 'event_dt']
-            for col in date_columns:
-                if col in df.columns:
-                    try:
-                        df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
-                        invalid_dates = df[col].isna().sum()
-                        if invalid_dates > 0:
-                            self.logger.warning(f"({quarter_name}) {file_name}: Found {invalid_dates} invalid dates in {col}")
-                    except Exception as e:
-                        self.logger.error(f"({quarter_name}) {file_name}: Error converting {col} to datetime: {str(e)}")
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_demographics: {str(e)}")
-            return df
-
-    def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize drug information."""
-        try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'drugname': ['drugname', 'drug_name'],
-                'drug_seq': ['drug_seq'],
-                'role_cod': ['role_cod'],
-                'route': ['route'],
-                'dose_amt': ['dose_amt', 'dose_vbm'],
-                'dose_unit': ['dose_unit'],
-                'prod_ai': ['prod_ai'],
-                'val_vbm': ['val_vbm']
-            }
-            
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if any(col.lower() == name.lower() for col in df.columns):
-                        # Get the actual column name with original case
-                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
-            
-            # Standardize route
-            if 'route' in df.columns:
-                df['route'] = df['route'].str.upper()
-                valid_routes = {'ORAL', 'INTRAVENOUS', 'SUBCUTANEOUS', 'INTRAMUSCULAR', 'TOPICAL'}
-                invalid_routes = set(df['route'].dropna().str.upper().unique()) - valid_routes
-                if invalid_routes:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Converted invalid routes to NA: {invalid_routes}")
-                    df.loc[df['route'].str.upper().isin(invalid_routes), 'route'] = pd.NA
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_drug_info: {str(e)}")
-            return df
-
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
         """Process all FAERS quarters with summary reporting.
         
@@ -1994,153 +1912,148 @@ class DataStandardizer:
             quarters_dir: Directory containing FAERS quarter data
             parallel: If True, process quarters in parallel using dask
             n_workers: Number of worker processes for parallel processing
-        
+            
         Returns:
             Markdown formatted summary report
         """
-        import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        # Initialize summary
-        summary = FAERSProcessingSummary()
-        
-        # Get list of quarters
-        quarters = sorted([d for d in quarters_dir.iterdir() if d.is_dir()])
-        
-        def process_quarter(quarter_dir: Path) -> Tuple[str, QuarterSummary]:
-            """Process a single quarter."""
-            quarter_name = quarter_dir.name
-            quarter_summary = QuarterSummary(quarter=quarter_name)
-            start_time = time.time()
+        try:
+            # Ensure quarters_dir is a Path and exists
+            quarters_dir = Path(quarters_dir).resolve()
+            if not quarters_dir.exists():
+                raise FileNotFoundError(f"Quarters directory not found at {quarters_dir}")
             
-            try:
-                # Process demographics
-                demo_file = next(quarter_dir.glob("**/DEMO*.txt"))
-                demo_start = time.time()
-                demo_df = pd.read_csv(demo_file, low_memory=False)
-                demo_df = self.standardize_dates(demo_df)
-                quarter_summary.demo_summary.total_rows = len(demo_df)
-                quarter_summary.demo_summary.processing_time = time.time() - demo_start
-                
-                # Get invalid date counts
-                for col in ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']:
-                    if col in demo_df.columns:
-                        invalid_count = demo_df[col].isna().sum()
-                        quarter_summary.demo_summary.invalid_dates[col] = invalid_count
-                
-                # Process drug data
-                drug_file = next(quarter_dir.glob("**/DRUG*.txt"))
-                drug_start = time.time()
-                try:
-                    drug_df = self.process_drug_file(drug_file)
-                    quarter_summary.drug_summary.total_rows = len(drug_df)
-                except Exception as e:
-                    quarter_summary.drug_summary.parsing_errors.append(str(e))
-                quarter_summary.drug_summary.processing_time = time.time() - drug_start
-                
-                # Process reaction data
-                reac_file = next(quarter_dir.glob("**/REAC*.txt"))
-                reac_start = time.time()
-                reac_df = pd.read_csv(reac_file, low_memory=False)
-                quarter_summary.reac_summary.total_rows = len(reac_df)
-                quarter_summary.reac_summary.processing_time = time.time() - reac_start
-                
-            except Exception as e:
-                logging.error(f"Error processing quarter {quarter_name}: {str(e)}")
-                
-            quarter_summary.processing_time = time.time() - start_time
-            return quarter_name, quarter_summary
-        
-        if parallel:
-            # Setup dask cluster
-            if n_workers is None:
-                n_workers = os.cpu_count() // 2  # Use half of available cores
-            cluster = LocalCluster(n_workers=n_workers)
-            client = Client(cluster)
+            # Get list of quarter directories
+            quarter_dirs = [d for d in quarters_dir.iterdir() if d.is_dir()]
+            if not quarter_dirs:
+                raise ValueError(f"No quarter directories found in {quarters_dir}")
             
-            try:
-                # Convert process_quarter to dask computation
-                futures = []
-                for quarter_dir in tqdm(quarters, desc="Submitting quarters"):
-                    future = client.submit(process_quarter, quarter_dir)
-                    futures.append(future)
+            self.logger.info(f"Found {len(quarter_dirs)} quarters to process")
+            
+            # Initialize summary tracker
+            summary = FAERSProcessingSummary()
+            
+            if parallel and len(quarter_dirs) > 1:
+                # Set up dask client for parallel processing
+                n_workers = n_workers or min(len(quarter_dirs), os.cpu_count() or 1)
+                cluster = LocalCluster(n_workers=n_workers)
+                client = Client(cluster)
+                self.logger.info(f"Processing {len(quarter_dirs)} quarters in parallel with {n_workers} workers")
                 
-                # Collect results
-                for future in tqdm(as_completed(futures), total=len(futures), 
-                                 desc="Processing quarters"):
-                    quarter_name, quarter_summary = future.result()
-                    summary.add_quarter_summary(quarter_name, quarter_summary)
-                    
-            finally:
+                # Create dask bag of quarter directories
+                quarters_bag = db.from_sequence(quarter_dirs)
+                results = quarters_bag.map(self.process_quarter).compute()
+                
+                # Add results to summary
+                for quarter_dir, result in zip(quarter_dirs, results):
+                    if result:
+                        summary.add_quarter_summary(quarter_dir.name, result)
+                
+                # Close dask client
                 client.close()
                 cluster.close()
                 
-        else:
-            # Process sequentially
-            for quarter_dir in tqdm(quarters, desc="Processing quarters"):
-                quarter_name, quarter_summary = process_quarter(quarter_dir)
-                summary.add_quarter_summary(quarter_name, quarter_summary)
-        
-        # Generate and return report
-        return summary.generate_markdown_report()
-
-    def process_drug_file(self, file_path: Path) -> pd.DataFrame:
-        """Process FAERS drug data file with robust error handling.
-        
-        Args:
-            file_path: Path to drug data file
-        
-        Returns:
-            Processed DataFrame
-        """
-        try:
-            # First try standard parsing
-            df = pd.read_csv(file_path, low_memory=False)
-            logging.info(f"Successfully parsed {file_path} using standard method")
+            else:
+                # Process quarters sequentially
+                self.logger.info(f"Processing {len(quarter_dirs)} quarters sequentially")
+                for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
+                    try:
+                        result = self.process_quarter(quarter_dir)
+                        if result:
+                            summary.add_quarter_summary(quarter_dir.name, result)
+                    except Exception as e:
+                        self.logger.error(f"Error processing quarter {quarter_dir.name}: {str(e)}")
             
-            # Standardize data
-            df = self.standardize_data(df, 'drug', str(file_path))
-            
-            return df
+            # Generate and return report
+            return summary.generate_markdown_report()
             
         except Exception as e:
-            logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
+            self.logger.error(f"Error in process_quarters: {str(e)}")
+            return f"Error processing quarters: {str(e)}"
+
+    def process_quarter(self, quarter_dir: Path) -> Optional[QuarterSummary]:
+        """Process a single quarter.
+        
+        Args:
+            quarter_dir: Path to quarter directory
             
-            try:
-                # Read and clean file
-                cleaned_lines, delimiter = read_and_clean_file(file_path)
-                
-                # Get header
-                header = cleaned_lines[0].split(delimiter)
-                header = [col.strip() for col in header]
-                
-                # Process data rows
-                data = []
-                for line in cleaned_lines[1:]:
-                    fields = line.split(delimiter)
-                    # Log malformed rows but don't skip them
-                    if len(fields) != len(header):
-                        logging.warning(f"Malformed row in {file_path} - expected {len(header)} fields, got {len(fields)}")
-                        # Pad or truncate to match header length
-                        if len(fields) < len(header):
-                            fields.extend([''] * (len(header) - len(fields)))
-                        else:
-                            fields = fields[:len(header)]
-                    data.append([field.strip() for field in fields])
-                
-                # Create DataFrame
-                df = pd.DataFrame(data, columns=header)
-                logging.info(f"Successfully parsed {file_path} using manual method")
-                
-                # Standardize data
-                df = self.standardize_data(df, 'drug', str(file_path))
-                
-                return df
-                
-            except Exception as e:
-                logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
-                # Return empty DataFrame on failure to maintain row count
-                return pd.DataFrame(columns=header if 'header' in locals() else None)
+        Returns:
+            QuarterSummary if successful, None if error
+        """
+        try:
+            quarter_dir = Path(quarter_dir).resolve()
+            if not quarter_dir.exists():
+                raise FileNotFoundError(f"Quarter directory not found at {quarter_dir}")
+            
+            quarter_name = quarter_dir.name
+            self.logger.info(f"Processing quarter {quarter_name}")
+            
+            # Initialize quarter summary
+            summary = QuarterSummary(quarter=quarter_name)
+            start_time = time.time()
+            
+            # Process each file type
+            file_types = {
+                'demo': ['DEMO*.txt', 'Demographics'],
+                'drug': ['DRUG*.txt', 'Drug'],
+                'reac': ['REAC*.txt', 'Reaction'],
+                'indi': ['INDI*.txt', 'Indication'],
+                'outc': ['OUTC*.txt', 'Outcome'],
+                'ther': ['THER*.txt', 'Therapy']
+            }
+            
+            processed_data = {}
+            for file_type, (pattern, desc) in file_types.items():
+                try:
+                    # Find matching files (case-insensitive)
+                    files = list(quarter_dir.glob(pattern))
+                    files.extend(quarter_dir.glob(pattern.lower()))
+                    
+                    if not files:
+                        self.logger.warning(f"No {desc} files found in {quarter_name}")
+                        continue
+                        
+                    # Process each file
+                    for file_path in files:
+                        try:
+                            df = read_and_clean_file(file_path)
+                            if df is not None and not df.empty:
+                                df = self.standardize_data(df, file_type, str(file_path), quarter_name)
+                                processed_data[file_type] = df
+                                
+                                # Update summary statistics
+                                if file_type == 'demo':
+                                    summary.demo_summary.total_rows = len(df)
+                                elif file_type == 'drug':
+                                    summary.drug_summary.total_rows = len(df)
+                                elif file_type == 'reac':
+                                    summary.reac_summary.total_rows = len(df)
+                                    
+                        except Exception as e:
+                            self.logger.error(f"Error processing {desc} file {file_path}: {str(e)}")
+                            
+                except Exception as e:
+                    self.logger.error(f"Error processing {desc} files for {quarter_name}: {str(e)}")
+            
+            # Save processed data
+            quarter_output_dir = self.output_dir / quarter_name
+            quarter_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            for file_type, df in processed_data.items():
+                try:
+                    output_path = quarter_output_dir / f"{file_type}.csv"
+                    df.to_csv(output_path, index=False)
+                    self.logger.info(f"Saved {file_type} data to {output_path}")
+                except Exception as e:
+                    self.logger.error(f"Error saving {file_type} data for {quarter_name}: {str(e)}")
+            
+            # Update summary timing
+            summary.processing_time = time.time() - start_time
+            
+            return summary
+            
+        except Exception as e:
+            self.logger.error(f"Error processing quarter {quarter_dir}: {str(e)}")
+            return None
 
     def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None, quarter_name: Optional[str] = None) -> pd.DataFrame:
         """Standardize data based on its type.

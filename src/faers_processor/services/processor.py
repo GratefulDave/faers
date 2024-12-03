@@ -599,31 +599,16 @@ class FAERSProcessor:
     def process_file(self, file_path: Path, data_type: str, quarter_name: str) -> Optional[pd.DataFrame]:
         """Process a single FAERS data file."""
         try:
+            # Read and clean the file
+            df = pd.read_csv(file_path, delimiter='$', dtype=str)
             file_name = file_path.name
             
-            # Detect data type from file header
-            df = pd.read_csv(file_path, delimiter='$', dtype=str, nrows=0)  # Just read header
-            header = set(df.columns.str.lower())
-            
-            # Verify data type based on characteristic columns
-            expected_type = None
-            if {'i_f_cod', 'gndr_cod', 'age', 'age_cod'}.intersection(header):
-                expected_type = 'demo'
-            elif {'drugname', 'drug_seq', 'role_cod', 'val_vbm'}.intersection(header):
-                expected_type = 'drug'
-            elif {'pt', 'drug_rec_act'}.intersection(header):
-                expected_type = 'reac'
-            elif {'indi_pt', 'indi_drug_seq'}.intersection(header):
-                expected_type = 'indi'
-            
-            if expected_type and expected_type != data_type:
-                self.logger.warning(f"({quarter_name}) {file_name}: File appears to be {expected_type} type but was processed as {data_type}")
-            
-            # Read full file
-            df = pd.read_csv(file_path, delimiter='$', dtype=str)
-            
-            if df is None or df.empty:
+            if df is None:
                 self.logger.error(f"({quarter_name}) Failed to read file: {file_name}")
+                return None
+                
+            if df.empty:
+                self.logger.error(f"({quarter_name}) File is empty: {file_name}")
                 return None
             
             # Common processing steps
@@ -632,13 +617,13 @@ class FAERSProcessor:
             # Standardize based on data type
             try:
                 if data_type == 'demo':
-                    df = self.standardizer.standardize_demographics(df, quarter_name, file_name)
+                    df = self.standardizer.standardize_demographics(df)
                 elif data_type == 'drug':
-                    df = self.standardizer.standardize_drug_info(df, quarter_name, file_name)
+                    df = self.standardizer.standardize_drug_info(df)
                 elif data_type == 'reac':
-                    df = self.standardizer.standardize_reactions(df, quarter_name, file_name)
+                    df = self.standardizer.standardize_reactions(df)
                 elif data_type == 'indi':
-                    df = self.standardizer.standardize_indications(df, quarter_name, file_name)
+                    df = self.standardizer.standardize_indications(df)
                 else:
                     self.logger.warning(f"({quarter_name}) Unknown data type: {data_type} for file {file_name}")
             except Exception as e:
