@@ -326,7 +326,7 @@ class DataStandardizer:
     def remove_incomplete_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
                                 reac_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Remove cases that don't have valid drugs or reactions.
+        Log statistics about cases that don't have valid drugs or reactions, but do not remove them.
         
         Args:
             demo_df: Demographics DataFrame
@@ -334,18 +334,8 @@ class DataStandardizer:
             reac_df: Reactions DataFrame
         
         Returns:
-            DataFrame with incomplete cases removed
+            Original demographics DataFrame, unmodified
         """
-        demo_df = demo_df.copy()
-        drug_df = drug_df.copy()
-        reac_df = reac_df.copy()
-
-        initial_cases = len(demo_df)
-
-        # Remove invalid drugs and reactions
-        drug_df = drug_df[~drug_df['Substance'].isin(['no medication', 'unspecified'])]
-        reac_df = reac_df[~reac_df['pt'].isin(['no adverse event'])]
-
         # Find cases without valid drugs
         valid_drug_cases = set(drug_df['primaryid'].unique())
         all_cases = set(demo_df['primaryid'].unique())
@@ -355,19 +345,10 @@ class DataStandardizer:
         valid_reaction_cases = set(reac_df['primaryid'].unique())
         cases_without_reactions = all_cases - valid_reaction_cases
 
-        # Combine all incomplete cases
-        incomplete_cases = cases_without_drugs.union(cases_without_reactions)
-
-        # Remove incomplete cases from demographics
-        demo_df = demo_df[~demo_df['primaryid'].isin(incomplete_cases)]
-
         # Calculate and log results
-        removed_cases = initial_cases - len(demo_df)
-        logging.info(f"Initial cases: {initial_cases}")
-        logging.info(f"Cases without valid drugs: {len(cases_without_drugs)}")
-        logging.info(f"Cases without valid reactions: {len(cases_without_reactions)}")
-        logging.info(f"Total incomplete cases removed: {removed_cases}")
-        logging.info(f"Remaining cases: {len(demo_df)}")
+        logging.info(f"Total cases: {len(all_cases)}")
+        logging.info(f"Cases without drugs: {len(cases_without_drugs)}")
+        logging.info(f"Cases without reactions: {len(cases_without_reactions)}")
 
         return demo_df
 
