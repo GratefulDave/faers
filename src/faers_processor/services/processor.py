@@ -1306,6 +1306,65 @@ class FAERSProcessor:
             self.logger.error(f"Error processing RPSR dataset: {str(e)}")
             raise
 
+    def process_ther_dataset(self) -> None:
+        """Process THER dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Process THER files
+        2. Save to RDS/pickle format without any filtering
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing THER dataset")
+        
+        # Find THER files (str_detect(faers_list, regex("ther", ignore_case = T)))
+        ther_files = []
+        for quarter_dir in paths["raw"].iterdir():
+            if quarter_dir.is_dir():
+                ascii_dir = quarter_dir / "ascii"
+                if ascii_dir.exists():
+                    for file in ascii_dir.glob("*.[tT][xX][tT]"):
+                        if re.search(r'ther', file.name, re.IGNORECASE):
+                            ther_files.append(file)
+        
+        if not ther_files:
+            raise ValueError("No THER files found in the ascii directories")
+            
+        try:
+            # Process THER dataset with exact R parameters
+            ther_df = self.unify_data(
+                files_list=ther_files,
+                namekey={
+                    "ISR": "primaryid",
+                    "dsg_drug_seq": "drug_seq",
+                    "DRUG_SEQ": "drug_seq",
+                    "START_DT": "start_dt",
+                    "END_DT": "end_dt",
+                    "DUR": "dur",
+                    "DUR_COD": "dur_cod"
+                },
+                column_subset=[
+                    "primaryid",
+                    "drug_seq",
+                    "start_dt",
+                    "end_dt",
+                    "dur",
+                    "dur_cod"
+                ],
+                duplicated_cols_x=None,  # NA in R
+                duplicated_cols_y=None   # NA in R
+            )
+            
+            # Save processed THER dataset (no filtering needed)
+            output_path = paths["clean"] / "THER.rds"
+            ther_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed THER dataset to {output_path}")
+            self.logger.info(f"THER shape: {ther_df.shape}")
+            self.logger.info(f"THER columns: {', '.join(ther_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing THER dataset: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         
@@ -1356,7 +1415,7 @@ class FAERSProcessor:
             # Read header (readLines(file(f),n=1))
             with open(file_path, 'r', encoding='latin1') as f:
                 header = f.readline().strip()
-            column_names = header.split('$')
+            column_names = header.split("$")
             
             # Read data (read.table(f,skip=1,sep="$", comment.char = "",quote=""))
             df = pd.read_csv(
