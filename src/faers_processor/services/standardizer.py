@@ -161,16 +161,18 @@ class DataStandardizer:
         self._load_meddra_data()
         self._load_diana_dictionary()
         
-    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: Union[str, List[str]]) -> Optional[str]:
-        """Get the actual column name that matches the given name case-insensitive."""
-        if isinstance(column_name, str):
-            column_name = [column_name]
+    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> Optional[str]:
+        """Get the actual column name by checking uppercase first, then lowercase."""
+        # Try uppercase first
+        upper_name = column_name.upper()
+        if upper_name in df.columns:
+            return upper_name
             
-        df_cols = df.columns.tolist()
-        for col in df_cols:
-            for name in column_name:
-                if col.upper() == name.upper():
-                    return col
+        # Try lowercase
+        lower_name = column_name.lower()
+        if lower_name in df.columns:
+            return lower_name
+            
         return None
 
     def _has_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> bool:
@@ -197,7 +199,7 @@ class DataStandardizer:
             
             # Standardize column names
             for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
+                col_name = self._get_column_case_insensitive(df, possible_names[0])
                 if col_name:
                     if col_name != std_name:
                         df = df.rename(columns={col_name: std_name})
@@ -229,7 +231,7 @@ class DataStandardizer:
             
             # Standardize column names
             for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
+                col_name = self._get_column_case_insensitive(df, possible_names[0])
                 if col_name:
                     if col_name != std_name:
                         df = df.rename(columns={col_name: std_name})
@@ -255,7 +257,7 @@ class DataStandardizer:
             
             # Standardize column names
             for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
+                col_name = self._get_column_case_insensitive(df, possible_names[0])
                 if col_name:
                     if col_name != std_name:
                         df = df.rename(columns={col_name: std_name})
@@ -281,7 +283,7 @@ class DataStandardizer:
             
             # Standardize column names
             for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
+                col_name = self._get_column_case_insensitive(df, possible_names[0])
                 if col_name:
                     if col_name != std_name:
                         df = df.rename(columns={col_name: std_name})
@@ -306,7 +308,7 @@ class DataStandardizer:
             
             # Standardize column names
             for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
+                col_name = self._get_column_case_insensitive(df, possible_names[0])
                 if col_name:
                     if col_name != std_name:
                         df = df.rename(columns={col_name: std_name})
@@ -343,7 +345,7 @@ class DataStandardizer:
             
             # Standardize column names
             for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
+                col_name = self._get_column_case_insensitive(df, possible_names[0])
                 if col_name:
                     if col_name != std_name:
                         df = df.rename(columns={col_name: std_name})
@@ -2227,28 +2229,18 @@ class DataStandardizer:
     def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize drug information."""
         try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'drugname': ['DRUGNAME', 'drugname'],
-                'prod_ai': ['PROD_AI', 'prod_ai'],
-                'route': ['ROUTE', 'route'],
-                'dose_amt': ['DOSE_AMT', 'dose_amt'],
-                'dose_unit': ['DOSE_UNIT', 'dose_unit'],
-                'dose_form': ['DOSE_FORM', 'dose_form'],
-                'dose_freq': ['DOSE_FREQ', 'dose_freq'],
-                'drug_seq': ['DRUG_SEQ', 'drug_seq'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
+            # Check for each required column in uppercase first, then lowercase
+            required_columns = ['drugname', 'prod_ai', 'route', 'dose_amt', 'dose_unit', 
+                              'dose_form', 'dose_freq', 'drug_seq', 'isr']
             
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                col_name = self._get_column_case_insensitive(df, possible_names)
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
+            for col in required_columns:
+                found_col = self._get_column_case_insensitive(df, col)
+                if found_col:
+                    if found_col != col:
+                        df = df.rename(columns={found_col: col})
                 else:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{std_name}' not found, adding with default value: <NA>")
-                    df[std_name] = pd.NA
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{col}' not found, adding with default value: <NA>")
+                    df[col] = pd.NA
             
             return df
             
@@ -2259,27 +2251,17 @@ class DataStandardizer:
     def standardize_reactions(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize reaction data."""
         try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'pt': ['PT', 'pt', 'REAC_PT', 'reac_pt'],
-                'drug_rec_act': ['DRUG_REC_ACT', 'drug_rec_act'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
+            # Check for each required column in uppercase first, then lowercase
+            required_columns = ['pt', 'drug_rec_act', 'isr']
             
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if any(col.lower() == name.lower() for col in df.columns):
-                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+            for col in required_columns:
+                found_col = self._get_column_case_insensitive(df, col)
+                if found_col:
+                    if found_col != col:
+                        df = df.rename(columns={found_col: col})
+                else:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{col}' not found, adding with default value: <NA>")
+                    df[col] = pd.NA
             
             return df
             
@@ -2290,27 +2272,17 @@ class DataStandardizer:
     def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize indication data."""
         try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'indi_pt': ['INDI_PT', 'indi_pt'],
-                'indi_drug_seq': ['INDI_DRUG_SEQ', 'drug_seq'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
+            # Check for each required column in uppercase first, then lowercase
+            required_columns = ['indi_pt', 'drug_seq', 'isr']
             
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if any(col.lower() == name.lower() for col in df.columns):
-                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+            for col in required_columns:
+                found_col = self._get_column_case_insensitive(df, col)
+                if found_col:
+                    if found_col != col:
+                        df = df.rename(columns={found_col: col})
+                else:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{col}' not found, adding with default value: <NA>")
+                    df[col] = pd.NA
             
             return df
             
@@ -2321,26 +2293,17 @@ class DataStandardizer:
     def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize outcome data."""
         try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'outc_cod': ['OUTC_COD', 'outc_cod'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
+            # Check for each required column in uppercase first, then lowercase
+            required_columns = ['outc_cod', 'isr']
             
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if any(col.lower() == name.lower() for col in df.columns):
-                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+            for col in required_columns:
+                found_col = self._get_column_case_insensitive(df, col)
+                if found_col:
+                    if found_col != col:
+                        df = df.rename(columns={found_col: col})
+                else:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{col}' not found, adding with default value: <NA>")
+                    df[col] = pd.NA
             
             # Standardize outcome codes
             if 'outc_cod' in df.columns:
@@ -2359,30 +2322,17 @@ class DataStandardizer:
     def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize therapy data."""
         try:
-            # Define required columns and their possible names (case-insensitive)
-            required_columns = {
-                'dsg_drug_seq': ['DSG_DRUG_SEQ', 'drug_seq'],
-                'start_dt': ['START_DT', 'start_dt'],
-                'end_dt': ['END_DT', 'end_dt'],
-                'dur': ['DUR', 'dur'],
-                'dur_cod': ['DUR_COD', 'dur_cod'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
+            # Check for each required column in uppercase first, then lowercase
+            required_columns = ['dsg_drug_seq', 'start_dt', 'end_dt', 'dur', 'dur_cod', 'isr']
             
-            # Check each required column
-            for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if any(col.lower() == name.lower() for col in df.columns):
-                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+            for col in required_columns:
+                found_col = self._get_column_case_insensitive(df, col)
+                if found_col:
+                    if found_col != col:
+                        df = df.rename(columns={found_col: col})
+                else:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{col}' not found, adding with default value: <NA>")
+                    df[col] = pd.NA
             
             # Standardize dates
             date_columns = ['start_dt', 'end_dt']
