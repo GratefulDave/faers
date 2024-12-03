@@ -1021,6 +1021,11 @@ class FAERSProcessor:
             # Load necessary datasets
             drug_df = pd.read_pickle(output_dir / 'DRUG.rds')
             reac_df = pd.read_pickle(output_dir / 'REAC.rds')
+            outc_df = pd.read_pickle(output_dir / 'OUTC.rds')
+            indi_df = pd.read_pickle(output_dir / 'INDI.rds')
+            ther_df = pd.read_pickle(output_dir / 'THER.rds')
+            drug_info_df = pd.read_pickle(output_dir / 'Drug_info.rds')
+            rpsr_df = pd.read_pickle(output_dir / 'RPSR.rds')
             
             demo_files = list(input_dir.glob("*DEMO*.txt"))
             if not demo_files:
@@ -1030,7 +1035,6 @@ class FAERSProcessor:
             dfs = []
             for file in demo_files:
                 df = pd.read_csv(file, delimiter="$", dtype=str)
-                # Extract quarter from filename (assuming format like *DEMO20Q4.txt*)
                 quarter = re.search(r'DEMO(\d{2}Q\d)', file.name)
                 if quarter:
                     df['quarter'] = quarter.group(1)
@@ -1038,39 +1042,169 @@ class FAERSProcessor:
                 
             demo_df = pd.concat(dfs, ignore_index=True)
             
-            # 1. Perform standardization
+            # Process DEMO dataset
             demo_df = self.standardizer.standardize_demo(demo_df)
-            
-            # 2. Remove duplicate primaryids
             demo_df = self.deduplicator.deduplicate_primaryids(demo_df)
-            
-            # 3. Keep only last record for each caseid
             demo_df = self.deduplicator.deduplicate_by_caseid(demo_df)
-            
-            # 4. Remove duplicated manufacturer IDs
             demo_df = self.deduplicator.deduplicate_by_manufacturer(demo_df)
-            
-            # 5. Remove incomplete reports
             demo_df = self.remove_incomplete_reports(demo_df, drug_df, reac_df)
-            
-            # 6. Identify pre-marketing and literature cases
             demo_df = self.identify_premarketing_cases(demo_df, drug_df)
-            
-            # 7. Convert specified columns to categorical
             demo_df = self.finalize_demo_dataset(demo_df)
             
-            # 8. Save final result
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / 'DEMO.rds'
-            demo_df.to_pickle(output_path)
+            # Split and save all datasets
+            final_output_dir = output_dir / self._get_quarter_dir()
+            self.split_and_save_datasets(
+                demo_df, drug_df, reac_df, outc_df, indi_df, 
+                ther_df, drug_info_df, rpsr_df, final_output_dir
+            )
             
-            self.logger.info(f"Successfully processed and saved DEMO dataset: {output_path}")
-            self.logger.info(f"Final shape: {demo_df.shape}")
+            self.logger.info("Successfully processed and saved all datasets")
             
         except Exception as e:
             self.logger.error(f"Error processing DEMO dataset: {str(e)}")
             raise
-
+            
+    def _get_quarter_dir(self) -> str:
+        """Get the current quarter directory name (e.g., '23Q1')."""
+        current_date = datetime.now()
+        year = str(current_date.year)[-2:]  # Get last 2 digits
+        quarter = (current_date.month - 1) // 3 + 1
+        return f"{year}Q{quarter}"
+            
+    def split_and_save_datasets(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame, 
+                               reac_df: pd.DataFrame, outc_df: pd.DataFrame,
+                               indi_df: pd.DataFrame, ther_df: pd.DataFrame,
+                               drug_info_df: pd.DataFrame, rpsr_df: pd.DataFrame,
+                               output_dir: Path) -> None:
+        """Split and save datasets according to the R implementation.
+        
+        Matches R implementation of dataset splitting and saving, including:
+        - Filtering out excluded primaryids
+        - Splitting datasets into more manageable pieces
+        - Converting categorical columns to ordered factors
+        - Saving each dataset in the specified directory
+        
+        Args:
+            demo_df: Demographics DataFrame
+            drug_df: Drug DataFrame
+            reac_df: Reaction DataFrame
+            outc_df: Outcome DataFrame
+            indi_df: Indication DataFrame
+            ther_df: Therapy DataFrame
+            drug_info_df: Drug Info DataFrame
+            rpsr_df: RPSR DataFrame
+            output_dir: Output directory path
+        """
+        try:
+            # Create output directory if it doesn't exist
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 1. Split DEMO into DEMO and DEMO_SUPP
+            demo_supp = demo_df[['primaryid', 'caseid', 'caseversion', 'i_f_cod', 
+                                'auth_num', 'e_sub', 'lit_ref', 'rept_dt', 'to_mfr',
+                                'mfr_sndr', 'mfr_num', 'mfr_dt', 'quarter']].copy()
+            
+            demo_df = demo_df[['primaryid', 'sex', 'age_in_days', 'wt_in_kgs',
+                              'occr_country', 'event_dt', 'occp_cod', 'reporter_country',
+                              'rept_cod', 'init_fda_dt', 'fda_dt', 'premarketing',
+                              'literature']].copy()
+            
+            # 2. Filter and split DRUG data
+            valid_primaryids = set(demo_df['primaryid'])
+            drug_df = drug_df[drug_df['primaryid'].isin(valid_primaryids)]
+            
+            # Create DRUG_NAME
+            drug_name = drug_df[['primaryid', 'drug_seq', 'drugname', 'prod_ai']].drop_duplicates()
+            
+            # Update DRUG
+            drug_df = drug_df[['primaryid', 'drug_seq', 'substance', 'role_cod']].drop_duplicates()
+            drug_df['role_cod'] = pd.Categorical(drug_df['role_cod'], 
+                                               categories=['C', 'I', 'SS', 'PS'],
+                                               ordered=True)
+            
+            # 3. Filter and process REAC data
+            reac_df = reac_df[reac_df['primaryid'].isin(valid_primaryids)]
+            
+            # Load MedDRA dictionary
+            meddra_primary = pd.read_csv(self.config.external_data_dir / 'Dictionaries/MedDRA/meddra_primary.csv', 
+                                       sep=';')
+            meddra_primary = meddra_primary.sort_values(['soc', 'hlgt', 'hlt', 'pt'])
+            
+            # Convert pt and drug_rec_act to ordered factors
+            reac_df['pt'] = pd.Categorical(reac_df['pt'], 
+                                         categories=meddra_primary['pt'].tolist(),
+                                         ordered=True)
+            reac_df['drug_rec_act'] = pd.Categorical(reac_df['drug_rec_act'],
+                                                    categories=meddra_primary['pt'].tolist(),
+                                                    ordered=True)
+            reac_df = reac_df[['primaryid', 'pt', 'drug_rec_act']]
+            
+            # 4. Filter and process OUTC data
+            outc_df = outc_df[outc_df['primaryid'].isin(valid_primaryids)]
+            outc_df['outc_cod'] = pd.Categorical(outc_df['outc_cod'],
+                                               categories=['OT', 'CA', 'HO', 'RI', 
+                                                         'DS', 'LT', 'DE'],
+                                               ordered=True)
+            outc_df = outc_df[['primaryid', 'outc_cod']].drop_duplicates()
+            
+            # 5. Filter and process INDI data
+            indi_df = indi_df[indi_df['primaryid'].isin(valid_primaryids)]
+            indi_df['indi_pt'] = pd.Categorical(indi_df['indi_pt'],
+                                              categories=meddra_primary['pt'].tolist(),
+                                              ordered=True)
+            indi_df = indi_df[['primaryid', 'drug_seq', 'indi_pt']].drop_duplicates()
+            
+            # 6. Filter and process THER data
+            ther_df = ther_df[ther_df['primaryid'].isin(valid_primaryids)]
+            ther_df = ther_df[['primaryid', 'drug_seq', 'start_dt', 'dur_in_days',
+                              'end_dt', 'time_to_onset', 'event_dt']].drop_duplicates()
+            
+            # 7. Filter and split DRUG_INFO data
+            drug_info_df = drug_info_df[drug_info_df['primaryid'].isin(valid_primaryids)]
+            
+            # Create DOSES
+            doses = drug_info_df[['primaryid', 'drug_seq', 'dose_vbm', 'cum_dose_unit',
+                                'cum_dose_chr', 'dose_amt', 'dose_unit', 
+                                'dose_freq']].drop_duplicates()
+            
+            # Create DRUG_SUPP
+            drug_supp = drug_info_df[['primaryid', 'drug_seq', 'route', 'dose_form',
+                                    'dechal', 'rechal', 'lot_num', 'exp_dt']].drop_duplicates()
+            drug_supp['dose_form'] = pd.Categorical(drug_supp['dose_form'])
+            
+            # Update DRUG_NAME with additional info
+            drug_name = drug_info_df[['primaryid', 'drug_seq', 'val_vbm', 
+                                    'nda_num']].merge(drug_name, 
+                                                    on=['primaryid', 'drug_seq'])
+            
+            # 8. Add RPSR info to DEMO_SUPP
+            rpsr_df['rpsr_cod'] = pd.Categorical(rpsr_df['rpsr_cod'])
+            demo_supp = rpsr_df[['primaryid', 'rpsr_cod']].merge(demo_supp, 
+                                                                on='primaryid')
+            
+            # Save all datasets
+            datasets = {
+                'DEMO.rds': demo_df,
+                'DEMO_SUPP.rds': demo_supp,
+                'DRUG.rds': drug_df,
+                'DRUG_NAME.rds': drug_name,
+                'REAC.rds': reac_df,
+                'OUTC.rds': outc_df,
+                'INDI.rds': indi_df,
+                'THER.rds': ther_df,
+                'DOSES.rds': doses,
+                'DRUG_SUPP.rds': drug_supp
+            }
+            
+            for filename, df in datasets.items():
+                output_path = output_dir / filename
+                df.to_pickle(output_path)
+                self.logger.info(f"Saved {filename} with shape {df.shape}")
+            
+        except Exception as e:
+            self.logger.error(f"Error splitting and saving datasets: {str(e)}")
+            raise
+            
     def finalize_demo_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
         """Finalize demo dataset processing.
         
