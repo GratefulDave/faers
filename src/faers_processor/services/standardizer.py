@@ -2056,3 +2056,148 @@ def clean_line(line: str) -> str:
     # Handle escaped quotes
     line = re.sub(r'(?<!\\)"', '\\"', line)
     return line
+
+class MedDRAStandardizer:
+    """Handles MedDRA standardization exactly matching R implementation."""
+    
+    def __init__(self, external_data_dir: Path):
+        """Initialize MedDRA standardizer with paths matching R implementation."""
+        self.logger = logging.getLogger(__name__)
+        self.meddra_dir = external_data_dir / "meddra" / "MedAscii"
+        self.manual_fix_file = external_data_dir / "manual_fixes" / "pt_fixed.csv"
+        self.pt_list: Set[str] = set()
+        self._load_meddra()
+    
+    def _load_meddra(self) -> None:
+        """Load and merge MedDRA files exactly as in R implementation."""
+        try:
+            # Read all MedDRA files with exact column selection
+            soc = pd.read_csv(self.meddra_dir / "soc.asc", sep="$", header=None, 
+                            usecols=[0,1,2], names=["soc_cod", "soc", "def"])
+            
+            soc_hlgt = pd.read_csv(self.meddra_dir / "soc_hlgt.asc", sep="$", header=None,
+                                 usecols=[0,1], names=["soc_cod", "hlgt_cod"])
+            
+            hlgt = pd.read_csv(self.meddra_dir / "hlgt.asc", sep="$", header=None,
+                             usecols=[0,1], names=["hlgt_cod", "hlgt"])
+            
+            hlgt_hlt = pd.read_csv(self.meddra_dir / "hlgt_hlt.asc", sep="$", header=None,
+                                 usecols=[0,1], names=["hlgt_cod", "hlt_cod"])
+            
+            hlt = pd.read_csv(self.meddra_dir / "hlt.asc", sep="$", header=None,
+                            usecols=[0,1], names=["hlt_cod", "hlt"])
+            
+            hlt_pt = pd.read_csv(self.meddra_dir / "hlt_pt.asc", sep="$", header=None,
+                               usecols=[0,1], names=["hlt_cod", "pt_cod"])
+            
+            pts = pd.read_csv(self.meddra_dir / "pt.asc", sep="$", header=None,
+                            usecols=[0,1,3], names=["pt_cod", "pt", "primary_soc_cod"])
+            
+            llt = pd.read_csv(self.meddra_dir / "llt.asc", sep="$", header=None,
+                            usecols=[0,1,2], names=["llt_cod", "llt", "pt_cod"])
+            
+            # Merge all dataframes exactly as in R
+            meddra = (soc.merge(soc_hlgt, how='outer')
+                        .merge(hlgt, how='outer')
+                        .merge(hlgt_hlt, how='outer')
+                        .merge(hlt, how='outer')
+                        .merge(hlt_pt, how='outer')
+                        .merge(pts, how='outer')
+                        .merge(llt, how='outer'))
+            
+            # Convert all columns to lowercase
+            for col in meddra.columns:
+                meddra[col] = meddra[col].str.lower()
+            
+            # Save distinct values
+            meddra_distinct = (meddra[["def", "soc", "hlgt", "hlt", "pt", "llt"]]
+                             .drop_duplicates())
+            meddra_distinct.to_csv(self.meddra_dir.parent / "meddra.csv", 
+                                 sep=";", index=False)
+            
+            # Save primary SOC relationships
+            meddra_primary = (meddra[meddra["soc_cod"] == meddra["primary_soc_cod"]]
+                            [["def", "soc", "hlgt", "hlt", "pt"]]
+                            .drop_duplicates())
+            meddra_primary.to_csv(self.meddra_dir.parent / "meddra_primary.csv", 
+                                sep=";", index=False)
+            
+            # Store unique lowercase PT values
+            self.pt_list = set(pd.read_csv(self.meddra_dir.parent / "meddra.csv", sep=";")["pt"]
+                             .str.lower().str.strip().unique())
+            
+        except Exception as e:
+            self.logger.error(f"Error loading MedDRA files: {str(e)}")
+            raise
+    
+    def standardize_pt(self, data_file: Path, pt_variable: str) -> pd.DataFrame:
+        """Standardize PT values exactly matching R's standardize_PT function."""
+        try:
+            # Read data file
+            data = pd.read_pickle(data_file)
+            
+            # Extract PTs and calculate frequencies
+            pt_values = data[pt_variable].str.lower().str.strip()
+            pt_freq = (pd.DataFrame(pt_values[pt_values.notna()].value_counts())
+                      .reset_index()
+                      .rename(columns={"index": "pt", pt_variable: "N"}))
+            
+            # Check standardization status
+            pt_freq["standard_pt"] = pt_freq["pt"].apply(
+                lambda x: x if x in self.pt_list else np.nan)
+            pt_freq["freq"] = round(pt_freq["N"] / pt_freq["N"].sum() * 100, 2)
+            
+            # Get unstandardized PTs
+            not_pts = pt_freq[pt_freq["standard_pt"].isna()][["pt", "N", "freq"]]
+            
+            initial_unstandardized = (not_pts["N"].sum() * 100 / 
+                                    len(data[pt_variable].dropna()))
+            self.logger.info(f"Initial unstandardized PTs: {round(initial_unstandardized, 3)}%")
+            
+            # Try LLT standardization
+            meddra_df = pd.read_csv(self.meddra_dir.parent / "meddra.csv", sep=";")
+            llts = pd.merge(not_pts, 
+                          meddra_df[["pt", "llt"]].rename(columns={"pt": "standard_pt"}),
+                          left_on="pt", right_on="llt", how="left")
+            not_llts = llts[llts["standard_pt"].isna()][["pt", "N", "freq"]]
+            
+            # Try manual fixes
+            pt_fixed = pd.read_csv(self.manual_fix_file, sep=";")[["pt", "standard_pt"]]
+            manual = pd.merge(not_llts, pt_fixed, on="pt", how="left")
+            manual = manual[manual["standard_pt"].isna()][["pt", "standard_pt"]]
+            
+            # Combine all standardization attempts
+            pt_fixed = (pd.concat([
+                pt_fixed,
+                manual,
+                llts[llts["standard_pt"].notna()][["pt", "standard_pt"]]
+            ]).drop_duplicates())
+            
+            unstandardized = pt_fixed[pt_fixed["standard_pt"].isna()]
+            self.logger.info(
+                f"{len(unstandardized)} PTs not standardized: {'; '.join(unstandardized['pt'])}")
+            
+            # Save updated manual fixes
+            pt_fixed.to_csv(self.manual_fix_file, sep=";", index=False)
+            
+            # Update data with standardized values
+            data["pt_temp"] = data[pt_variable].str.lower().str.strip()
+            data = pd.merge(data, pt_fixed, left_on="pt_temp", right_on="pt", how="left")
+            data["pt_temp"] = data.apply(
+                lambda x: x["standard_pt"] if pd.notna(x["standard_pt"]) else x["pt_temp"],
+                axis=1)
+            
+            # Calculate final standardization percentage
+            standardized = (data[data["pt_temp"].isin(self.pt_list)].shape[0] * 100 /
+                          data["pt_temp"].dropna().shape[0])
+            self.logger.info(f"Final standardized PTs: {round(standardized, 3)}%")
+            
+            # Update column name
+            data = data.drop(columns=[pt_variable, "standard_pt", "pt"])
+            data = data.rename(columns={"pt_temp": pt_variable})
+            
+            return data
+            
+        except Exception as e:
+            self.logger.error(f"Error standardizing {pt_variable}: {str(e)}")
+            raise

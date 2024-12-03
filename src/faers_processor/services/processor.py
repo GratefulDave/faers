@@ -1365,6 +1365,36 @@ class FAERSProcessor:
             self.logger.error(f"Error processing THER dataset: {str(e)}")
             raise
 
+    def standardize_meddra_terms(self) -> None:
+        """Standardize MedDRA terms exactly as in R implementation.
+        
+        Standardizes:
+        1. REAC.rds: 'pt' and 'drug_rec_act' fields
+        2. INDI.rds: 'indi_pt' field
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Starting MedDRA standardization")
+        
+        try:
+            standardizer = MedDRAStandardizer(paths["external"])
+            
+            # Standardize REAC dataset
+            reac_file = paths["clean"] / "REAC.rds"
+            reac_df = standardizer.standardize_pt(reac_file, "pt")
+            reac_df = standardizer.standardize_pt(reac_file, "drug_rec_act")
+            reac_df.to_pickle(reac_file)
+            self.logger.info("Completed REAC standardization")
+            
+            # Standardize INDI dataset
+            indi_file = paths["clean"] / "INDI.rds"
+            indi_df = standardizer.standardize_pt(indi_file, "indi_pt")
+            indi_df.to_pickle(indi_file)
+            self.logger.info("Completed INDI standardization")
+            
+        except Exception as e:
+            self.logger.error(f"Error in MedDRA standardization: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         
