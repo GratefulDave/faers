@@ -59,6 +59,51 @@ class FAERSDeduplicator:
             self.logger.error(f"Error removing duplicate primaryids: {str(e)}")
             return df
     
+    def deduplicate_by_caseid(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Keep only the last record for each caseid.
+        
+        Matches R implementation:
+        emo <- Demo[Demo[,.I%in%c(Demo[,.I[.N],by="caseid"]$V1)]]
+        
+        Args:
+            df: DataFrame with potential duplicate caseids
+            
+        Returns:
+            DataFrame with only last record per caseid
+        """
+        try:
+            if 'caseid' not in df.columns:
+                self.logger.warning("Cannot deduplicate by caseid: missing caseid column")
+                return df
+                
+            # Get indices of last record for each caseid
+            indices = df.groupby('caseid').tail(1).index
+            
+            # Keep only the selected rows
+            df_deduped = df.loc[indices]
+            
+            # Log deduplication statistics
+            total_rows = len(df)
+            kept_rows = len(df_deduped)
+            removed_rows = total_rows - kept_rows
+            
+            if removed_rows > 0:
+                self.logger.info(f"Removed {removed_rows} duplicate caseid entries, keeping {kept_rows} unique entries")
+                
+                # Log some examples of removed duplicates for verification
+                dupes = df[df.duplicated(subset=['caseid'], keep='last')].sort_values('caseid')
+                if not dupes.empty:
+                    sample_dupes = dupes.head(3)  # Show up to 3 examples
+                    self.logger.debug("Sample of removed caseid duplicates:")
+                    for _, row in sample_dupes.iterrows():
+                        self.logger.debug(f"Caseid: {row['caseid']}")
+            
+            return df_deduped
+            
+        except Exception as e:
+            self.logger.error(f"Error deduplicating by caseid: {str(e)}")
+            return df
+
     def deduplicate_dataset(self, input_path: Path, output_path: Path) -> None:
         """Deduplicate an entire dataset, preserving most recent entries.
         

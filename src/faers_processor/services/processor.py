@@ -1020,23 +1020,65 @@ class FAERSProcessor:
                 
             demo_df = pd.concat(dfs, ignore_index=True)
             
-            # Perform standardization
+            # 1. Perform standardization
             demo_df = self.standardizer.standardize_demo(demo_df)
             
-            # Save intermediate result
-            intermediate_path = output_dir / 'intermediate' / 'demo_standardized.pkl'
-            intermediate_path.parent.mkdir(parents=True, exist_ok=True)
-            demo_df.to_pickle(intermediate_path)
+            # 2. Remove duplicate primaryids
+            demo_df = self.deduplicator.deduplicate_primaryids(demo_df)
             
-            # Perform deduplication as a separate step
-            dedup_path = output_dir / 'demo_deduped.pkl'
-            self.deduplicator.deduplicate_dataset(intermediate_path, dedup_path)
+            # 3. Keep only last record for each caseid
+            demo_df = self.deduplicator.deduplicate_by_caseid(demo_df)
             
-            self.logger.info("Successfully processed DEMO dataset")
+            # 4. Convert specified columns to categorical
+            demo_df = self.finalize_demo_dataset(demo_df)
+            
+            # 5. Save final result
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / 'DEMO.rds'
+            demo_df.to_pickle(output_path)
+            
+            self.logger.info(f"Successfully processed and saved DEMO dataset: {output_path}")
+            self.logger.info(f"Final shape: {demo_df.shape}")
             
         except Exception as e:
             self.logger.error(f"Error processing DEMO dataset: {str(e)}")
             raise
+
+    def finalize_demo_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Finalize demo dataset processing.
+        
+        Matches R implementation:
+        cols <- c("caseversion","sex","quarter","i_f_cod","rept_cod",
+                "occp_cod","e_sub","age_grp","occr_country",
+                "reporter_country")
+        Demo[,(cols):=lapply(.SD, as.factor),.SDcols=cols]
+        
+        Args:
+            df: DataFrame to finalize
+            
+        Returns:
+            Finalized DataFrame with categorical columns
+        """
+        try:
+            # Define columns to convert to categorical
+            categorical_cols = [
+                "caseversion", "sex", "quarter", "i_f_cod", "rept_cod",
+                "occp_cod", "e_sub", "age_grp", "occr_country",
+                "reporter_country"
+            ]
+            
+            # Convert columns to categorical if they exist
+            for col in categorical_cols:
+                if col in df.columns:
+                    df[col] = df[col].astype('category')
+                else:
+                    self.logger.warning(f"Column {col} not found in dataset")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error finalizing demo dataset: {str(e)}")
+            return df
 
     def process_indi_dataset(self) -> None:
         """Process INDI dataset exactly as in the R implementation."""
