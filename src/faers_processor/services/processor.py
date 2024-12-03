@@ -362,71 +362,18 @@ class FAERSProcessor:
             self.logger.error(f"({quarter_dir.name}) Error processing {file_prefix} files: {str(e)}")
 
     def _read_and_clean_file(self, file_path: Path, chunk_size: Optional[int] = None) -> Optional[pd.DataFrame]:
-        """Read and clean a file, handling different formats and encodings.
-        
-        Args:
-            file_path: Path to the file
-            chunk_size: Size of chunks for processing large files
-            
-        Returns:
-            Cleaned DataFrame or None if reading fails
-        """
+        """Read and clean a FAERS data file."""
         try:
-            # Try different encodings
-            encodings = ['utf-8', 'latin1', 'cp1252']
-            delimiter = '$'  # FAERS files use $ as delimiter
-            df = None
+            # Read file with $ delimiter
+            df = pd.read_csv(file_path, delimiter='$', dtype=str, encoding='latin1')
             
-            for encoding in encodings:
-                try:
-                    if chunk_size:
-                        chunks = []
-                        # Process in chunks
-                        for chunk in pd.read_csv(file_path, sep=delimiter, dtype=str, 
-                                               na_values=[''], keep_default_na=False,
-                                               encoding=encoding, chunksize=chunk_size,
-                                               on_bad_lines='warn'):
-                            # Clean each chunk
-                            cleaned_chunk = self._clean_dataframe(chunk)
-                            chunks.append(cleaned_chunk)
-                        
-                        if chunks:
-                            df = pd.concat(chunks, ignore_index=True)
-                            break
-                    else:
-                        # Read entire file at once
-                        df = pd.read_csv(file_path, sep=delimiter, dtype=str, 
-                                       na_values=[''], keep_default_na=False,
-                                       encoding=encoding, on_bad_lines='warn')
-                        
-                        if df.empty:
-                            self.logger.warning(f"Empty file: {file_path.name}")
-                            continue
-                        
-                        # Clean the DataFrame
-                        df = self._clean_dataframe(df)
-                        break
-                    
-                except UnicodeDecodeError:
-                    continue
-                except pd.errors.EmptyDataError:
-                    self.logger.warning(f"Empty file: {file_path.name}")
-                    continue
-                except Exception as e:
-                    self.logger.error(f"Error reading file {file_path.name} with encoding {encoding}: {str(e)}")
-                    continue
-            
-            if df is None:
-                self.logger.error(f"Could not read file {file_path.name} with any supported encoding")
-                return None
-            
-            # Convert column names to lowercase
-            df.columns = [col.strip().lower() for col in df.columns]
+            # Clean column names - remove whitespace and $ characters
+            df.columns = [col.strip().strip('$') for col in df.columns]
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error reading file {file_path.name}: {str(e)}")
+            self.logger.error(f"Error reading file {file_path}: {str(e)}")
             return None
 
     def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:

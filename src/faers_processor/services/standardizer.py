@@ -284,6 +284,20 @@ class DataStandardizer:
         'primaryid', 'drug_seq', 'start_dt', 'end_dt', 'dur', 'dur_cod'
     }
 
+    def read_file(self, file_path: Path) -> pd.DataFrame:
+        """Read a FAERS data file with proper delimiter handling."""
+        try:
+            # First try reading with $ delimiter
+            df = pd.read_csv(file_path, delimiter='$', dtype=str, encoding='latin1')
+            
+            # Clean column names - remove any whitespace and $ that might have been captured
+            df.columns = [col.strip().strip('$') for col in df.columns]
+            
+            return df
+        except Exception as e:
+            self.logger.error(f"Error reading file {file_path}: {str(e)}")
+            return pd.DataFrame()
+
     def _get_case_insensitive_columns(self, df: pd.DataFrame, columns: List[str]) -> Dict[str, str]:
         """Get case-insensitive column mapping from DataFrame.
         
@@ -306,29 +320,25 @@ class DataStandardizer:
         return col_mapping
 
     def _standardize_columns(self, df: pd.DataFrame, mapping: Dict[str, str], required_cols: Set[str]) -> pd.DataFrame:
-        """Standardize column names using case-insensitive mapping.
-        
-        Args:
-            df: DataFrame to standardize
-            mapping: Dictionary of source->target column names
-            required_cols: Set of required column names
-            
-        Returns:
-            DataFrame with standardized column names
-        """
+        """Standardize column names using case-insensitive mapping."""
         # Create case-insensitive column mapping
-        df_cols_upper = {col.upper(): col for col in df.columns}
+        df_cols_upper = {col.strip('$').upper(): col for col in df.columns}
         col_mapping = {}
         
         # First pass: Try to map all source columns case-insensitively
         for src, target in mapping.items():
-            src_upper = src.upper()
+            src_upper = src.strip('$').upper()
             if src_upper in df_cols_upper:
                 col_mapping[df_cols_upper[src_upper]] = target
         
         # Special handling for ISR->primaryid mapping (ALWAYS present in some form)
         if 'primaryid' not in col_mapping.values():
-            isr_col = next((df_cols_upper[col] for col in df_cols_upper if col in ['ISR', 'isr']), None)
+            isr_variants = ['ISR', 'isr']
+            isr_col = None
+            for variant in isr_variants:
+                if variant.upper() in df_cols_upper:
+                    isr_col = df_cols_upper[variant.upper()]
+                    break
             if isr_col:
                 col_mapping[isr_col] = 'primaryid'
         
@@ -419,8 +429,21 @@ class DataStandardizer:
             Standardized DataFrame
         """
         try:
+            # Print column names before standardization for debugging
+            self.logger.debug(f"({quarter_name}) {file_name}: Original columns: {list(df.columns)}")
+            
             # Apply column standardization
             df = self._standardize_columns(df, self.INDI_MAPPING, self.INDI_REQUIRED_COLS)
+            
+            # Print column names after standardization for debugging
+            self.logger.debug(f"({quarter_name}) {file_name}: Standardized columns: {list(df.columns)}")
+            
+            # Verify ISR/primaryid mapping worked
+            if 'primaryid' not in df.columns:
+                actual_isr_col = next((col for col in df.columns if col.upper().strip('$') == 'ISR'), None)
+                if actual_isr_col:
+                    df = df.rename(columns={actual_isr_col: 'primaryid'})
+                    self.logger.debug(f"({quarter_name}) {file_name}: Mapped {actual_isr_col} to primaryid")
             
             return df
             
@@ -1632,6 +1655,68 @@ class DataStandardizer:
             self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_indications: {str(e)}")
             return df
 
+    def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize outcomes information."""
+        try:
+            # Required columns exactly as defined in documentation.html
+            required_columns = {
+                'isr': ['ISR'],
+                'outc_cod': ['OUTC_COD']
+            }
+            
+            # Process each required column
+            for target_col, source_cols in required_columns.items():
+                found = False
+                for col in source_cols:
+                    if col in df.columns:
+                        if col != target_col:
+                            df = df.rename(columns={col: target_col})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
+                    df[target_col] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_outcomes: {str(e)}")
+            return df
+
+    def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize therapy information."""
+        try:
+            # Required columns exactly as defined in documentation.html
+            required_columns = {
+                'isr': ['ISR'],
+                'dsg_drug_seq': ['DSG_DRUG_SEQ'],
+                'start_dt': ['START_DT'],
+                'end_dt': ['END_DT'],
+                'dur': ['DUR'],
+                'dur_cod': ['DUR_COD']
+            }
+            
+            # Process each required column
+            for target_col, source_cols in required_columns.items():
+                found = False
+                for col in source_cols:
+                    if col in df.columns:
+                        if col != target_col:
+                            df = df.rename(columns={col: target_col})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
+                    df[target_col] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_therapies: {str(e)}")
+            return df
+
     def process_quarters(self, quarters_dir: Path, parallel: bool = True, max_workers: Optional[int] = None) -> Dict[str, Any]:
         """Process multiple FAERS quarters.
         
@@ -1727,7 +1812,7 @@ class DataStandardizer:
                     # Process each file
                     for file_path in files:
                         try:
-                            df = read_and_clean_file(file_path)
+                            df = self.read_file(file_path)
                             if df is not None and not df.empty:
                                 df = self.standardize_data(df, file_type, str(file_path), quarter_name)
                                 processed_data[file_type] = df
