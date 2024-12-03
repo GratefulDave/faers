@@ -1090,43 +1090,60 @@ class DataStandardizer:
             return df
 
     def standardize_occupation(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize occupation codes.
+        """Standardize occupation codes for reporters.
+        
+        Valid occupation codes:
+        - MD: Medical Doctor
+        - CN: Consumer
+        - OT: Other
+        - PH: Pharmacist
+        - HP: Health Practitioner
+        - LW: Lawyer
+        - RN: Registered Nurse
+        
+        All other values (including SALES, 20120210) are converted to NA.
         
         Args:
-            df: DataFrame with occupation codes
-            
+            df: DataFrame with occupation column (occp_cod)
+        
         Returns:
             DataFrame with standardized occupation codes
         """
-        df = df.copy()
-        
-        # Valid occupation codes
-        valid_codes = {
-            'MD': 'Medical Doctor',
-            'CN': 'Consumer',
-            'OT': 'Other Health Professional',
-            'PH': 'Pharmacist',
-            'HP': 'Health Professional',
-            'LW': 'Lawyer',
-            'RN': 'Registered Nurse'
-        }
-        
-        # Standardize codes
-        df.loc[~df['occp_cod'].isin(valid_codes.keys()), 'occp_cod'] = pd.NA
-        
-        # Convert to categorical
-        df['occp_cod'] = df['occp_cod'].astype('category')
-        
-        # Log occupation distribution
-        occ_dist = df['occp_cod'].value_counts(dropna=False)
-        total = len(df)
-        logging.info("Occupation distribution:")
-        for code, count in occ_dist.items():
-            pct = round(100 * count / total, 2)
-            name = valid_codes.get(code, 'Unknown/NA')
-            logging.info(f"  {code} ({name}): {count} ({pct}%)")
-        
-        return df
+        try:
+            df = df.copy()
+            
+            if 'occp_cod' not in df.columns:
+                df['occp_cod'] = ''
+                logging.warning("Occupation code column not found - initialized with empty strings")
+            
+            # Valid occupation codes matching R implementation
+            valid_codes = {'MD', 'CN', 'OT', 'PH', 'HP', 'LW', 'RN'}
+            
+            # Log initial distribution
+            logging.info("Initial occupation code distribution:")
+            initial_dist = df['occp_cod'].value_counts()
+            for code, count in initial_dist.items():
+                logging.info(f"  {code}: {count}")
+            
+            # Convert invalid codes to NA (exactly matching R: Demo[!occp_cod%in%c("MD","CN","OT","PH","HP","LW", "RN")]$occp_cod <- NA)
+            df.loc[~df['occp_cod'].isin(valid_codes), 'occp_cod'] = pd.NA
+            
+            # Log final distribution
+            logging.info("Final occupation code distribution:")
+            final_dist = df['occp_cod'].value_counts()
+            for code, count in final_dist.items():
+                logging.info(f"  {code}: {count}")
+            
+            # Log specific invalid codes found (e.g., SALES, 20120210)
+            invalid_codes = set(initial_dist.index) - valid_codes
+            if invalid_codes:
+                logging.warning(f"Converted invalid occupation codes to NA: {invalid_codes}")
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing occupation codes: {str(e)}")
+            return df
 
     def standardize_manufacturer(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process manufacturer records in demographics data.
