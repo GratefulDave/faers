@@ -20,6 +20,7 @@ import sys
 import chardet
 
 from .standardizer import DataStandardizer
+from .deduplicator import FAERSDeduplicator
 
 
 class ColoredFormatter(logging.Formatter):
@@ -215,18 +216,12 @@ class FAERSProcessingSummary:
 class FAERSProcessor:
     """Processor for FAERS data files."""
 
-    def __init__(self, standardizer: DataStandardizer, use_parallel: bool = False, max_date: int = None):
-        """Initialize the FAERS processor.
-
-        Args:
-            standardizer: DataStandardizer instance for data cleaning
-            use_parallel: Whether to use parallel processing
-            max_date: Maximum valid date (e.g., 20230331 for 2023Q1)
-        """
-        self.standardizer = standardizer
-        self.use_parallel = use_parallel
+    def __init__(self, max_date: int = None):
+        """Initialize the FAERS processor."""
         self.max_date = max_date
-        self.logger = setup_logging()
+        self.standardizer = DataStandardizer()
+        self.deduplicator = FAERSDeduplicator()
+        self.logger = logging.getLogger(__name__)
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
         """Process all quarters in the input directory and save merged results in output_dir."""
@@ -1006,112 +1001,45 @@ class FAERSProcessor:
             self.logger.error(f"Error processing DRUG datasets: {str(e)}")
             raise
 
-    def process_drug_info(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Process drug information data.
-        
-        Args:
-            df: Raw drug information DataFrame
-        
-        Returns:
-            Processed DataFrame with standardized therapy regimen
-        """
-        df = self.standardizer.standardize_drug_info(df, self.max_date)
-        return df
-
     def process_demo_dataset(self, input_dir: Path, output_dir: Path) -> None:
-        """Process DEMO dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Excludes IMAGE, CONFID, and DEATH_DT variables
-        2. Derives sex from sex and gndr_cod
-        3. Combines rept_dt and " rept_dt" for reporter date
-        """
-        self.logger.info("Processing DEMO dataset")
-        
-        # Find DEMO files (str_detect(faers_list, regex("demo", ignore_case = T)))
-        demo_files = [f for f in self.find_faers_files(input_dir) 
-                     if re.search(r'demo', str(f), re.IGNORECASE)]
-        
-        if not demo_files:
-            raise ValueError("No DEMO files found")
-            
-        # Define exact column mappings as in R
-        namekey = {
-            "ISR": "primaryid",
-            "CASE": "caseid",
-            "FOLL_SEQ": "caseversion",
-            "I_F_COD": "i_f_cod",
-            "EVENT_DT": "event_dt",
-            "MFR_DT": "mfr_dt",
-            "FDA_DT": "fda_dt",
-            "REPT_COD": "rept_cod",
-            "MFR_NUM": "mfr_num",
-            "MFR_SNDR": "mfr_sndr",
-            "AGE": "age",
-            "AGE_COD": "age_cod",
-            "GNDR_COD": "sex",
-            "E_SUB": "e_sub",
-            "WT": "wt",
-            "WT_COD": "wt_cod",
-            "REPT_DT": "rept_dt",
-            "OCCP_COD": "occp_cod",
-            "TO_MFR": "to_mfr",
-            "REPORTER_COUNTRY": "reporter_country",
-            "quarter": "quarter",
-            "i_f_code": "i_f_cod"
-        }
-        
-        # Define exact column subset as in R
-        column_subset = [
-            "primaryid", "caseid", "caseversion", "i_f_cod", "sex", "age",
-            "age_cod", "age_grp", "wt", "wt_cod", "reporter_country",
-            "occr_country", "event_dt", "rept_dt", "mfr_dt", "init_fda_dt",
-            "fda_dt", "rept_cod", "occp_cod", "mfr_num", "mfr_sndr", "to_mfr",
-            "e_sub", "quarter", "auth_num", "lit_ref"
-        ]
-        
-        # Define duplicated columns exactly as in R
-        duplicated_cols_x = ["rept_dt", "sex"]
-        duplicated_cols_y = [" rept_dt", "gndr_cod"]
-        
+        """Process DEMO dataset exactly as in the R implementation."""
         try:
-            # Process DEMO files
-            demo_df = self.unify_data(
-                files_list=demo_files,
-                namekey=namekey,
-                column_subset=column_subset,
-                duplicated_cols_x=duplicated_cols_x,
-                duplicated_cols_y=duplicated_cols_y
-            )
+            demo_files = list(input_dir.glob("*DEMO*.txt"))
+            if not demo_files:
+                raise FileNotFoundError("No DEMO files found in input directory")
+                
+            # Read and combine all demo files
+            dfs = []
+            for file in demo_files:
+                df = pd.read_csv(file, delimiter="$", dtype=str)
+                # Extract quarter from filename (assuming format like *DEMO20Q4.txt*)
+                quarter = re.search(r'DEMO(\d{2}Q\d)', file.name)
+                if quarter:
+                    df['quarter'] = quarter.group(1)
+                dfs.append(df)
+                
+            demo_df = pd.concat(dfs, ignore_index=True)
             
-            # Explicitly verify excluded columns are not present
-            excluded_cols = ["IMAGE", "CONFID", "DEATH_DT"]
-            for col in excluded_cols:
-                if col in demo_df.columns:
-                    self.logger.warning(f"Excluded column {col} found in dataset - removing")
-                    demo_df = demo_df.drop(columns=[col])
+            # Perform standardization
+            demo_df = self.standardizer.standardize_demo(demo_df)
             
-            # Save processed DEMO dataset
-            output_path = output_dir / "DEMO.rds"
-            demo_df.to_pickle(output_path)
-            self.logger.info(f"Saved processed DEMO dataset to {output_path}")
-            self.logger.info(f"DEMO shape: {demo_df.shape}")
+            # Save intermediate result
+            intermediate_path = output_dir / 'intermediate' / 'demo_standardized.pkl'
+            intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+            demo_df.to_pickle(intermediate_path)
             
-            # Log summary statistics
-            self.logger.info(f"DEMO columns: {', '.join(demo_df.columns)}")
+            # Perform deduplication as a separate step
+            dedup_path = output_dir / 'demo_deduped.pkl'
+            self.deduplicator.deduplicate_dataset(intermediate_path, dedup_path)
+            
+            self.logger.info("Successfully processed DEMO dataset")
             
         except Exception as e:
             self.logger.error(f"Error processing DEMO dataset: {str(e)}")
             raise
 
     def process_indi_dataset(self) -> None:
-        """Process INDI dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Process INDI files
-        2. Remove rows with no indication specified (NA indi_pt)
-        3. Save to RDS/pickle format
-        """
+        """Process INDI dataset exactly as in the R implementation."""
         paths = self.get_project_paths()
         self.logger.info("Processing INDI dataset")
         
@@ -1162,13 +1090,7 @@ class FAERSProcessor:
             raise
 
     def process_outc_dataset(self) -> None:
-        """Process OUTC dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Process OUTC files
-        2. Remove rows with no outcome specified (NA outc_cod)
-        3. Save to RDS/pickle format
-        """
+        """Process OUTC dataset exactly as in the R implementation."""
         paths = self.get_project_paths()
         self.logger.info("Processing OUTC dataset")
         
@@ -1216,13 +1138,7 @@ class FAERSProcessor:
             raise
 
     def process_reac_dataset(self) -> None:
-        """Process REAC dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Process REAC files
-        2. Remove rows with no reaction specified (NA pt)
-        3. Save to RDS/pickle format
-        """
+        """Process REAC dataset exactly as in the R implementation."""
         paths = self.get_project_paths()
         self.logger.info("Processing REAC dataset")
         
@@ -1271,12 +1187,7 @@ class FAERSProcessor:
             raise
 
     def process_rpsr_dataset(self) -> None:
-        """Process RPSR dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Process RPSR files
-        2. Save to RDS/pickle format without any filtering
-        """
+        """Process RPSR dataset exactly as in the R implementation."""
         paths = self.get_project_paths()
         self.logger.info("Processing RPSR dataset")
         
@@ -1321,12 +1232,7 @@ class FAERSProcessor:
             raise
 
     def process_ther_dataset(self) -> None:
-        """Process THER dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Process THER files
-        2. Save to RDS/pickle format without any filtering
-        """
+        """Process THER dataset exactly as in the R implementation."""
         paths = self.get_project_paths()
         self.logger.info("Processing THER dataset")
         
@@ -1380,12 +1286,7 @@ class FAERSProcessor:
             raise
 
     def standardize_meddra_terms(self) -> None:
-        """Standardize MedDRA terms exactly as in R implementation.
-        
-        Standardizes:
-        1. REAC.rds: 'pt' and 'drug_rec_act' fields
-        2. INDI.rds: 'indi_pt' field
-        """
+        """Standardize MedDRA terms exactly as in R implementation."""
         paths = self.get_project_paths()
         self.logger.info("Starting MedDRA standardization")
         
@@ -1425,12 +1326,7 @@ class FAERSProcessor:
             raise
 
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
-        """Exact match to R's correct_problematic_file function.
-        
-        Args:
-            file_path: Path to file to correct
-            old_line: Problematic line pattern to fix
-        """
+        """Exact match to R's correct_problematic_file function."""
         self.logger.info(f"Correcting problematic file: {file_path}")
         try:
             with open(file_path, 'r', encoding='latin1') as f:
@@ -1458,12 +1354,7 @@ class FAERSProcessor:
             raise
 
     def store_to_rds(self, file_path: Path, output_dir: Path) -> None:
-        """Exact match to R's store_to_rds function with enhanced error handling.
-        
-        Args:
-            file_path: Path to input TXT file
-            output_dir: Directory to save RDS file
-        """
+        """Exact match to R's store_to_rds function with enhanced error handling."""
         try:
             # Create output name (gsub(".TXT",".rds",f, ignore.case = T))
             rds_name = re.sub(r'\.TXT$', '.rds', str(file_path), flags=re.IGNORECASE)
@@ -1498,10 +1389,7 @@ class FAERSProcessor:
             raise
 
     def preprocess_faers_files(self, input_dir: Path, output_dir: Path) -> None:
-        """Preprocess FAERS files exactly like the R implementation.
-        
-        This combines all the R preprocessing steps while maintaining our enhanced features.
-        """
+        """Preprocess FAERS files exactly like the R implementation."""
         self.logger.info("Starting FAERS preprocessing")
         
         # Create output directory
@@ -1549,12 +1437,7 @@ class FAERSProcessor:
                     continue
 
     def process_files(self, input_dir: Path, output_dir: Path) -> None:
-        """Process all FAERS data files in the input directory.
-        
-        Args:
-            input_dir: Directory containing raw FAERS data files
-            output_dir: Directory to save processed files
-        """
+        """Process all FAERS data files in the input directory."""
         try:
             # Process demo files first to get event dates
             demo_files = list(input_dir.glob('*DEMO*.txt'))
@@ -1594,3 +1477,15 @@ class FAERSProcessor:
         except Exception as e:
             logging.error(f"Error processing files: {str(e)}")
             raise
+
+    def process_drug_info(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process drug information data.
+        
+        Args:
+            df: Raw drug information DataFrame
+        
+        Returns:
+            Processed DataFrame with standardized therapy regimen
+        """
+        df = self.standardizer.standardize_drug_info(df, self.max_date)
+        return df

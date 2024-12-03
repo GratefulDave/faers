@@ -1,133 +1,84 @@
-"""Deduplication of FAERS data."""
+"""Service for handling deduplication of FAERS data."""
 
 import logging
-from pathlib import Path
-from typing import List, Optional
-
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
-from tqdm import tqdm
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
 
-
-class Deduplicator:
-    """Handles deduplication of FAERS data files."""
-
-    def __init__(self, data_dir: Path):
-        """Initialize deduplicator.
+class FAERSDeduplicator:
+    """Service for deduplicating FAERS data following R implementation."""
+    
+    def __init__(self):
+        """Initialize the deduplicator service."""
+        self.logger = logging.getLogger(__name__)
+    
+    def deduplicate_primaryids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove duplicated primaryids keeping only the most recent quarter entry.
+        
+        Matches R implementation:
+        Demo <- Demo[Demo[,.I[quarter==last(quarter)],by=primaryid]$V1]
         
         Args:
-            data_dir: Directory containing processed FAERS data
-        """
-        self.data_dir = Path(data_dir)
-        if not self.data_dir.exists():
-            raise ValueError(f"Data directory does not exist: {self.data_dir}")
-
-    def deduplicate_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate demographics data.
-        
-        Args:
-            df: Demographics DataFrame
+            df: DataFrame with potential duplicate primaryids
             
         Returns:
-            Deduplicated DataFrame
-        """
-        # Sort by date and keep most recent
-        if not df.empty and 'date' in df.columns:
-            df = df.sort_values('date', ascending=False)
-            
-        # Drop duplicates based on key fields
-        key_fields = ['primaryid', 'caseid', 'age', 'sex', 'reporter_country']
-        key_fields = [f for f in key_fields if f in df.columns]
-        
-        return df.drop_duplicates(subset=key_fields, keep='first')
-
-    def deduplicate_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate drugs data.
-        
-        Args:
-            df: Drugs DataFrame
-            
-        Returns:
-            Deduplicated DataFrame
-        """
-        # Sort by drug sequence to keep primary suspect drugs
-        if not df.empty and 'drug_seq' in df.columns:
-            df = df.sort_values('drug_seq')
-            
-        # Drop duplicates based on key fields
-        key_fields = ['primaryid', 'caseid', 'drug_name', 'route', 'dose_amt', 'dose_unit']
-        key_fields = [f for f in key_fields if f in df.columns]
-        
-        return df.drop_duplicates(subset=key_fields, keep='first')
-
-    def deduplicate_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate reactions data.
-        
-        Args:
-            df: Reactions DataFrame
-            
-        Returns:
-            Deduplicated DataFrame
-        """
-        # Drop duplicates based on key fields
-        key_fields = ['primaryid', 'caseid', 'pt', 'outcome']
-        key_fields = [f for f in key_fields if f in df.columns]
-        
-        return df.drop_duplicates(subset=key_fields, keep='first')
-
-    def deduplicate_file(self, file_path: Path) -> None:
-        """Deduplicate a single txt file.
-        
-        Args:
-            file_path: Path to txt file
+            DataFrame with duplicates removed, keeping most recent quarter
         """
         try:
-            # Read txt file
-            df = pd.read_csv(file_path, sep='$', encoding='utf-8')
-            
-            # Determine file type and apply appropriate deduplication
-            if 'demo' in file_path.stem.lower():
-                df_dedup = self.deduplicate_demographics(df)
-            elif 'drug' in file_path.stem.lower():
-                df_dedup = self.deduplicate_drugs(df)
-            elif 'reac' in file_path.stem.lower():
-                df_dedup = self.deduplicate_reactions(df)
-            else:
-                logging.warning(f"Unknown file type: {file_path}")
-                return
+            if 'primaryid' not in df.columns or 'quarter' not in df.columns:
+                self.logger.warning("Cannot remove duplicates: missing required columns 'primaryid' or 'quarter'")
+                return df
                 
-            # Save deduplicated file
-            output_path = file_path.parent / f"{file_path.stem}_dedup.txt"
-            df_dedup.to_csv(output_path, sep='$', index=False, encoding='utf-8')
+            # Get indices of rows to keep (most recent quarter for each primaryid)
+            indices = df.groupby('primaryid')['quarter'].idxmax()
             
-            # Log results
-            reduction = ((len(df) - len(df_dedup)) / len(df)) * 100 if len(df) > 0 else 0
-            logging.info(f"Deduplicated {file_path.name}: {reduction:.1f}% reduction")
+            # Keep only the selected rows
+            df_deduped = df.loc[indices]
+            
+            # Log duplicate removal statistics
+            total_rows = len(df)
+            kept_rows = len(df_deduped)
+            removed_rows = total_rows - kept_rows
+            
+            if removed_rows > 0:
+                self.logger.info(f"Removed {removed_rows} duplicate primaryid entries, keeping {kept_rows} unique entries")
+                
+                # Log some examples of removed duplicates for verification
+                dupes = df[df.duplicated(subset=['primaryid'], keep=False)].sort_values(['primaryid', 'quarter'])
+                if not dupes.empty:
+                    sample_dupes = dupes.groupby('primaryid').head(2).head(6)  # Show up to 3 pairs of duplicates
+                    self.logger.debug("Sample of removed duplicates (showing primaryid, quarter, caseid):")
+                    for _, group in sample_dupes.groupby('primaryid'):
+                        self.logger.debug(f"\nPrimaryid: {group['primaryid'].iloc[0]}")
+                        for _, row in group.iterrows():
+                            self.logger.debug(f"Quarter: {row['quarter']}, Caseid: {row.get('caseid', 'N/A')}")
+        
+            return df_deduped
             
         except Exception as e:
-            logging.error(f"Error deduplicating {file_path}: {str(e)}")
-            raise
-
-    def deduplicate_all(self) -> None:
-        """Deduplicate all processed FAERS data files."""
+            self.logger.error(f"Error removing duplicate primaryids: {str(e)}")
+            return df
+    
+    def deduplicate_dataset(self, input_path: Path, output_path: Path) -> None:
+        """Deduplicate an entire dataset, preserving most recent entries.
+        
+        Args:
+            input_path: Path to input dataset
+            output_path: Path to save deduplicated dataset
+        """
         try:
-            # Find all txt files
-            txt_files = list(self.data_dir.glob('*.txt'))
-            if not txt_files:
-                logging.warning("No txt files found to deduplicate")
-                return
-                
-            # Process each file
-            with tqdm(total=len(txt_files), desc="Deduplicating files") as pbar:
-                for file_path in txt_files:
-                    try:
-                        if not file_path.stem.endswith('_dedup'):  # Skip already deduplicated files
-                            self.deduplicate_file(file_path)
-                    except Exception as e:
-                        logging.error(f"Error processing {file_path}: {str(e)}")
-                    finally:
-                        pbar.update(1)
+            # Read the dataset
+            df = pd.read_pickle(input_path)
+            
+            # Perform deduplication
+            df_deduped = self.deduplicate_primaryids(df)
+            
+            # Save deduplicated dataset
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            df_deduped.to_pickle(output_path)
+            
+            self.logger.info(f"Successfully deduplicated dataset: {input_path.name}")
+            
         except Exception as e:
-            logging.error(f"Error in deduplicate_all: {str(e)}")
+            self.logger.error(f"Error deduplicating dataset {input_path}: {str(e)}")
             raise

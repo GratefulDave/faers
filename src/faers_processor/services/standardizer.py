@@ -1377,12 +1377,12 @@ class DataStandardizer:
             df['route'] = df['route'].astype('category')
             
             # Log standardization results
-            total = len(df)
+            total_routes = len(df)
             standardized = df['route'].notna().sum()
             logging.info(f"Route standardization results:")
-            logging.info(f"  Total routes: {total}")
-            logging.info(f"  Standardized: {standardized} ({100*standardized/total:.1f}%)")
-            logging.info(f"  Unstandardized: {total-standardized} ({100*(total-standardized)/total:.1f}%)")
+            logging.info(f"  Total routes: {total_routes}")
+            logging.info(f"  Standardized: {standardized} ({100*standardized/total_routes:.1f}%)")
+            logging.info(f"  Unstandardized: {total_routes-standardized} ({100*(total_routes-standardized)/total_routes:.1f}%)")
         
         return df
 
@@ -2488,6 +2488,53 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Error calculating time to onset: {str(e)}")
             return ther_df
+
+    def remove_duplicate_primaryids(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove duplicated primaryids keeping only the most recent quarter entry.
+        
+        Matches R implementation:
+        Demo <- Demo[Demo[,.I[quarter==last(quarter)],by=primaryid]$V1]
+        
+        Args:
+            df: DataFrame with potential duplicate primaryids
+        
+        Returns:
+            DataFrame with duplicates removed, keeping most recent quarter
+        """
+        try:
+            if 'primaryid' not in df.columns or 'quarter' not in df.columns:
+                logging.warning("Cannot remove duplicates: missing required columns 'primaryid' or 'quarter'")
+                return df
+                
+            # Get indices of rows to keep (most recent quarter for each primaryid)
+            indices = df.groupby('primaryid')['quarter'].idxmax()
+            
+            # Keep only the selected rows
+            df_deduped = df.loc[indices]
+            
+            # Log duplicate removal statistics
+            total_rows = len(df)
+            kept_rows = len(df_deduped)
+            removed_rows = total_rows - kept_rows
+            
+            if removed_rows > 0:
+                logging.info(f"Removed {removed_rows} duplicate primaryid entries, keeping {kept_rows} unique entries")
+                
+                # Log some examples of removed duplicates for verification
+                dupes = df[df.duplicated(subset=['primaryid'], keep=False)].sort_values(['primaryid', 'quarter'])
+                if not dupes.empty:
+                    sample_dupes = dupes.groupby('primaryid').head(2).head(6)  # Show up to 3 pairs of duplicates
+                    logging.debug("Sample of removed duplicates (showing primaryid, quarter, caseid):")
+                    for _, group in sample_dupes.groupby('primaryid'):
+                        logging.debug(f"\nPrimaryid: {group['primaryid'].iloc[0]}")
+                        for _, row in group.iterrows():
+                            logging.debug(f"Quarter: {row['quarter']}, Caseid: {row.get('caseid', 'N/A')}")
+        
+            return df_deduped
+        
+        except Exception as e:
+            logging.error(f"Error removing duplicate primaryids: {str(e)}")
+            return df
 
 def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
     """Read and clean the file, detecting delimiter."""
