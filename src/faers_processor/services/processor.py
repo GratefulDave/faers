@@ -1074,11 +1074,104 @@ class FAERSProcessor:
             output_path = output_dir / "DEMO.rds"
             demo_df.to_pickle(output_path)
             self.logger.info(f"Saved processed DEMO dataset to {output_path}")
+            self.logger.info(f"DEMO shape: {demo_df.shape}")
             
             # Log summary statistics
-            self.logger.info(f"DEMO dataset shape: {demo_df.shape}")
             self.logger.info(f"DEMO columns: {', '.join(demo_df.columns)}")
             
         except Exception as e:
             self.logger.error(f"Error processing DEMO dataset: {str(e)}")
+            raise
+
+    def get_project_paths(self) -> Dict[str, Path]:
+        """Get standardized project paths."""
+        project_root = Path("/Users/davidandrews/Documents/Projects/DiAna")
+        return {
+            "raw": project_root / "data" / "raw",
+            "clean": project_root / "data" / "clean",
+            "external": project_root / "data" / "external"
+        }
+
+    def process_drug_datasets(self) -> None:
+        """Process DRUG datasets exactly as in the R implementation.
+        
+        Creates two datasets:
+        1. DRUG: General information about drugs and suspect degree
+        2. DRUG_INFO: Details about doses, formulations, dechallenge, and routes
+        
+        Both datasets maintain primary (primaryid) and secondary (drug_seq) keys.
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing DRUG datasets")
+        
+        # Find DRUG files (str_detect(faers_list, regex("drug", ignore_case = T)))
+        drug_files = [f for f in self.find_faers_files(paths["raw"]) 
+                     if re.search(r'drug', str(f), re.IGNORECASE)]
+        
+        if not drug_files:
+            raise ValueError("No DRUG files found")
+            
+        # Define common namekey mapping for both datasets
+        namekey = {
+            "ISR": "primaryid",
+            "DRUG_SEQ": "drug_seq",
+            "ROLE_COD": "role_cod",
+            "DRUGNAME": "drugname",
+            "VAL_VBM": "val_vbm",
+            "ROUTE": "route",
+            "DOSE_VBM": "dose_vbm",
+            "DECHAL": "dechal",
+            "RECHAL": "rechal",
+            "LOT_NUM": "lot_num",
+            "NDA_NUM": "nda_num",
+            "EXP_DT": "exp_dt"
+        }
+        
+        try:
+            # Process DRUG dataset (general information)
+            self.logger.info("Processing DRUG dataset")
+            drug_df = self.unify_data(
+                files_list=drug_files,
+                namekey=namekey,
+                column_subset=[
+                    "primaryid", "drug_seq", "role_cod", "drugname", "prod_ai"
+                ],
+                duplicated_cols_x=None,  # NA in R
+                duplicated_cols_y=None   # NA in R
+            )
+            
+            # Save DRUG dataset
+            drug_output = paths["clean"] / "DRUG.rds"
+            drug_df.to_pickle(drug_output)
+            self.logger.info(f"Saved DRUG dataset to {drug_output}")
+            self.logger.info(f"DRUG shape: {drug_df.shape}")
+            
+            # Process DRUG_INFO dataset (detailed information)
+            self.logger.info("Processing DRUG_INFO dataset")
+            drug_info_df = self.unify_data(
+                files_list=drug_files,
+                namekey=namekey,
+                column_subset=[
+                    "primaryid", "drug_seq", "val_vbm", "nda_num", "lot_num",
+                    "route", "dose_form", "dose_freq", "exp_dt",
+                    "dose_vbm", "cum_dose_unit", "cum_dose_chr", "dose_amt",
+                    "dose_unit", "dechal", "rechal"
+                ],
+                duplicated_cols_x=["lot_num"],
+                duplicated_cols_y=["lot_nbr"]
+            )
+            
+            # Save DRUG_INFO dataset
+            drug_info_output = paths["clean"] / "DRUG_INFO.rds"
+            drug_info_df.to_pickle(drug_info_output)
+            self.logger.info(f"Saved DRUG_INFO dataset to {drug_info_output}")
+            self.logger.info(f"DRUG_INFO shape: {drug_info_df.shape}")
+            
+            # Log summary of both datasets
+            self.logger.info("DRUG processing complete:")
+            self.logger.info(f"DRUG columns: {', '.join(drug_df.columns)}")
+            self.logger.info(f"DRUG_INFO columns: {', '.join(drug_info_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing DRUG datasets: {str(e)}")
             raise
