@@ -216,10 +216,10 @@ class FAERSProcessingSummary:
 class FAERSProcessor:
     """Processor for FAERS data files."""
 
-    def __init__(self, max_date: int = None):
+    def __init__(self, standardizer: DataStandardizer, max_date: Optional[int] = None):
         """Initialize the FAERS processor."""
         self.max_date = max_date
-        self.standardizer = DataStandardizer()
+        self.standardizer = standardizer
         self.deduplicator = FAERSDeduplicator()
         self.logger = logging.getLogger(__name__)
 
@@ -1724,7 +1724,7 @@ class FAERSProcessor:
             valid_reac_df = reac_df[~reac_df['pt'].isin(invalid_reactions)]
             
             # 3. Find primaryids missing drug or reaction info
-            demo_ids = set(demo_df['primaryid'].unique())
+            demo_ids = set(demo_df['primaryid'])
             drug_ids = set(valid_drug_df['primaryid'].unique())
             reac_ids = set(valid_reac_df['primaryid'].unique())
             

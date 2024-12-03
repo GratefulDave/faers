@@ -37,6 +37,7 @@ from datetime import datetime
 from faers_processor.services.standardizer import DataStandardizer
 from faers_processor.services.downloader import FAERSDownloader
 from faers_processor.services.deduplicator import FAERSDeduplicator
+from faers_processor.services.processor import FAERSProcessor
 
 class ProjectPaths:
     """
@@ -104,7 +105,9 @@ def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
                 parallel: bool = True, max_workers: Optional[int] = None,
                 chunk_size: Optional[int] = None) -> None:
     """Process all FAERS data in parallel."""
+    # Initialize standardizer and processor
     standardizer = DataStandardizer(paths.external, paths.clean)
+    processor = FAERSProcessor(standardizer, max_date=max_date if max_date else None)
     
     # Process all available quarters
     quarters = []
@@ -117,7 +120,7 @@ def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
             ascii_dir = quarter_dir / 'ascii'
             if ascii_dir.exists():
                 logging.info(f"Processing quarter {quarter_dir.name}...")
-                standardizer.process_quarter(
+                processor.process_quarter(
                     ascii_dir,
                     max_date=max_date,
                     parallel=parallel,
