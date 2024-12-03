@@ -200,3 +200,137 @@ class FAERSDeduplicator:
         except Exception as e:
             self.logger.error(f"Error deduplicating dataset {input_path}: {str(e)}")
             raise
+
+    def identify_rule_based_duplicates(self, demo_df: pd.DataFrame, reac_df: pd.DataFrame, 
+                                    drug_df: pd.DataFrame) -> pd.DataFrame:
+        """Identify rule-based duplicates using two algorithms.
+        
+        Matches R implementation:
+        1. Conservative algorithm (RB_duplicates) - checks exact matches in:
+           - event_dt, sex, reporter_country, age_in_days, wt_in_kgs
+           - list of PTs
+           - list of drugs (PS, SS, IC)
+           
+        2. Speculative algorithm (RB_duplicates_only_susp) - checks exact matches in:
+           - event_dt, sex, reporter_country, age_in_days, wt_in_kgs
+           - list of PTs
+           - list of suspected drugs only
+        
+        Args:
+            demo_df: Demographics DataFrame
+            reac_df: Reactions DataFrame
+            drug_df: Drug DataFrame
+            
+        Returns:
+            Demographics DataFrame with duplicate flags
+        """
+        try:
+            # 1. Prepare reaction data - concatenate PTs
+            temp_reac = (reac_df.sort_values('pt')
+                        .groupby('primaryid')['pt']
+                        .agg(lambda x: '; '.join(x))
+                        .reset_index()
+                        .drop_duplicates())
+            
+            # 2. Prepare drug data by role code
+            # Primary Suspect (PS)
+            temp_drug_ps = (drug_df[drug_df['role_cod'] == 'PS']
+                          .sort_values('substance')
+                          .groupby('primaryid')['substance']
+                          .agg(lambda x: '; '.join(x))
+                          .reset_index()
+                          .rename(columns={'substance': 'PS'})
+                          .drop_duplicates())
+            
+            # Secondary Suspect (SS)
+            temp_drug_ss = (drug_df[drug_df['role_cod'] == 'SS']
+                          .sort_values('substance')
+                          .groupby('primaryid')['substance']
+                          .agg(lambda x: '; '.join(x))
+                          .reset_index()
+                          .rename(columns={'substance': 'SS'})
+                          .drop_duplicates())
+            
+            # Interacting/Concomitant (I/C)
+            temp_drug_ic = (drug_df[drug_df['role_cod'].isin(['I', 'C'])]
+                         .sort_values('substance')
+                         .groupby('primaryid')['substance']
+                         .agg(lambda x: '; '.join(x))
+                         .reset_index()
+                         .rename(columns={'substance': 'IC'})
+                         .drop_duplicates())
+            
+            # All Suspected (PS + SS)
+            temp_drug_suspected = (drug_df[drug_df['role_cod'].isin(['PS', 'SS'])]
+                                .sort_values('substance')
+                                .groupby('primaryid')['substance']
+                                .agg(lambda x: '; '.join(x))
+                                .reset_index()
+                                .rename(columns={'substance': 'suspected'})
+                                .drop_duplicates())
+            
+            # 3. Merge all temporary dataframes
+            merge_cols = ['event_dt', 'sex', 'reporter_country', 'age_in_days', 
+                         'wt_in_kgs', 'primaryid', 'fda_dt']
+            temp = demo_df[merge_cols].merge(temp_reac, on='primaryid')
+            temp = temp.merge(temp_drug_ps, on='primaryid', how='left')
+            temp = temp.merge(temp_drug_ss, on='primaryid', how='left')
+            temp = temp.merge(temp_drug_ic, on='primaryid', how='left')
+            temp = temp.merge(temp_drug_suspected, on='primaryid', how='left')
+            
+            # Sort by FDA date
+            temp = temp.sort_values('fda_dt')
+            
+            # 4. Conservative algorithm (all drugs)
+            complete_duplicates = ['event_dt', 'sex', 'reporter_country', 'age_in_days',
+                                 'wt_in_kgs', 'pt', 'PS', 'SS', 'IC']
+            
+            # Create duplicate groups
+            temp['DUP_ID'] = temp.groupby(complete_duplicates).ngroup()
+            
+            # Find singlets and duplicates
+            dup_counts = temp.groupby('DUP_ID').size().reset_index(name='N')
+            singlets_pids = temp[temp['DUP_ID'].isin(dup_counts[dup_counts['N'] == 1]['DUP_ID'])]['primaryid']
+            duplicates = temp[~temp['primaryid'].isin(singlets_pids)]
+            
+            # Keep last record of each duplicate group
+            duplicates_pids = (duplicates.groupby('DUP_ID')
+                             .apply(lambda x: x.iloc[-1])['primaryid'])
+            
+            # Add RB_duplicates flag
+            demo_df['RB_duplicates'] = ~demo_df['primaryid'].isin(pd.concat([singlets_pids, duplicates_pids]))
+            
+            # 5. Speculative algorithm (only suspected drugs)
+            complete_duplicates = ['event_dt', 'sex', 'reporter_country', 'age_in_days',
+                                 'wt_in_kgs', 'pt', 'suspected']
+            
+            # Create duplicate groups
+            temp['DUP_ID'] = temp.groupby(complete_duplicates).ngroup()
+            
+            # Find singlets and duplicates
+            dup_counts = temp.groupby('DUP_ID').size().reset_index(name='N')
+            singlets_pids = temp[temp['DUP_ID'].isin(dup_counts[dup_counts['N'] == 1]['DUP_ID'])]['primaryid']
+            duplicates = temp[~temp['primaryid'].isin(singlets_pids)]
+            
+            # Keep last record of each duplicate group
+            duplicates_pids = (duplicates.groupby('DUP_ID')
+                             .apply(lambda x: x.iloc[-1])['primaryid'])
+            
+            # Add RB_duplicates_only_susp flag
+            demo_df['RB_duplicates_only_susp'] = ~demo_df['primaryid'].isin(pd.concat([singlets_pids, duplicates_pids]))
+            
+            # Log statistics
+            total_cases = len(demo_df)
+            conservative_dups = demo_df['RB_duplicates'].sum()
+            speculative_dups = demo_df['RB_duplicates_only_susp'].sum()
+            
+            self.logger.info(f"Rule-based deduplication statistics:")
+            self.logger.info(f"  Total cases: {total_cases}")
+            self.logger.info(f"  Conservative duplicates: {conservative_dups} ({100*conservative_dups/total_cases:.1f}%)")
+            self.logger.info(f"  Speculative duplicates: {speculative_dups} ({100*speculative_dups/total_cases:.1f}%)")
+            
+            return demo_df
+            
+        except Exception as e:
+            self.logger.error(f"Error in rule-based deduplication: {str(e)}")
+            return demo_df

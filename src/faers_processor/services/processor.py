@@ -1049,6 +1049,7 @@ class FAERSProcessor:
             demo_df = self.deduplicator.deduplicate_by_manufacturer(demo_df)
             demo_df = self.remove_incomplete_reports(demo_df, drug_df, reac_df)
             demo_df = self.identify_premarketing_cases(demo_df, drug_df)
+            demo_df = self.deduplicator.identify_rule_based_duplicates(demo_df, reac_df, drug_df)
             demo_df = self.finalize_demo_dataset(demo_df)
             
             # Split and save all datasets
