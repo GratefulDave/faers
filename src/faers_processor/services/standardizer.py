@@ -650,46 +650,42 @@ class DataStandardizer:
             DataFrame with standardized sex values
         """
         try:
-            if 'sex' not in df.columns:
-                return df
-                
             df = df.copy()
             
             if categories is None:
-                categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
+                categories = list(['Male', 'Female', 'Unknown', 'Not Specified', ''])
             
             # Standardize sex codes
             sex_map = {
-                'M': 'Male',
-                'F': 'Female',
-                'UNK': 'Unknown',
-                'NS': 'Not Specified'
+                'f': 'Female',
+                'female': 'Female',
+                'm': 'Male', 
+                'male': 'Male',
+                'u': 'Unknown',
+                'unk': 'Unknown',
+                'unknown': 'Unknown',
+                'ns': 'Not Specified',
+                'not specified': 'Not Specified'
             }
             
-            # Convert to uppercase and map
-            df['sex'] = df['sex'].fillna('').astype(str).str.upper().map(sex_map)
-            
-            # Convert unknown values to Unknown
-            df.loc[df['sex'].isna(), 'sex'] = 'Unknown'
-            
-            # Ensure empty string is in categories and convert to categorical
-            if '' not in categories:
-                categories = list(categories) + ['']
-            df['sex'] = pd.Categorical(df['sex'].tolist(), categories=categories)
-            
-            # Log distribution
-            sex_dist = df['sex'].value_counts(dropna=False)
-            total = len(df)
-            logging.info("Sex distribution:")
-            for sex, count in sex_dist.items():
-                pct = round(100 * count / total, 2)
-                logging.info(f"  {sex}: {count} ({pct}%)")
+            if 'sex' in df.columns:
+                # Convert to string first
+                df['sex'] = df['sex'].astype(str).str.lower()
+                
+                # Apply mapping
+                df['sex'] = df['sex'].map(sex_map)
+                
+                # Fill NaN with empty string
+                df['sex'] = df['sex'].fillna('')
+                
+                # Convert to categorical with predefined categories
+                df['sex'] = pd.Categorical(df['sex'], categories=categories)
             
             return df
             
         except Exception as e:
             logging.error(f"Error standardizing sex: {str(e)}")
-            raise e  # Re-raise to see full traceback
+            return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize age values to days and years.
@@ -1954,3 +1950,67 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Error in standardize_data for {data_type}: {str(e)}")
             return df
+
+    def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
+        """Add standardized age groups based on age in years.
+        
+        Args:
+            df: DataFrame with age_in_years column
+            categories: List of valid age group categories
+            
+        Returns:
+            DataFrame with age groups added
+        """
+        try:
+            if 'age_in_years' not in df.columns:
+                return df
+                
+            df = df.copy()
+            
+            if categories is None:
+                categories = [
+                    'Prenatal',
+                    'Infant (0-2)', 
+                    'Child (2-12)',
+                    'Adolescent (12-18)',
+                    'Young Adult (18-35)',
+                    'Adult (35-50)',
+                    'Middle Age (50-65)',
+                    'Elderly (65+)',
+                    ''
+                ]
+            
+            # Define age group bins and labels
+            bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
+            labels = categories[:-1]  # Exclude empty string from labels
+            
+            # Create age groups using pd.cut
+            df['age_group'] = pd.cut(
+                df['age_in_years'],
+                bins=bins,
+                labels=labels,
+                right=False
+            )
+            
+            # Convert to string first
+            df['age_group'] = df['age_group'].astype(str)
+            
+            # Replace 'nan' with empty string
+            df['age_group'] = df['age_group'].replace('nan', '')
+            
+            # Convert to categorical with predefined categories
+            df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=categories)
+            
+            # Log distribution
+            age_dist = df['age_group'].value_counts(dropna=False)
+            total = len(df)
+            logging.info("Age group distribution:")
+            for group, count in age_dist.items():
+                pct = round(100 * count / total, 2)
+                logging.info(f"  {group}: {count} ({pct}%)")
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error creating age groups: {str(e)}")
+            raise e  # Re-raise to see full traceback
