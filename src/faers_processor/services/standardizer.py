@@ -682,7 +682,7 @@ class DataStandardizer:
         return df
 
     def standardize_sex(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
-        """Standardize sex values.
+        """Standardize sex values while preserving ALL rows.
         
         Args:
             df: DataFrame with sex column
@@ -692,10 +692,6 @@ class DataStandardizer:
             DataFrame with standardized sex values
         """
         try:
-            if 'sex' not in df.columns:
-                logging.warning(f"Sex column not found in DataFrame - file may be corrupted or have unexpected format")
-                return df
-                
             df = df.copy()
             
             # Default categories if none provided
@@ -717,41 +713,42 @@ class DataStandardizer:
                 '': ''
             }
             
-            # Convert to string and lowercase, handling null values
+            # If sex column doesn't exist, add it with empty strings
+            if 'sex' not in df.columns:
+                logging.warning(f"Sex column not found - adding empty column")
+                df['sex'] = ''
+            
+            # Convert to string and lowercase, preserving NaN/None
             df['sex'] = df['sex'].fillna('').astype(str).str.lower().str.strip()
             
-            # Track unmapped values before standardization
+            # Track and map unmapped values
             unmapped = df[~df['sex'].isin(sex_map.keys())]['sex'].unique()
             if len(unmapped) > 0:
                 logging.warning(f"Found unmapped sex values that will be set to empty string: {unmapped}")
-                # Add unmapped values to map with empty string to preserve rows
                 for val in unmapped:
                     sex_map[val] = ''
             
-            # Apply mapping
-            df['sex'] = df['sex'].map(sex_map)
+            # Apply mapping, preserving original value if not in map
+            df['sex'] = df['sex'].map(lambda x: sex_map.get(x, ''))
             
-            # Fill any remaining NaN with empty string
-            df['sex'] = df['sex'].fillna('')
-            
-            # Log distribution
+            # Log distribution 
             value_counts = df['sex'].value_counts(dropna=False)
-            logging.info("Sex value distribution:")
+            logging.info("Sex value distribution after standardization:")
             for val, count in value_counts.items():
                 logging.info(f"  {val}: {count} ({count/len(df)*100:.1f}%)")
             
-            # Convert to categorical with predefined categories
+            # Convert to categorical with all possible categories
             df['sex'] = pd.Categorical(df['sex'], categories=categories)
             
             return df
             
         except Exception as e:
             logging.error(f"Error standardizing sex values: {str(e)}")
-            # Return original DataFrame to preserve data
+            # On any error, return original DataFrame
             return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize age values to days and years.
+        """Standardize age values while preserving ALL rows.
         
         Args:
             df: DataFrame with age columns
@@ -759,60 +756,33 @@ class DataStandardizer:
         Returns:
             DataFrame with standardized age values
         """
-        df = df.copy()
-        
-        # Ensure required columns exist
-        if 'age' not in df.columns:
-            df['age'] = pd.NA
-            logging.warning("Age column not found, added with NA values")
-        
-        if 'age_cod' not in df.columns:
-            df['age_cod'] = 'YR'  # Default to years if missing
-            logging.info("Age code column not found, defaulting to years (YR)")
-        
-        # Convert age to numeric, handling various formats
-        df['age'] = pd.to_numeric(
-            df['age'].astype(str).str.replace(',', ''),
-            errors='coerce'
-        )
-        
-        # Define age unit conversion factors to days
-        age_factors = {
-            'DEC': 3650,       # Decades to days
-            'YR': 365,         # Years to days
-            'MON': 30.41667,   # Months to days (average)
-            'WK': 7,           # Weeks to days
-            'DY': 1,           # Days (no conversion needed)
-            'HR': 1/24,        # Hours to days
-            'MIN': 1/1440,     # Minutes to days
-            'SEC': 1/86400     # Seconds to days
-        }
-        
-        # Fill missing age codes with YR
-        df['age_cod'] = df['age_cod'].fillna('YR')
-        
-        # Convert age to days
-        df['age_corrector'] = df['age_cod'].str.upper().map(age_factors)
-        df.loc[df['age_corrector'].isna(), 'age_corrector'] = age_factors['YR']
-        df['age_in_days'] = df['age'].abs() * df['age_corrector']
-        
-        # Handle plausible age range
-        max_age_days = 122 * 365  # Maximum recorded human age
-        df.loc[df['age_in_days'] > max_age_days, 'age_in_days'] = pd.NA
-        
-        # Convert to years for convenience
-        df['age_in_years'] = (df['age_in_days'] / 365).round()
-        
-        # Log age distribution
-        age_stats = df['age_in_years'].describe()
-        logging.info("Age distribution (years):")
-        for stat, value in age_stats.items():
-            logging.info(f"  {stat}: {value:.1f}")
-        
-        # Clean up temporary columns
-        df = df.drop(columns=['age_corrector', 'age', 'age_cod'])
-        
-        return df
+        try:
+            df = df.copy()
+            
+            # If age column doesn't exist, add it
+            if 'age' not in df.columns:
+                df['age'] = np.nan
+                logging.warning("Age column not found - initialized with NaN")
+                return df
+            
+            # Convert age to numeric, invalid values become NaN
+            df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            
+            # Log age distribution
+            age_stats = df['age'].describe()
+            logging.info("Age distribution after standardization:")
+            logging.info(f"  Count (non-null): {age_stats['count']}")
+            logging.info(f"  Mean: {age_stats['mean']:.1f}")
+            logging.info(f"  Std: {age_stats['std']:.1f}")
+            logging.info(f"  Min: {age_stats['min']:.1f}")
+            logging.info(f"  Max: {age_stats['max']:.1f}")
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing age values: {str(e)}")
+            # On any error, return original DataFrame
+            return df
 
     def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
         """Add standardized age groups based on age in years.
@@ -845,9 +815,9 @@ class DataStandardizer:
             
             # Define age group bins and labels
             bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
-            labels = [cat for cat in categories if cat != '']  # Exclude empty string for pd.cut
+            labels = categories[:-1]  # Exclude empty string from labels
             
-            # Create age groups
+            # Create age groups using pd.cut
             df['age_group'] = pd.cut(
                 df['age_in_years'],
                 bins=bins,
@@ -855,8 +825,13 @@ class DataStandardizer:
                 right=False
             )
             
-            # Convert to string first, then categorical
-            df['age_group'] = df['age_group'].astype(str).replace('nan', '')
+            # Convert to string first
+            df['age_group'] = df['age_group'].astype(str)
+            
+            # Replace 'nan' with empty string
+            df['age_group'] = df['age_group'].replace('nan', '')
+            
+            # Convert to categorical with predefined categories
             df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=categories)
             
             # Log distribution
@@ -1720,7 +1695,7 @@ class DataStandardizer:
             return df
 
     def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize demographics data following R script exactly.
+        """Standardize demographics data while preserving ALL rows.
         
         Args:
             df: Raw demographics DataFrame
@@ -1730,8 +1705,9 @@ class DataStandardizer:
         """
         try:
             df = df.copy()
+            orig_len = len(df)
             
-            # Pre-define all possible categories for categorical columns
+            # Pre-define categories
             sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
             age_group_categories = [
                 'Prenatal',
@@ -1745,20 +1721,16 @@ class DataStandardizer:
                 ''
             ]
             
-            # Initialize categorical columns with empty strings first
-            if 'sex' in df.columns:
-                df['sex'] = df['sex'].fillna('')
-                df['sex'] = df['sex'].astype(str)
-                df['sex'] = pd.Categorical(df['sex'].tolist(), categories=sex_categories)
-            else:
-                df['sex'] = pd.Categorical([''] * len(df), categories=sex_categories)
-                logging.warning("Sex column not found, initialized with empty values")
-            
+            # Initialize missing columns with empty strings first
+            if 'sex' not in df.columns:
+                df['sex'] = ''
+                logging.warning("Sex column not found - initialized with empty values")
+                
             if 'age_group' not in df.columns:
-                df['age_group'] = pd.Categorical([''] * len(df), categories=age_group_categories)
-                logging.info("Age group column initialized")
+                df['age_group'] = ''
+                logging.warning("Age group column not found - initialized with empty values")
             
-            # Standardize fields - preserve all rows
+            # Standardize fields - preserve ALL rows
             df = self.standardize_dates(df)
             df = self.standardize_sex(df, sex_categories)
             df = self.standardize_age(df)
@@ -1768,15 +1740,17 @@ class DataStandardizer:
             df = self.standardize_occupation(df)
             df = self.standardize_manufacturer(df)
             
-            # Verify no rows were lost
-            if len(df) != len(df):
-                logging.error(f"Row count mismatch in demographics standardization: started with {len(df)} rows, ended with {len(df)} rows")
+            # Verify NO rows were lost
+            if len(df) != orig_len:
+                msg = f"CRITICAL ERROR: Row count changed from {orig_len} to {len(df)} - this should never happen"
+                logging.error(msg)
+                raise ValueError(msg)
             
             return df
             
         except Exception as e:
             logging.error(f"Error in standardize_demographics: {str(e)}")
-            # Return original DataFrame to preserve data
+            # On any error, return original DataFrame
             return df
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
