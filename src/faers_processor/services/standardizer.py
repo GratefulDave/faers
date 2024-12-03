@@ -717,7 +717,7 @@ class DataStandardizer:
             df = df.copy()
             
             if categories is None:
-                categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
+                categories = list(['Male', 'Female', 'Unknown', 'Not Specified', ''])
             
             # Standardize sex codes
             sex_map = {
@@ -736,7 +736,7 @@ class DataStandardizer:
             # Ensure empty string is in categories and convert to categorical
             if '' not in categories:
                 categories = list(categories) + ['']
-            df['sex'] = pd.Categorical(df['sex'].values, categories=categories)
+            df['sex'] = pd.Categorical(df['sex'].tolist(), categories=categories)
             
             # Log distribution
             sex_dist = df['sex'].value_counts(dropna=False)
@@ -750,7 +750,7 @@ class DataStandardizer:
             
         except Exception as e:
             logging.error(f"Error standardizing sex: {str(e)}")
-            return df
+            raise e  # Re-raise to see full traceback
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize age values to days and years.
@@ -833,7 +833,7 @@ class DataStandardizer:
             df = df.copy()
             
             if categories is None:
-                categories = [
+                categories = list([
                     'Prenatal',
                     'Infant (0-2)',
                     'Child (2-12)',
@@ -843,7 +843,7 @@ class DataStandardizer:
                     'Middle Age (50-65)',
                     'Elderly (65+)',
                     ''
-                ]
+                ])
             
             # Define age group bins and labels
             bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
@@ -857,9 +857,9 @@ class DataStandardizer:
                 right=False
             )
             
-            # Convert to categorical with all categories (including empty string)
+            # Convert to string first, then categorical
             df['age_group'] = df['age_group'].astype(str).replace('nan', '')
-            df['age_group'] = pd.Categorical(df['age_group'].values, categories=categories)
+            df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=categories)
             
             # Log distribution
             age_dist = df['age_group'].value_counts(dropna=False)
@@ -873,7 +873,7 @@ class DataStandardizer:
             
         except Exception as e:
             logging.error(f"Error creating age groups: {str(e)}")
-            return df
+            raise e  # Re-raise to see full traceback
 
     def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize weight values to kilograms.
@@ -1733,9 +1733,9 @@ class DataStandardizer:
         try:
             df = df.copy()
             
-            # Pre-define all possible categories for categorical columns
-            sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
-            age_group_categories = [
+            # Pre-define all possible categories for categorical columns as lists
+            sex_categories = list(['Male', 'Female', 'Unknown', 'Not Specified', ''])
+            age_group_categories = list([
                 'Prenatal',
                 'Infant (0-2)', 
                 'Child (2-12)',
@@ -1745,12 +1745,13 @@ class DataStandardizer:
                 'Middle Age (50-65)',
                 'Elderly (65+)',
                 ''
-            ]
+            ])
             
             # Initialize categorical columns with empty strings first
             if 'sex' in df.columns:
-                df['sex'] = df['sex'].fillna('').astype(str)
-                df['sex'] = pd.Categorical(df['sex'].values, categories=sex_categories)
+                df['sex'] = df['sex'].fillna('')
+                df['sex'] = df['sex'].astype(str)
+                df['sex'] = pd.Categorical(df['sex'].tolist(), categories=sex_categories)
             
             # Standardize dates
             df = self.standardize_dates(df)
@@ -1761,8 +1762,8 @@ class DataStandardizer:
             # Standardize age values and create age groups
             df = self.standardize_age(df)
             if 'age_group' not in df.columns:
-                df['age_group'] = pd.Series([''] * len(df), dtype='str')
-            df['age_group'] = pd.Categorical(df['age_group'].values, categories=age_group_categories)
+                df['age_group'] = pd.Series([''] * len(df))
+                df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=age_group_categories)
             df = self.standardize_age_groups(df, age_group_categories)
             
             # Standardize weight values
@@ -1784,7 +1785,7 @@ class DataStandardizer:
             
         except Exception as e:
             logging.error(f"Error standardizing demographics: {str(e)}")
-            return df
+            raise e  # Re-raise to see full traceback
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
         """Process all FAERS quarters with summary reporting.
