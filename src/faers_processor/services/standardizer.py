@@ -2059,9 +2059,9 @@ class DataStandardizer:
             
             # Standardize fields - preserve ALL rows
             df = self.standardize_dates(df)
-            df = self.standardize_sex(df, sex_categories)
+            df = self.standardize_sex(df)
             df = self.standardize_age(df)
-            df = self.standardize_age_groups(df, age_group_categories)
+            df = self.standardize_age_groups(df)
             df = self.standardize_weight(df)
             df = self.standardize_country(df)
             df = self.standardize_occupation(df)
