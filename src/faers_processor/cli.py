@@ -117,15 +117,13 @@ def process_data(paths: ProjectPaths, parallel: bool = True,
     
     for quarter_dir in sorted(quarters):
         try:
-            ascii_dir = quarter_dir / 'ascii'
-            if ascii_dir.exists():
-                logging.info(f"Processing quarter {quarter_dir.name}...")
-                processor.process_quarter(
-                    ascii_dir,
-                    parallel=parallel,
-                    max_workers=max_workers,
-                    chunk_size=chunk_size or 50000
-                )
+            # Let the processor find the ASCII directory case-insensitively
+            processor.process_quarter(
+                quarter_dir,
+                parallel=parallel,
+                max_workers=max_workers,
+                chunk_size=chunk_size or 50000
+            )
         except Exception as e:
             logging.error(f"Error processing quarter {quarter_dir.name}: {str(e)}")
 

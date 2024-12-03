@@ -404,19 +404,25 @@ class FAERSProcessor:
         if not quarter_dir.exists():
             self.logger.warning(f"Quarter directory {quarter_dir} does not exist")
             return None
-            
-        # Case insensitive search for 'ascii' directory
+
+        # First check if the provided path itself is the ASCII directory
+        if quarter_dir.name.lower() == 'ascii':
+            return quarter_dir
+
+        # Check immediate children
         for item in quarter_dir.iterdir():
             if item.is_dir() and item.name.lower() == 'ascii':
                 return item
-                
-        # Also check one level deeper
+
+        # If not found, check one level deeper
         for item in quarter_dir.iterdir():
             if item.is_dir():
+                if item.name.lower() == 'ascii':
+                    return item
                 for subitem in item.iterdir():
                     if subitem.is_dir() and subitem.name.lower() == 'ascii':
                         return subitem
-        
+
         self.logger.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
         return None
 
