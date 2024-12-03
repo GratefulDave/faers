@@ -2037,11 +2037,16 @@ class DataStandardizer:
                 'sex': ['sex', 'gndr_cod'],
                 'age': ['age'],
                 'age_cod': ['age_cod'],
-                'event_dt': ['event_dt'],
-                'fda_dt': ['fda_dt'],
-                'rept_dt': ['rept_dt'],
-                'country': ['country', 'reporter_country'],
-                'occp_cod': ['occp_cod']
+                'age_grp': ['age_group'],
+                'wt': ['weight'],
+                'wt_cod': ['weight_code'],
+                'reporter_country': ['reporter_country'],
+                'occr_country': ['occurrence_country'],
+                'event_dt': ['event_date'],
+                'rept_dt': ['report_date'],
+                'fda_dt': ['fda_date'],
+                'mfr_dt': ['manufacturer_date'],
+                'init_fda_dt': ['initial_fda_date']
             }
             
             # Check each required column
@@ -2529,3 +2534,152 @@ def clean_line(line: str) -> str:
     # Handle escaped quotes
     line = re.sub(r'(?<!\\)"', '\\"', line)
     return line
+
+    def standardize_reactions(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize reaction data."""
+        try:
+            # Define required columns and their possible names (case-insensitive)
+            required_columns = {
+                'pt': ['pt', 'reac_pt', 'preferred_term'],
+                'drug_rec_act': ['drug_rec_act'],
+                'isr': ['isr', 'primaryid', 'caseid'],
+                'drug_seq': ['drug_seq'],
+                'meddra_pt_code': ['meddra_pt_code', 'pt_code']
+            }
+            
+            # Check each required column
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if any(col.lower() == name.lower() for col in df.columns):
+                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_reactions: {str(e)}")
+            return df
+
+    def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize indication data."""
+        try:
+            # Define required columns and their possible names (case-insensitive)
+            required_columns = {
+                'indi_pt': ['indi_pt', 'indication_pt', 'indication'],
+                'indi_drug_seq': ['indi_drug_seq', 'drug_seq'],
+                'isr': ['isr', 'primaryid', 'caseid'],
+                'meddra_pt_code': ['meddra_pt_code', 'pt_code', 'indi_pt_code']
+            }
+            
+            # Check each required column
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if any(col.lower() == name.lower() for col in df.columns):
+                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_indications: {str(e)}")
+            return df
+
+    def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize outcome data."""
+        try:
+            # Define required columns and their possible names (case-insensitive)
+            required_columns = {
+                'outc_cod': ['outc_cod', 'outcome_code'],
+                'isr': ['isr', 'primaryid', 'caseid']
+            }
+            
+            # Check each required column
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if any(col.lower() == name.lower() for col in df.columns):
+                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            # Standardize outcome codes
+            if 'outc_cod' in df.columns:
+                valid_codes = {'DE', 'LT', 'HO', 'DS', 'CA', 'RI', 'OT'}
+                invalid_codes = set(df['outc_cod'].dropna().str.upper().unique()) - valid_codes
+                if invalid_codes:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Converted invalid outcome codes to NA: {invalid_codes}")
+                    df.loc[df['outc_cod'].str.upper().isin(invalid_codes), 'outc_cod'] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_outcomes: {str(e)}")
+            return df
+
+    def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize therapy data."""
+        try:
+            # Define required columns and their possible names (case-insensitive)
+            required_columns = {
+                'dsg_drug_seq': ['dsg_drug_seq', 'drug_seq'],
+                'start_dt': ['start_dt'],
+                'end_dt': ['end_dt'],
+                'dur': ['dur'],
+                'dur_cod': ['dur_cod'],
+                'isr': ['isr', 'primaryid', 'caseid']
+            }
+            
+            # Check each required column
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if any(col.lower() == name.lower() for col in df.columns):
+                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            # Standardize dates
+            date_columns = ['start_dt', 'end_dt']
+            for col in date_columns:
+                if col in df.columns:
+                    try:
+                        df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
+                        invalid_dates = df[col].isna().sum()
+                        if invalid_dates > 0:
+                            self.logger.warning(f"({quarter_name}) {file_name}: Found {invalid_dates} invalid dates in {col}")
+                    except Exception as e:
+                        self.logger.error(f"({quarter_name}) {file_name}: Error converting {col} to datetime: {str(e)}")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_therapies: {str(e)}")
+            return df
