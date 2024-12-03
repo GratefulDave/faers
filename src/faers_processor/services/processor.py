@@ -401,29 +401,44 @@ class FAERSProcessor:
 
     def _find_ascii_directory(self, quarter_dir: Path) -> Optional[Path]:
         """Find the ASCII directory - case insensitive search."""
+        self.logger.info(f"Searching for ASCII directory in: {quarter_dir}")
+        
         if not quarter_dir.exists():
-            self.logger.warning(f"Quarter directory {quarter_dir} does not exist")
+            self.logger.error(f"Quarter directory does not exist: {quarter_dir}")
             return None
 
         # First check if the provided path itself is the ASCII directory
         if quarter_dir.name.lower() == 'ascii':
+            self.logger.info(f"Input path is the ASCII directory: {quarter_dir}")
             return quarter_dir
 
         # Check immediate children
+        self.logger.info("Checking immediate children for ASCII directory")
         for item in quarter_dir.iterdir():
-            if item.is_dir() and item.name.lower() == 'ascii':
-                return item
+            if item.is_dir():
+                self.logger.debug(f"Checking directory: {item.name}")
+                if item.name.lower() == 'ascii':
+                    self.logger.info(f"Found ASCII directory: {item}")
+                    return item
 
         # If not found, check one level deeper
+        self.logger.info("Checking one level deeper for ASCII directory")
         for item in quarter_dir.iterdir():
             if item.is_dir():
                 if item.name.lower() == 'ascii':
+                    self.logger.info(f"Found ASCII directory: {item}")
                     return item
+                self.logger.debug(f"Checking subdirectories of: {item.name}")
                 for subitem in item.iterdir():
                     if subitem.is_dir() and subitem.name.lower() == 'ascii':
+                        self.logger.info(f"Found ASCII directory: {subitem}")
                         return subitem
 
-        self.logger.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
+        self.logger.error(f"No ASCII directory found in {quarter_dir} or its subdirectories")
+        self.logger.error(f"Available directories at {quarter_dir}:")
+        for item in quarter_dir.iterdir():
+            if item.is_dir():
+                self.logger.error(f"  - {item.name}")
         return None
 
     def _find_data_file(self, directory: Path, patterns: List[str]) -> Optional[Path]:
