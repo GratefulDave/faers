@@ -656,7 +656,7 @@ class DataStandardizer:
             df = df.copy()
             
             if categories is None:
-                categories = list(['Male', 'Female', 'Unknown', 'Not Specified', ''])
+                categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
             
             # Standardize sex codes
             sex_map = {
@@ -772,9 +772,9 @@ class DataStandardizer:
             df = df.copy()
             
             if categories is None:
-                categories = list([
+                categories = [
                     'Prenatal',
-                    'Infant (0-2)',
+                    'Infant (0-2)', 
                     'Child (2-12)',
                     'Adolescent (12-18)',
                     'Young Adult (18-35)',
@@ -782,7 +782,7 @@ class DataStandardizer:
                     'Middle Age (50-65)',
                     'Elderly (65+)',
                     ''
-                ])
+                ]
             
             # Define age group bins and labels
             bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
@@ -1673,8 +1673,8 @@ class DataStandardizer:
             df = df.copy()
             
             # Pre-define all possible categories for categorical columns as lists
-            sex_categories = list(['Male', 'Female', 'Unknown', 'Not Specified', ''])
-            age_group_categories = list([
+            sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
+            age_group_categories = [
                 'Prenatal',
                 'Infant (0-2)', 
                 'Child (2-12)',
@@ -1684,7 +1684,7 @@ class DataStandardizer:
                 'Middle Age (50-65)',
                 'Elderly (65+)',
                 ''
-            ])
+            ]
             
             # Initialize categorical columns with empty strings first
             if 'sex' in df.columns:
