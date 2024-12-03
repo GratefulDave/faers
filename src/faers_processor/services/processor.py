@@ -556,12 +556,12 @@ class FAERSProcessor:
                 )
                 
                 if df.empty:
-                    error_msg = f"Empty DataFrame after reading {file_path}"
+                    error_msg = f"({file_path.name}) Empty DataFrame after reading {file_path}"
                     self.logger.error(error_msg)
                     table_summary.add_parsing_error(error_msg)
                     return df
                     
-                self.logger.info(f"Successfully read {len(df):,} rows from {file_path}")
+                self.logger.info(f"({file_path.name}) Successfully read {len(df):,} rows from {file_path}")
                 table_summary.total_rows = len(df)
                 
                 # Process DataFrame through common processing first
@@ -570,13 +570,13 @@ class FAERSProcessor:
                     return df
                 
             except pd.errors.ParserError as e:
-                error_msg = f"Parser error in {file_path}: {str(e)}"
+                error_msg = f"({file_path.name}) Parser error in {file_path}: {str(e)}"
                 self.logger.error(error_msg)
                 table_summary.add_parsing_error(error_msg)
                 return pd.DataFrame()
                 
             except Exception as e:
-                error_msg = f"Error reading {file_path}: {str(e)}"
+                error_msg = f"({file_path.name}) Error reading {file_path}: {str(e)}"
                 self.logger.error(error_msg)
                 table_summary.add_parsing_error(error_msg)
                 return pd.DataFrame()
@@ -586,6 +586,9 @@ class FAERSProcessor:
                 if data_type == 'demo':
                     df = self.standardizer.standardize_demographics(df, self.current_date)
                 elif data_type == 'drug':
+                    if 'drugname' not in df.columns:
+                        self.logger.warning(f"({file_path.name}) Required column 'drugname' not found, adding with default value: <NA>")
+                        df['drugname'] = pd.NA
                     df = self.standardizer.standardize_drugs(df)
                 elif data_type == 'reac':
                     df = self.standardizer.standardize_reactions(df)
@@ -599,7 +602,7 @@ class FAERSProcessor:
                     df = self.standardizer.standardize_indications(df)
                 
                 if df is None or df.empty:
-                    error_msg = f"Empty DataFrame after standardizing {data_type}"
+                    error_msg = f"({file_path.name}) Empty DataFrame after standardizing {data_type}"
                     self.logger.error(error_msg)
                     table_summary.add_parsing_error(error_msg)
                     return pd.DataFrame()
@@ -607,20 +610,20 @@ class FAERSProcessor:
                 table_summary.processed_rows = len(df)
                 table_summary.processing_time = time.time() - start_time
                 
-                self.logger.info(f"Successfully processed {data_type} file. Input rows: {table_summary.total_rows:,}, Output rows: {table_summary.processed_rows:,}")
+                self.logger.info(f"({file_path.name}) Successfully processed {data_type} file. Input rows: {table_summary.total_rows:,}, Output rows: {table_summary.processed_rows:,}")
                 if table_summary.total_rows != table_summary.processed_rows:
-                    self.logger.warning(f"Row count changed during processing. {table_summary.total_rows - table_summary.processed_rows:,} rows were filtered out")
+                    self.logger.warning(f"({file_path.name}) Row count changed during processing. {table_summary.total_rows - table_summary.processed_rows:,} rows were filtered out")
                 
                 return df
                 
             except Exception as e:
-                error_msg = f"Error standardizing {data_type}: {str(e)}"
+                error_msg = f"({file_path.name}) Error standardizing {data_type}: {str(e)}"
                 self.logger.error(error_msg)
                 table_summary.add_parsing_error(error_msg)
                 return pd.DataFrame()
             
         except Exception as e:
-            error_msg = f"Unexpected error processing {data_type}: {str(e)}"
+            error_msg = f"({file_path.name}) Unexpected error processing {data_type}: {str(e)}"
             self.logger.error(error_msg)
             table_summary.add_parsing_error(error_msg)
             return pd.DataFrame()
@@ -641,12 +644,12 @@ class FAERSProcessor:
                 if 'i_f_code' not in df.columns:
                     table_summary.add_missing_column('i_f_code', 'I')
                     df['i_f_code'] = 'I'
-                    self.logger.warning("Required column 'i_f_code' not found, adding with default value: I")
+                    self.logger.warning(f"({df.columns[0]}) Required column 'i_f_code' not found, adding with default value: I")
                     
                 if 'sex' not in df.columns:
                     table_summary.add_missing_column('sex', '<NA>')
                     df['sex'] = '<NA>'
-                    self.logger.warning("Required column 'sex' not found, adding with default value: <NA>")
+                    self.logger.warning(f"({df.columns[0]}) Required column 'sex' not found, adding with default value: <NA>")
                 
                 # Validate dates
                 date_fields = ['event_dt', 'fda_dt', 'rept_dt']
@@ -655,11 +658,11 @@ class FAERSProcessor:
                         invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
                         if invalid_dates > 0:
                             table_summary.add_invalid_date(field, invalid_dates)
-                            self.logger.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
+                            self.logger.warning(f"({df.columns[0]}) {invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
                 
                 # Check country standardization
                 if 'country' not in df.columns:
-                    self.logger.warning("Country column not found, skipping country standardization")
+                    self.logger.warning(f"({df.columns[0]}) Country column not found, skipping country standardization")
             
             elif data_type == 'drug':
                 # Check for required drug fields
@@ -668,25 +671,25 @@ class FAERSProcessor:
                     if field not in df.columns:
                         table_summary.add_missing_column(field, '<NA>')
                         df[field] = '<NA>'
-                        self.logger.warning(f"Required column '{field}' not found, adding with default value: <NA>")
+                        self.logger.warning(f"({df.columns[0]}) Required column '{field}' not found, adding with default value: <NA>")
                 
             elif data_type == 'reac':
                 if 'pt' not in df.columns:
                     table_summary.add_missing_column('pt', '<NA>')
                     df['pt'] = '<NA>'
-                    self.logger.warning("Required column 'pt' not found, adding with default value: <NA>")
+                    self.logger.warning(f"({df.columns[0]}) Required column 'pt' not found, adding with default value: <NA>")
                     
             elif data_type == 'outc':
                 if 'outc_cod' not in df.columns:
                     table_summary.add_missing_column('outc_cod', '<NA>')
                     df['outc_cod'] = '<NA>'
-                    self.logger.warning("Required column 'outc_cod' not found, adding with default value: <NA>")
+                    self.logger.warning(f"({df.columns[0]}) Required column 'outc_cod' not found, adding with default value: <NA>")
                     
             elif data_type == 'rpsr':
                 if 'rpsr_cod' not in df.columns:
                     table_summary.add_missing_column('rpsr_cod', '<NA>')
                     df['rpsr_cod'] = '<NA>'
-                    self.logger.warning("Required column 'rpsr_cod' not found, adding with default value: <NA>")
+                    self.logger.warning(f"({df.columns[0]}) Required column 'rpsr_cod' not found, adding with default value: <NA>")
                     
             elif data_type == 'ther':
                 # Check for required therapy fields
@@ -695,7 +698,7 @@ class FAERSProcessor:
                     if field not in df.columns:
                         table_summary.add_missing_column(field, '<NA>')
                         df[field] = '<NA>'
-                        self.logger.warning(f"Required column '{field}' not found, adding with default value: <NA>")
+                        self.logger.warning(f"({df.columns[0]}) Required column '{field}' not found, adding with default value: <NA>")
                         
                 # Validate dates
                 date_fields = ['start_dt', 'end_dt']
@@ -704,19 +707,19 @@ class FAERSProcessor:
                         invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
                         if invalid_dates > 0:
                             table_summary.add_invalid_date(field, invalid_dates)
-                            self.logger.warning(f"{invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
+                            self.logger.warning(f"({df.columns[0]}) {invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
                             
             elif data_type == 'indi':
                 if 'indi_pt' not in df.columns:
                     table_summary.add_missing_column('indi_pt', '<NA>')
                     df['indi_pt'] = '<NA>'
-                    self.logger.warning("Required column 'indi_pt' not found, adding with default value: <NA>")
+                    self.logger.warning(f"({df.columns[0]}) Required column 'indi_pt' not found, adding with default value: <NA>")
             
             # Call standardizer for final processing
-            df = self.standardizer.standardize_data(df, data_type)
+            df = self.standardizer.standardize_data(df, data_type, file_path=str(file_path))
             
         except Exception as e:
-            error_msg = f"Error processing DataFrame: {str(e)}"
+            error_msg = f"({df.columns[0]}) Error processing DataFrame: {str(e)}"
             table_summary.add_parsing_error(error_msg)
             self.logger.error(error_msg)
             return pd.DataFrame()
@@ -1869,3 +1872,55 @@ class FAERSProcessor:
         except Exception as e:
             self.logger.error(f"Error identifying pre-marketing cases: {str(e)}")
             return demo_df
+
+    def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None) -> pd.DataFrame:
+        """Standardize data based on its type."""
+        try:
+            file_name = os.path.basename(file_path) if file_path else "unknown_file"
+            
+            if data_type == 'demo':
+                return self.standardizer.standardize_demographics(df)
+            elif data_type == 'drug':
+                if 'drugname' not in df.columns:
+                    self.logger.warning(f"({file_name}) Required column 'drugname' not found, adding with default value: <NA>")
+                    df['drugname'] = pd.NA
+                return self.standardizer.standardize_drug_info(df)
+            elif data_type == 'reac':
+                return self.standardizer.standardize_reactions(df)
+            else:
+                self.logger.warning(f"({file_name}) Unknown data type: {data_type}")
+                return df
+        except Exception as e:
+            self.logger.error(f"({file_name}) Error standardizing {data_type} data: {str(e)}")
+            return df
+
+    def process_data_file(self, file_path: Path, data_type: str) -> Optional[pd.DataFrame]:
+        """Process a FAERS data file."""
+        file_name = file_path.name
+        try:
+            df = pd.read_csv(file_path, delimiter='$', dtype=str)
+            
+            if df is None:
+                self.logger.error(f"({file_name}) Failed to read file: {file_path}")
+                return None
+                
+            if df.empty:
+                self.logger.error(f"({file_name}) File is empty: {file_path}")
+                return None
+            
+            # Add missing columns with appropriate defaults
+            if data_type == 'drug' and 'drugname' not in df.columns:
+                self.logger.warning(f"({file_name}) Required column 'drugname' not found, adding with default value: <NA>")
+                df['drugname'] = pd.NA
+            
+            # Standardize the data
+            df = self.standardizer.standardize_data(df, data_type, str(file_path))
+            
+            if df is not None:
+                self.logger.info(f"({file_name}) Successfully processed {len(df):,} rows")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({file_name}) Error processing file: {str(e)}")
+            return None
