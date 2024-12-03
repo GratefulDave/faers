@@ -1535,3 +1535,50 @@ class FAERSProcessor:
                 except Exception as e:
                     self.logger.error(f"Failed to process {file_path}: {str(e)}")
                     continue
+
+    def process_files(self, input_dir: Path, output_dir: Path) -> None:
+        """Process all FAERS data files in the input directory.
+        
+        Args:
+            input_dir: Directory containing raw FAERS data files
+            output_dir: Directory to save processed files
+        """
+        try:
+            # Process demo files first to get event dates
+            demo_files = list(input_dir.glob('*DEMO*.txt'))
+            if not demo_files:
+                raise FileNotFoundError("No demographics files found")
+                
+            demo_df = pd.concat([
+                self.standardizer.standardize_demographics(
+                    pd.read_csv(f, sep='$', dtype=str),
+                    self.max_date
+                )
+                for f in demo_files
+            ])
+            
+            # Process therapy files and calculate time to onset
+            ther_files = list(input_dir.glob('*THER*.txt'))
+            if ther_files:
+                ther_df = pd.concat([
+                    self.standardizer.standardize_therapies(
+                        pd.read_csv(f, sep='$', dtype=str),
+                        self.max_date
+                    )
+                    for f in ther_files
+                ])
+                
+                # Calculate time to onset
+                ther_df = self.standardizer.calculate_time_to_onset(demo_df, ther_df)
+                
+                # Save processed therapy data
+                ther_df.to_csv(output_dir / 'THER.csv', index=False)
+                
+            # Save processed demographics data
+            demo_df.to_csv(output_dir / 'DEMO.csv', index=False)
+            
+            # Process other file types...
+            
+        except Exception as e:
+            logging.error(f"Error processing files: {str(e)}")
+            raise

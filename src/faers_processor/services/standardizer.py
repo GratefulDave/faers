@@ -2283,6 +2283,67 @@ class DataStandardizer:
             logging.error(f"Error in standardize_data for {data_type}{file_info}: {str(e)}")
             return df
 
+    def calculate_time_to_onset(self, demo_df: pd.DataFrame, ther_df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate time to onset between drug administration and event.
+        
+        Matches R implementation for calculating days between start_dt and event_dt.
+        Special handling for dates before 2013 due to auto-completion issues:
+        - Dates ending in '01' before 2013 are considered unreliable
+        - Negative or zero time to onset before 2013 are set to NA
+        
+        Args:
+            demo_df: Demographics DataFrame with event_dt
+            ther_df: Therapy DataFrame with start_dt
+        
+        Returns:
+            DataFrame with time_to_onset calculated
+        """
+        try:
+            # Get event dates from demo data
+            event_dates = demo_df[['primaryid', 'event_dt']].copy()
+            event_dates = event_dates[event_dates['event_dt'].notna()]
+            
+            # Merge with therapy data
+            df = pd.merge(event_dates, ther_df, on='primaryid', how='right')
+            
+            def to_date(x):
+                if pd.isna(x) or len(str(x)) != 8:
+                    return pd.NaT
+                return pd.to_datetime(str(x), format='%Y%m%d')
+            
+            # Calculate time to onset
+            df['time_to_onset'] = (to_date(df['event_dt']) - to_date(df['start_dt'])).dt.days + 1
+            
+            # Handle dates before 2013 with special rules
+            mask_pre_2013 = (df['event_dt'] <= 20121231)
+            mask_invalid = ((df['time_to_onset'] <= 0) & mask_pre_2013)
+            
+            # Set invalid time to onset to NA
+            df.loc[mask_invalid, 'time_to_onset'] = np.nan
+            
+            # Log time to onset statistics
+            valid_tto = df['time_to_onset'].dropna()
+            if len(valid_tto) > 0:
+                neg_tto = (valid_tto < 0).mean() * 100
+                logging.info(f"Negative time to onset: {neg_tto:.1f}% of valid cases")
+                
+                # Log pre-2013 statistics
+                pre_2013 = df[mask_pre_2013]
+                if len(pre_2013) > 0:
+                    pre_2013_neg = (pre_2013['time_to_onset'] < 0).mean() * 100
+                    logging.info(f"Pre-2013 negative time to onset: {pre_2013_neg:.1f}%")
+                    
+                    # Check for dates ending in '01'
+                    ends_01_mask = df['event_dt'].astype(str).str.endswith('01')
+                    pre_2013_01 = (ends_01_mask & mask_pre_2013).mean() * 100
+                    logging.info(f"Pre-2013 dates ending in '01': {pre_2013_01:.1f}%")
+        
+            return df
+        
+        except Exception as e:
+            logging.error(f"Error calculating time to onset: {str(e)}")
+            return ther_df
+
 def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
     """Read and clean the file, detecting delimiter."""
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
