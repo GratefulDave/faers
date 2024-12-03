@@ -561,6 +561,28 @@ class DataStandardizer:
             self.diana_dict = pd.DataFrame(columns=['drugname', 'Substance'])
             self.drug_map = {}
 
+    def _clean_drugname(self, name: str) -> str:
+        """Clean drug name by removing special characters and standardizing format."""
+        if pd.isna(name):
+            return name
+            
+        # Convert to string and lowercase
+        name = str(name).lower()
+        
+        # Remove trailing dots
+        name = re.sub(r'\.$', '', name)
+        
+        # Trim whitespace
+        name = name.strip()
+        
+        # Replace multiple spaces with single space
+        name = re.sub(r'\s+', ' ', name)
+        
+        # Remove special characters but keep hyphens and spaces
+        name = re.sub(r'[^\w\s-]', '', name)
+        
+        return name
+
     def standardize_pt(self, df: pd.DataFrame, pt_variable: str = 'pt') -> pd.DataFrame:
         """Standardize PT terms following R script exactly.
         
@@ -1033,7 +1055,6 @@ class DataStandardizer:
             
         except Exception as e:
             logging.error(f"Error standardizing weight values: {str(e)}")
-            # On any error, return original DataFrame
             return df
 
     def standardize_country(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1968,35 +1989,35 @@ class DataStandardizer:
     def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize drug information."""
         try:
-            # Required columns exactly as defined in documentation.html
-            required_columns = {
-                'isr': ['ISR'],
-                'drug_seq': ['DRUG_SEQ'],
-                'role_cod': ['ROLE_COD'],
-                'drugname': ['DRUGNAME'],
-                'prod_ai': ['VAL_VBM'],
-                'route': ['ROUTE'],
-                'dose_amt': ['DOSE_VBM'],
-                'dechal': ['DECHAL'],
-                'rechal': ['RECHAL'],
-                'lot_num': ['LOT_NUM'],
-                'exp_dt': ['EXP_DT'],
-                'nda_num': ['NDA_NUM']
+            # Print actual columns for debugging
+            self.logger.info(f"Columns in {file_name}: {list(df.columns)}")
+            
+            # Map the actual column names to our target names
+            column_map = {
+                'ISR': 'isr',
+                'DRUG_SEQ': 'drug_seq',
+                'ROLE_COD': 'role_cod',
+                'DRUGNAME': 'drugname',
+                'VAL_VBM': 'prod_ai',
+                'ROUTE': 'route',
+                'DOSE_VBM': 'dose_amt',
+                'DECHAL': 'dechal',
+                'RECHAL': 'rechal',
+                'LOT_NUM': 'lot_num',
+                'EXP_DT': 'exp_dt',
+                'NDA_NUM': 'nda_num'
             }
             
-            # Process each required column
-            for target_col, source_cols in required_columns.items():
-                found = False
-                for col in source_cols:
-                    if col in df.columns:
-                        if col != target_col:
-                            df = df.rename(columns={col: target_col})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
-                    df[target_col] = pd.NA
+            # First rename any columns that exist
+            existing_cols = set(df.columns) & set(column_map.keys())
+            if existing_cols:
+                df = df.rename(columns={col: column_map[col] for col in existing_cols})
+            
+            # Then add missing columns with NA
+            missing_cols = set(column_map.values()) - set(df.columns)
+            for col in missing_cols:
+                self.logger.warning(f"({quarter_name}) {file_name}: Required column '{col}' not found, adding with default value: <NA>")
+                df[col] = pd.NA
             
             return df
             
@@ -2009,9 +2030,9 @@ class DataStandardizer:
         try:
             # Required columns exactly as defined in documentation.html
             required_columns = {
-                'isr': ['ISR'],
-                'pt': ['PT'],
-                'drug_rec_act': ['DRUG_REC_ACT']
+                'ISR': 'isr',
+                'PT': 'pt',
+                'DRUG_REC_ACT': 'drug_rec_act'
             }
             
             # Process each required column
@@ -2039,9 +2060,9 @@ class DataStandardizer:
         try:
             # Required columns exactly as defined in documentation.html
             required_columns = {
-                'isr': ['ISR'],
-                'drug_seq': ['DRUG_SEQ'],
-                'indi_pt': ['INDI_PT']
+                'ISR': 'isr',
+                'DRUG_SEQ': 'drug_seq',
+                'INDI_PT': 'indi_pt'
             }
             
             # Process each required column
@@ -2069,8 +2090,8 @@ class DataStandardizer:
         try:
             # Required columns exactly as defined in documentation.html
             required_columns = {
-                'isr': ['ISR'],
-                'outc_cod': ['OUTC_COD']
+                'ISR': 'isr',
+                'OUTC_COD': 'outc_cod'
             }
             
             # Process each required column
@@ -2098,12 +2119,12 @@ class DataStandardizer:
         try:
             # Required columns exactly as defined in documentation.html
             required_columns = {
-                'isr': ['ISR'],
-                'dsg_drug_seq': ['DSG_DRUG_SEQ'],
-                'start_dt': ['START_DT'],
-                'end_dt': ['END_DT'],
-                'dur': ['DUR'],
-                'dur_cod': ['DUR_COD']
+                'ISR': 'isr',
+                'DSG_DRUG_SEQ': 'dsg_drug_seq',
+                'START_DT': 'start_dt',
+                'END_DT': 'end_dt',
+                'DUR': 'dur',
+                'DUR_COD': 'dur_cod'
             }
             
             # Process each required column

@@ -3,223 +3,22 @@ import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass, field
-from collections import defaultdict
-
-import matplotlib.pyplot as plt
-import pandas as pd
-from tqdm import tqdm
-import io
-import os
-import concurrent.futures
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing
-import time
 from datetime import datetime
-import sys
-import chardet
+from collections import defaultdict
+import pandas as pd
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .standardizer import DataStandardizer
-from .deduplicator import FAERSDeduplicator
-
-
-class ColoredFormatter(logging.Formatter):
-    """Custom formatter adding colors to log levels."""
-    
-    grey = "\x1b[38;20m"
-    yellow = "\x1b[33;20m"
-    red = "\x1b[31;20m"
-    bold_red = "\x1b[31;1m"
-    reset = "\x1b[0m"
-    
-    FORMATS = {
-        logging.DEBUG: grey + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
-        logging.INFO: grey + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
-        logging.WARNING: yellow + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
-        logging.ERROR: red + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset,
-        logging.CRITICAL: bold_red + "%(asctime)s - %(name)s - %(levelname)s - %(message)s" + reset
-    }
-    
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt, datefmt='%y-%m-%d %H:%M:%S')
-        return formatter.format(record)
-
-def setup_logging():
-    """Setup logging with colors and proper formatting."""
-    # Get the root logger
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    
-    # Remove any existing handlers
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    
-    # Create console handler with colored formatting
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(ColoredFormatter())
-    logger.addHandler(console_handler)
-    
-    return logger
-
-@dataclass
-class TableSummary:
-    """Summary statistics for a single FAERS table."""
-    total_rows: int = 0
-    processed_rows: int = 0
-    invalid_dates: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    missing_columns: Dict[str, str] = field(default_factory=dict)  # column -> default value
-    parsing_errors: List[str] = field(default_factory=list)
-    data_errors: Dict[str, int] = field(default_factory=lambda: defaultdict(int))  # error type -> count
-    processing_time: float = 0.0
-
-    @property
-    def success_rate(self) -> float:
-        """Calculate percentage of successfully processed rows."""
-        return (self.processed_rows / self.total_rows * 100) if self.total_rows > 0 else 0.0
-
-    def add_missing_column(self, col: str, default_value: str):
-        """Track missing column and its default value."""
-        self.missing_columns[col] = default_value
-        logging.warning(f"Required column '{col}' not found, adding with default value: {default_value}")
-
-    def add_invalid_date(self, field: str, count: int):
-        """Track invalid dates by field."""
-        self.invalid_dates[field] = count
-        logging.warning(f"{count}/{self.total_rows} rows ({count/self.total_rows*100:.1f}%) had invalid dates in {field}")
-
-    def add_data_error(self, error_type: str):
-        """Track data validation errors."""
-        self.data_errors[error_type] += 1
-        
-    def add_parsing_error(self, error: str):
-        """Track parsing errors."""
-        self.parsing_errors.append(error)
-        logging.error(f"Parsing error: {error}")
-
-
-@dataclass
-class QuarterSummary:
-    """Summary statistics for a FAERS quarter."""
-    quarter: str
-    demo_summary: TableSummary = field(default_factory=TableSummary)
-    drug_summary: TableSummary = field(default_factory=TableSummary)
-    reac_summary: TableSummary = field(default_factory=TableSummary)
-    outc_summary: TableSummary = field(default_factory=TableSummary)
-    rpsr_summary: TableSummary = field(default_factory=TableSummary)
-    ther_summary: TableSummary = field(default_factory=TableSummary)
-    indi_summary: TableSummary = field(default_factory=TableSummary)
-    processing_time: float = 0.0
-
-    def log_summary(self):
-        """Log processing summary for this quarter."""
-        logging.info(f"\nProcessing Summary for Quarter {self.quarter}:")
-        for data_type in ['demo', 'drug', 'reac', 'outc', 'rpsr', 'ther', 'indi']:
-            summary = getattr(self, f"{data_type}_summary")
-            if summary.total_rows > 0:
-                logging.info(f"\n{data_type.upper()} Summary:")
-                logging.info(f"Total Rows: {summary.total_rows}")
-                logging.info(f"Processed Rows: {summary.processed_rows}")
-                if summary.missing_columns:
-                    logging.info("Missing Columns:")
-                    for col, default in summary.missing_columns.items():
-                        logging.info(f"  - {col} (default: {default})")
-                if summary.invalid_dates:
-                    logging.info("Invalid Dates:")
-                    for field, count in summary.invalid_dates.items():
-                        pct = (count/summary.total_rows*100) if summary.total_rows > 0 else 0
-                        logging.info(f"  - {field}: {count}/{summary.total_rows} rows ({pct:.1f}%)")
-                if summary.parsing_errors:
-                    logging.info("Parsing Errors:")
-                    for error in summary.parsing_errors:
-                        logging.info(f"  - {error}")
-
-
-class FAERSProcessingSummary:
-    """Tracks and generates summary reports for FAERS data processing."""
-
-    def __init__(self):
-        self.quarter_summaries: Dict[str, QuarterSummary] = {}
-
-    def add_quarter_summary(self, quarter: str, summary: QuarterSummary):
-        """Add summary for a processed quarter."""
-        self.quarter_summaries[quarter] = summary
-
-    def generate_markdown_report(self) -> str:
-        """Generate a detailed markdown report of all processing results."""
-        report = ["# FAERS Processing Summary Report\n"]
-        
-        # Sort quarters for consistent reporting
-        sorted_quarters = sorted(self.quarter_summaries.keys())
-        
-        for quarter in sorted_quarters:
-            summary = self.quarter_summaries[quarter]
-            report.append(f"\n## Quarter: {quarter}")
-            report.append(f"Processing Time: {summary.processing_time:.2f} seconds\n")
-            
-            # Process each file type
-            for data_type in ['demo', 'drug', 'reac', 'outc', 'rpsr', 'ther', 'indi']:
-                table_summary = getattr(summary, f"{data_type}_summary")
-                if table_summary.total_rows > 0:
-                    report.append(f"\n### {data_type.upper()} File")
-                    
-                    # Basic statistics
-                    report.append("#### Processing Statistics")
-                    report.append(f"- Total Rows: {table_summary.total_rows:,}")
-                    report.append(f"- Processed Rows: {table_summary.processed_rows:,}")
-                    report.append(f"- Success Rate: {(table_summary.processed_rows/table_summary.total_rows*100):.1f}%")
-                    report.append(f"- Processing Time: {table_summary.processing_time:.2f} seconds")
-                    
-                    # Missing Columns
-                    if table_summary.missing_columns:
-                        report.append("\n#### Missing Columns")
-                        report.append("| Column | Default Value |")
-                        report.append("|--------|---------------|")
-                        for col, default in table_summary.missing_columns.items():
-                            report.append(f"| {col} | {default} |")
-                    
-                    # Invalid Dates
-                    if table_summary.invalid_dates:
-                        report.append("\n#### Invalid Dates")
-                        report.append("| Field | Invalid Count | Percentage |")
-                        report.append("|-------|---------------|------------|")
-                        for field, count in table_summary.invalid_dates.items():
-                            pct = (count/table_summary.total_rows*100)
-                            report.append(f"| {field} | {count:,}/{table_summary.total_rows:,} | {pct:.1f}% |")
-                    
-                    # Data Errors
-                    if table_summary.data_errors:
-                        report.append("\n#### Data Validation Errors")
-                        report.append("| Error Type | Count |")
-                        report.append("|------------|--------|")
-                        for error_type, count in table_summary.data_errors.items():
-                            report.append(f"| {error_type} | {count:,} |")
-                    
-                    # Parsing Errors
-                    if table_summary.parsing_errors:
-                        report.append("\n#### Parsing Errors")
-                        for error in table_summary.parsing_errors:
-                            report.append(f"- {error}")
-                            
-        return "\n".join(report)
-
-    def save_report(self, output_dir: Path):
-        """Save the processing report to a markdown file."""
-        report = self.generate_markdown_report()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_path = output_dir / f"faers_processing_report_{timestamp}.md"
-        
-        report_path.write_text(report)
-        logging.info(f"Saved processing report to: {report_path}")
-
+from .validator import DataValidator, ValidationResult
 
 class FAERSProcessor:
     """Processor for FAERS data files."""
-
+    
     def __init__(self, standardizer: DataStandardizer):
         """Initialize the FAERS processor."""
         self.standardizer = standardizer
-        self.deduplicator = FAERSDeduplicator()
+        self.validator = DataValidator()
         self.logger = logging.getLogger(__name__)
         # Set current date in YYYYMMDD format
         self.current_date = datetime.now().strftime("%Y%m%d")
@@ -535,117 +334,101 @@ class FAERSProcessor:
         
         return results
 
+    def process_file(self, file_path: Path, data_type: str, quarter_name: str) -> Optional[pd.DataFrame]:
+        """Process a single FAERS data file."""
+        try:
+            self.logger.info(f"Processing {data_type} file: {file_path.name}")
+            
+            # Read the file
+            df = self._read_and_clean_file(file_path)
+            if df is None or df.empty:
+                self.logger.error(f"Failed to read or empty file: {file_path.name}")
+                return None
+                
+            # Process the data
+            df = self._process_common(df, data_type, quarter_name, file_path.name)
+            
+            # Log processing completion
+            self.logger.info(f"Successfully processed {len(df)} rows from {file_path.name}")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error processing {file_path.name}: {str(e)}")
+            return None
+
     def _process_common(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Common processing steps for all data types."""
         try:
             # Standardize column names to lowercase
             df.columns = df.columns.str.lower()
             
-            # Map old column names to new ones
-            column_mappings = {
-                'i_f_cod': 'i_f_code',
-                'gndr_cod': 'sex',
-                'reporter_country': 'country',
-                'drugname': 'drug_name',
-                'val_vbm': 'valid_trade_name',
-                'route': 'drug_route',
-                'dose_amt': 'drug_dose',
-                'dose_unit': 'drug_unit',
-                'cum_dose_chr': 'cumulative_dose',
-                'cum_dose_unit': 'cumulative_unit',
-                'dechal': 'dechallenge',
-                'rechal': 'rechallenge',
-                'lot_num': 'lot_number',
-                'exp_dt': 'expiration_date',
-                'nda_num': 'nda_number',
-                'pt': 'preferred_term',
-                'drug_seq': 'drug_sequence'
-            }
+            # Validate data before standardization
+            validation_result = self.validator.validate_data(df, data_type)
             
-            # Rename columns if they exist
-            df = df.rename(columns=column_mappings)
+            # Handle validation errors
+            if not validation_result.valid:
+                self._handle_validation_errors(validation_result, quarter_name, file_name)
+                
+            # Log validation warnings
+            self._log_validation_warnings(validation_result, quarter_name, file_name)
             
-            # Add missing columns with appropriate defaults
-            if data_type == 'indi':
-                if 'indi_pt' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Required column 'indi_pt' not found in {file_name}, adding with default value: <NA>")
-                    df['indi_pt'] = pd.NA
-            elif data_type == 'demo':
-                if 'i_f_code' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Required column 'i_f_code' not found in {file_name}, adding with default value: I")
-                    df['i_f_code'] = 'I'
-                if 'sex' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Required column 'sex' not found in {file_name}, adding with default value: <NA>")
-                    df['sex'] = pd.NA
-                if 'country' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Country column not found in {file_name}, skipping country standardization")
-            elif data_type == 'drug':
-                if 'drugname' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Required column 'drugname' not found in {file_name}, adding with default value: <NA>")
-                    df['drugname'] = pd.NA
-                if 'prod_ai' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Required column 'prod_ai' not found in {file_name}, adding with default value: <NA>")
-                    df['prod_ai'] = pd.NA
-                if 'route' not in df.columns:
-                    self.logger.warning(f"({quarter_name}) Required column 'route' not found in {file_name}, adding with default value: <NA>")
-                    df['route'] = pd.NA
+            # Process the data based on type
+            df = self.standardizer.standardize_data(df, data_type, file_name, quarter_name)
             
             return df
             
         except Exception as e:
             self.logger.error(f"({quarter_name}) Error processing {file_name}: {str(e)}")
             return df
-
-    def process_file(self, file_path: Path, data_type: str, quarter_name: str) -> Optional[pd.DataFrame]:
-        """Process a single FAERS data file."""
+            
+    def _handle_validation_errors(self, validation_result: ValidationResult, quarter_name: str, file_name: str):
+        """Handle validation errors with detailed logging."""
+        for error in validation_result.errors:
+            error_msg = f"({quarter_name}) Validation error in {file_name}: {error}"
+            self.logger.error(error_msg)
+            
+            # Check for specific error types and provide guidance
+            if "Missing required columns" in error:
+                self.logger.error(f"Please ensure the file contains all required columns for its type")
+                self.logger.error(f"This may indicate a file format change or incorrect file type")
+            elif "Unknown data type" in error:
+                self.logger.error(f"Invalid data type specified. Valid types are: demo, drug, reac, outc, indi, ther")
+            
+    def _log_validation_warnings(self, validation_result: ValidationResult, quarter_name: str, file_name: str):
+        """Log validation warnings with context."""
+        for warning in validation_result.warnings:
+            warning_msg = f"({quarter_name}) Validation warning in {file_name}: {warning}"
+            self.logger.warning(warning_msg)
+            
+            # Provide context for specific warnings
+            if "Invalid sex values" in warning:
+                self.logger.warning("Valid sex values are: M (Male), F (Female), UNK (Unknown)")
+            elif "Invalid age codes" in warning:
+                self.logger.warning("Valid age codes are: YR (Years), MON (Months), WK (Weeks), DY (Days), HR (Hours)")
+            elif "Invalid dates" in warning:
+                self.logger.warning("Dates should be in YYYYMMDD format")
+            elif "Invalid routes" in warning:
+                self.logger.warning("Routes should be standardized according to FDA specifications")
+                
+    def _read_and_clean_file(self, file_path: Path) -> Optional[pd.DataFrame]:
+        """Read and perform initial cleaning of a FAERS data file."""
         try:
-            # Try different engines and encodings
-            for engine in ['c', 'python']:
-                try:
-                    df = pd.read_csv(
-                        file_path,
-                        delimiter='$',
-                        dtype=str,
-                        engine=engine,
-                        encoding='utf-8',
-                        on_bad_lines='warn',
-                        low_memory=False
-                    )
-                    if not df.empty:
-                        break
-                except UnicodeDecodeError:
-                    try:
-                        # Try with latin-1 encoding
-                        df = pd.read_csv(
-                            file_path,
-                            delimiter='$',
-                            dtype=str,
-                            engine=engine,
-                            encoding='latin-1',
-                            on_bad_lines='warn',
-                            low_memory=False
-                        )
-                        if not df.empty:
-                            break
-                    except Exception as e:
-                        self.logger.warning(f"Failed to read with {engine} engine and latin-1 encoding: {str(e)}")
-                        continue
-                except Exception as e:
-                    self.logger.warning(f"Failed to read with {engine} engine and utf-8 encoding: {str(e)}")
-                    continue
+            # Read the file
+            df = pd.read_csv(file_path, dtype=str, na_values=[''], keep_default_na=False)
             
             if df.empty:
-                self.logger.error(f"Failed to read file {file_path}")
+                self.logger.warning(f"Empty file: {file_path.name}")
                 return None
-
-            # Convert column names to lowercase for consistency
-            df.columns = [col.lower() for col in df.columns]
+                
+            # Basic cleaning
+            df = df.replace(r'^\s*$', '', regex=True)  # Replace empty strings
+            df = df.replace(r'\s+', ' ', regex=True)   # Normalize whitespace
             
-            # Process the data based on type
-            return self._process_common(df, data_type, quarter_name, file_path.name)
+            return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) Error processing {file_path.name}: {str(e)}")
+            self.logger.error(f"Error reading file {file_path.name}: {str(e)}")
             return None
 
     def _normalize_quarter_path(self, quarter_dir: Path) -> Path:
