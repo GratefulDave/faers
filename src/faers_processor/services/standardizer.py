@@ -410,74 +410,32 @@ class DataStandardizer:
     def _load_meddra_data(self):
         """Load and process MedDRA data from ASC files."""
         try:
-            meddra_dir = self.external_dir / 'meddra/MedAscii'
+            # MedDRA files are under external_data/meddra
+            meddra_dir = self.external_dir / 'meddra'
             
-            # Read all MedDRA files
-            soc = pd.read_csv(meddra_dir / 'soc.asc', sep='$', header=None, usecols=[0,1,2])
-            soc.columns = ['soc_cod', 'soc', 'def']
+            if not meddra_dir.exists():
+                raise FileNotFoundError(f"MedDRA directory not found at {meddra_dir}")
             
-            soc_hlgt = pd.read_csv(meddra_dir / 'soc_hlgt.asc', sep='$', header=None, usecols=[0,1])
-            soc_hlgt.columns = ['soc_cod', 'hlgt_cod']
+            # Load MedDRA data
+            meddra_file = meddra_dir / 'meddra.csv'
+            if not meddra_file.exists():
+                raise FileNotFoundError(f"MedDRA file not found at {meddra_file}")
             
-            hlgt = pd.read_csv(meddra_dir / 'hlgt.asc', sep='$', header=None, usecols=[0,1])
-            hlgt.columns = ['hlgt_cod', 'hlgt']
+            self.meddra_map = pd.read_csv(meddra_file, low_memory=False)
+            logging.info(f"Loaded {len(self.meddra_map)} MedDRA terms")
             
-            hlgt_hlt = pd.read_csv(meddra_dir / 'hlgt_hlt.asc', sep='$', header=None, usecols=[0,1])
-            hlgt_hlt.columns = ['hlgt_cod', 'hlt_cod']
-            
-            hlt = pd.read_csv(meddra_dir / 'hlt.asc', sep='$', header=None, usecols=[0,1])
-            hlt.columns = ['hlt_cod', 'hlt']
-            
-            hlt_pt = pd.read_csv(meddra_dir / 'hlt_pt.asc', sep='$', header=None, usecols=[0,1])
-            hlt_pt.columns = ['hlt_cod', 'pt_cod']
-            
-            pts = pd.read_csv(meddra_dir / 'pt.asc', sep='$', header=None, usecols=[0,1,3])
-            pts.columns = ['pt_cod', 'pt', 'primary_soc_cod']
-            
-            llt = pd.read_csv(meddra_dir / 'llt.asc', sep='$', header=None, usecols=[0,1,2])
-            llt.columns = ['llt_cod', 'llt', 'pt_cod']
-            
-            # Merge all MedDRA tables
-            meddra = (soc.merge(soc_hlgt, on='soc_cod', how='outer')
-                     .merge(hlgt, on='hlgt_cod', how='outer')
-                     .merge(hlgt_hlt, on='hlgt_cod', how='outer')
-                     .merge(hlt, on='hlt_cod', how='outer')
-                     .merge(hlt_pt, on='hlt_cod', how='outer')
-                     .merge(pts, on='pt_cod', how='outer')
-                     .merge(llt, on='pt_cod', how='outer'))
-            
-            # Convert all text columns to lowercase
-            text_columns = ['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']
-            for col in text_columns:
-                if col in meddra.columns:
-                    meddra[col] = meddra[col].str.lower()
-            
-            # Save distinct combinations
-            meddra_distinct = (meddra[['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']]
-                             .drop_duplicates())
-            
-            # Save primary SOC relationships
-            meddra_primary = (meddra[meddra['soc_cod'] == meddra['primary_soc_cod']]
-                            [['def', 'soc', 'hlgt', 'hlt', 'pt']]
-                            .drop_duplicates())
-            
-            # Save to CSV files
-            meddra_distinct.to_csv(self.external_dir / 'meddra/meddra.csv', 
-                                 sep=';', index=False)
-            meddra_primary.to_csv(self.external_dir / 'meddra/meddra_primary.csv', 
-                                sep=';', index=False)
-            
-            # Create PT list for standardization
-            self.pt_list = meddra_distinct['pt'].dropna().unique()
-            self.llt_to_pt = dict(zip(meddra['llt'].str.lower(), meddra['pt'].str.lower()))
-            
-            logging.info(f"Loaded {len(self.pt_list):,} unique PTs from MedDRA")
-            logging.info(f"Loaded {len(self.llt_to_pt):,} LLT to PT mappings")
-            
+            # Load fixed PT terms if available
+            pt_fixed_file = meddra_dir / 'pt_fixed.csv'
+            if pt_fixed_file.exists():
+                self.pt_fixes = pd.read_csv(pt_fixed_file, sep=';', low_memory=False)
+                logging.info(f"Loaded {len(self.pt_fixes)} PT term fixes")
+            else:
+                logging.warning(f"PT fixes file not found at {pt_fixed_file}")
+                self.pt_fixes = pd.DataFrame()
+                
         except Exception as e:
             logging.error(f"Error loading MedDRA data: {str(e)}")
-            self.pt_list = []
-            self.llt_to_pt = {}
+            raise
 
     def _load_diana_dictionary(self):
         """Load and prepare the DiAna drug dictionary."""
