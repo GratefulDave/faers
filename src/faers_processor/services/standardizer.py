@@ -692,12 +692,16 @@ class DataStandardizer:
             DataFrame with standardized sex values
         """
         try:
+            if 'sex' not in df.columns:
+                logging.warning("Sex column not found in DataFrame")
+                return df
+                
             df = df.copy()
             
+            # Default categories if none provided
             if categories is None:
-                categories = list(['Male', 'Female', 'Unknown', 'Not Specified', ''])
-            
-            # Standardize sex codes
+                categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
+                
             sex_map = {
                 'f': 'Female',
                 'female': 'Female',
@@ -707,21 +711,39 @@ class DataStandardizer:
                 'unk': 'Unknown',
                 'unknown': 'Unknown',
                 'ns': 'Not Specified',
-                'not specified': 'Not Specified'
+                'not specified': 'Not Specified',
+                'nan': '',
+                'none': '',
+                '': ''
             }
             
-            if 'sex' in df.columns:
-                # Convert to string first
-                df['sex'] = df['sex'].astype(str).str.lower()
+            # Convert to string and lowercase, handling null values
+            df['sex'] = df['sex'].fillna('').astype(str).str.lower().str.strip()
+            
+            # Track unmapped values before standardization
+            unmapped = df[~df['sex'].isin(sex_map.keys())]['sex'].unique()
+            if len(unmapped) > 0:
+                logging.warning(f"Found unmapped sex values: {unmapped}")
+            
+            # Apply mapping
+            df['sex'] = df['sex'].map(sex_map)
+            
+            # Fill any remaining NaN with empty string
+            df['sex'] = df['sex'].fillna('')
+            
+            # Validate all values are in categories
+            invalid = df[~df['sex'].isin(categories)]['sex'].unique()
+            if len(invalid) > 0:
+                logging.error(f"Found invalid sex values after mapping: {invalid}")
                 
-                # Apply mapping
-                df['sex'] = df['sex'].map(sex_map)
-                
-                # Fill NaN with empty string
-                df['sex'] = df['sex'].fillna('')
-                
-                # Convert to categorical with predefined categories
-                df['sex'] = pd.Categorical(df['sex'], categories=categories)
+            # Convert to categorical with predefined categories
+            df['sex'] = pd.Categorical(df['sex'], categories=categories)
+            
+            # Log distribution
+            value_counts = df['sex'].value_counts(dropna=False)
+            logging.info("Sex value distribution:")
+            for val, count in value_counts.items():
+                logging.info(f"  {val}: {count} ({count/len(df)*100:.1f}%)")
             
             return df
             
@@ -1710,7 +1732,7 @@ class DataStandardizer:
         try:
             df = df.copy()
             
-            # Pre-define all possible categories for categorical columns as lists
+            # Pre-define all possible categories for categorical columns
             sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
             age_group_categories = [
                 'Prenatal',
@@ -1729,40 +1751,27 @@ class DataStandardizer:
                 df['sex'] = df['sex'].fillna('')
                 df['sex'] = df['sex'].astype(str)
                 df['sex'] = pd.Categorical(df['sex'].tolist(), categories=sex_categories)
+            else:
+                df['sex'] = pd.Categorical([''] * len(df), categories=sex_categories)
+                logging.warning("Sex column not found, initialized with empty values")
             
-            # Standardize dates
-            df = self.standardize_dates(df)
-            
-            # Standardize sex values
-            df = self.standardize_sex(df, sex_categories)
-            
-            # Standardize age values and create age groups
-            df = self.standardize_age(df)
             if 'age_group' not in df.columns:
-                df['age_group'] = pd.Series([''] * len(df))
-                df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=age_group_categories)
+                df['age_group'] = pd.Categorical([''] * len(df), categories=age_group_categories)
+                logging.info("Age group column initialized")
+            
+            # Standardize fields
+            df = self.standardize_dates(df)
+            df = self.standardize_sex(df, sex_categories)
+            df = self.standardize_age(df)
             df = self.standardize_age_groups(df, age_group_categories)
-            
-            # Standardize weight values
             df = self.standardize_weight(df)
-            
-            # Standardize country codes
             df = self.standardize_country(df)
-            
-            # Standardize occupation codes
-            df = self.standardize_occupation(df)
-            
-            # Process manufacturer information
-            df = self.standardize_manufacturer(df)
-            
-            # Remove duplicates
-            df = df.drop_duplicates()
             
             return df
             
         except Exception as e:
-            logging.error(f"Error standardizing demographics: {str(e)}")
-            raise e  # Re-raise to see full traceback
+            logging.error(f"Error in standardize_demographics: {str(e)}")
+            return df
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
         """Process all FAERS quarters with summary reporting.
