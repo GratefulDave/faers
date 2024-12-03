@@ -115,7 +115,7 @@ class FAERSProcessor:
                 # Use ThreadPoolExecutor for parallel processing
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_quarter = {
-                        executor.submit(self.process_quarter, quarter_dir, parallel): quarter_dir
+                        executor.submit(self.process_quarter, quarter_dir, parallel, max_workers): quarter_dir
                         for quarter_dir in quarter_dirs
                     }
                     
@@ -131,7 +131,7 @@ class FAERSProcessor:
                 # Process sequentially
                 for quarter_dir in quarter_dirs:
                     try:
-                        summary = self.process_quarter(quarter_dir, parallel)
+                        summary = self.process_quarter(quarter_dir, parallel, max_workers)
                         if summary:
                             self.processing_summary.add_quarter_summary(quarter_dir.name, summary)
                     except Exception as e:
@@ -232,12 +232,13 @@ class FAERSProcessor:
         
         return None
 
-    def process_quarter(self, quarter_dir: Path, parallel: bool = False) -> Optional[QuarterSummary]:
+    def process_quarter(self, quarter_dir: Path, parallel: bool = False, max_workers: Optional[int] = None) -> Optional[QuarterSummary]:
         """Process all files in a FAERS quarter directory.
         
         Args:
             quarter_dir: Path to quarter directory
             parallel: Whether to process files in parallel
+            max_workers: Maximum number of worker threads for parallel processing
             
         Returns:
             QuarterSummary if successful, None if failed
@@ -263,7 +264,7 @@ class FAERSProcessor:
             
             if parallel:
                 # Use ThreadPoolExecutor for parallel processing
-                with ThreadPoolExecutor() as executor:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_file_type = {
                         executor.submit(self._process_file_type, quarter_dir, file_prefix, data_type, summary): (file_prefix, data_type)
                         for file_prefix, (data_type, summary) in file_types.items()
