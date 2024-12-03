@@ -324,5 +324,46 @@ def main() -> None:
         sys.exit(1)
 
 
+def main_script() -> None:
+    """Main entry point for FAERS data processing."""
+    parser = argparse.ArgumentParser(description='Process FAERS data files.')
+    parser.add_argument('input_dir', help='Directory containing raw FAERS data files')
+    parser.add_argument('output_dir', help='Directory to save processed files')
+    parser.add_argument('--parallel', action='store_true', help='Use parallel processing')
+    parser.add_argument('--max-workers', type=int, help='Maximum number of worker processes')
+    parser.add_argument('--max-date', type=int, help='Maximum valid date (e.g., 20230331 for 2023Q1)')
+    
+    args = parser.parse_args()
+    
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Initialize standardizer and processor
+        standardizer = DataStandardizer()
+        processor = FAERSProcessor(
+            standardizer=standardizer,
+            use_parallel=args.parallel,
+            max_date=args.max_date
+        )
+        
+        # Process all files
+        processor.process_all(
+            input_dir=Path(args.input_dir),
+            output_dir=Path(args.output_dir),
+            max_workers=args.max_workers
+        )
+        
+        logger.info("FAERS data processing completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error processing FAERS data: {str(e)}")
+        raise
+
+
 if __name__ == "__main__":
-    main()
+    main_script()

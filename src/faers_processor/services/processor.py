@@ -215,15 +215,17 @@ class FAERSProcessingSummary:
 class FAERSProcessor:
     """Processor for FAERS data files."""
 
-    def __init__(self, standardizer: DataStandardizer, use_parallel: bool = False):
+    def __init__(self, standardizer: DataStandardizer, use_parallel: bool = False, max_date: int = None):
         """Initialize the FAERS processor.
 
         Args:
             standardizer: DataStandardizer instance for data cleaning
             use_parallel: Whether to use parallel processing
+            max_date: Maximum valid date (e.g., 20230331 for 2023Q1)
         """
         self.standardizer = standardizer
         self.use_parallel = use_parallel
+        self.max_date = max_date
         self.logger = setup_logging()
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
@@ -551,7 +553,7 @@ class FAERSProcessor:
             # Process based on data type
             try:
                 if data_type == 'demo':
-                    df = self.standardizer.standardize_demographics(df)
+                    df = self.standardizer.standardize_demographics(df, self.max_date)
                 elif data_type == 'drug':
                     df = self.standardizer.standardize_drugs(df)
                 elif data_type == 'reac':
@@ -561,7 +563,7 @@ class FAERSProcessor:
                 elif data_type == 'rpsr':
                     df = self.standardizer.standardize_sources(df)
                 elif data_type == 'ther':
-                    df = self.standardizer.standardize_therapies(df)
+                    df = self.standardizer.standardize_therapies(df, self.max_date)
                 elif data_type == 'indi':
                     df = self.standardizer.standardize_indications(df)
                 

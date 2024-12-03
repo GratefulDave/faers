@@ -323,6 +323,161 @@ class DataStandardizer:
         
         return df
 
+    def standardize_dates(self, df: pd.DataFrame, max_date: int = None) -> pd.DataFrame:
+        """Standardize date values exactly matching R implementation.
+        
+        Handles dates with following rules:
+        - Only keeps dates with 4, 6, or 8 characters (yyyy, yyyymm, yyyymmdd)
+        - Dates before 1985 are invalid
+        - Dates after max_date are invalid
+        - Invalid dates are converted to NA
+        - Preserves original integer format to maintain data integrity
+        
+        Args:
+            df: DataFrame with date columns
+            max_date: Maximum valid date (e.g., 20230331 for 2023Q1)
+        
+        Returns:
+            DataFrame with standardized dates
+        """
+        try:
+            df = df.copy()
+            
+            def check_date(dt_series: pd.Series) -> pd.Series:
+                """Check date validity exactly matching R implementation."""
+                # Convert to string and get length
+                dt_str = dt_series.astype(str)
+                n = dt_str.str.len()
+                
+                # Check validity conditions
+                invalid_dates = (
+                    ((n == 4) & ((dt_series < 1985) | (dt_series > int(str(max_date)[:4])))) |
+                    ((n == 6) & ((dt_series < 198500) | (dt_series > int(str(max_date)[:6])))) |
+                    ((n == 8) & ((dt_series < 19850000) | (dt_series > max_date))) |
+                    (~n.isin([4, 6, 8]))
+                )
+                
+                # Convert invalid dates to NA
+                dt_series = dt_series.where(~invalid_dates)
+                return dt_series
+            
+            # Demo dataset date columns
+            demo_date_cols = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
+            # Ther dataset date columns
+            ther_date_cols = ['start_dt', 'end_dt']
+            
+            # Process all date columns present in the DataFrame
+            date_cols = [col for col in df.columns if col in demo_date_cols + ther_date_cols]
+            
+            for col in date_cols:
+                df[col] = check_date(pd.to_numeric(df[col], errors='coerce'))
+                
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing dates: {str(e)}")
+            return df
+
+    def standardize_duration(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize therapy duration values exactly matching R implementation.
+        
+        Converts all durations to days using:
+        1. FDA-provided duration (dur * dur_corrector)
+        2. Calculated from end_dt - start_dt + 1
+        
+        Duration rules:
+        - Convert all units to days
+        - Handle missing units as NA
+        - Max duration is 50 years
+        - Use calculated duration when available
+        - Use FDA duration as fallback
+        - Can impute missing start/end dates using duration
+        
+        Args:
+            df: DataFrame with duration columns (dur, dur_cod, start_dt, end_dt)
+        
+        Returns:
+            DataFrame with standardized durations in days
+        """
+        try:
+            df = df.copy()
+            
+            # Convert duration to numeric
+            df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
+            
+            # Create duration corrector exactly as in R
+            conditions = [
+                df['dur_cod'] == 'YR',
+                df['dur_cod'] == 'MON',
+                df['dur_cod'] == 'WK',
+                df['dur_cod'] == 'DAY',
+                df['dur_cod'] == 'HR',
+                df['dur_cod'] == 'MIN',
+                df['dur_cod'] == 'SEC'
+            ]
+            
+            choices = [
+                365,                    # YR
+                30.41667,              # MON
+                7,                     # WK
+                1,                     # DAY
+                0.04166667,            # HR
+                0.0006944444,          # MIN
+                1.157407e-05           # SEC
+            ]
+            
+            df['dur_corrector'] = np.select(conditions, choices, default=np.nan)
+            
+            # Calculate FDA-provided duration in days
+            df['dur_in_days'] = abs(df['dur']) * df['dur_corrector']
+            
+            # Cap at 50 years
+            df.loc[df['dur_in_days'] > 50 * 365, 'dur_in_days'] = np.nan
+            
+            # Calculate duration from dates when possible
+            def to_date(x):
+                if pd.isna(x) or len(str(x)) != 8:
+                    return pd.NaT
+                return pd.to_datetime(str(x), format='%Y%m%d')
+                
+            df['dur_std'] = (to_date(df['end_dt']) - to_date(df['start_dt'])).dt.days + 1
+            
+            # Handle negative durations and use FDA duration as fallback
+            df.loc[df['dur_std'] < 0, 'dur_std'] = np.nan
+            df['dur_std'] = df['dur_std'].fillna(df['dur_in_days'])
+            
+            # Impute missing dates using duration when possible
+            def from_date(x):
+                if pd.isna(x):
+                    return np.nan
+                return int(x.strftime('%Y%m%d'))
+                
+            # Impute start_dt
+            mask = (df['start_dt'].isna() & df['end_dt'].notna() & df['dur_std'].notna())
+            df.loc[mask, 'start_dt'] = df.loc[mask].apply(
+                lambda x: from_date(to_date(x['end_dt']) - pd.Timedelta(days=x['dur_std'] - 1)),
+                axis=1
+            )
+            
+            # Impute end_dt
+            mask = (df['end_dt'].isna() & df['start_dt'].notna() & df['dur_std'].notna())
+            df.loc[mask, 'end_dt'] = df.loc[mask].apply(
+                lambda x: from_date(to_date(x['start_dt']) + pd.Timedelta(days=x['dur_std'] - 1)),
+                axis=1
+            )
+            
+            # Use calculated duration as final duration
+            df['dur_in_days'] = df['dur_std']
+            
+            # Drop temporary columns
+            df = df.drop(columns=['dur_std', 'dur_corrector', 'dur', 'dur_cod'])
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing duration: {str(e)}")
+            return df
+
     def remove_incomplete_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
                                 reac_df: pd.DataFrame) -> pd.DataFrame:
         """
