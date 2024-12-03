@@ -871,3 +871,128 @@ class FAERSProcessor:
         print(removed_cols_msg)
         
         return result_df
+
+    def find_faers_files(self, input_dir: Path) -> List[Path]:
+        """Exact match to R's list.files with pattern=".TXT"."""
+        faers_list = []
+        for file in input_dir.rglob('*.[tT][xX][tT]'):
+            # Match R's: faers_list[!grepl("STAT|SIZE",faers_list)]
+            if not re.search(r'STAT|SIZE', str(file), re.IGNORECASE):
+                faers_list.append(file)
+        return faers_list
+
+    def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
+        """Exact match to R's correct_problematic_file function.
+        
+        Args:
+            file_path: Path to file to correct
+            old_line: Problematic line pattern to fix
+        """
+        self.logger.info(f"Correcting problematic file: {file_path}")
+        try:
+            with open(file_path, 'r', encoding='latin1') as f:
+                lines = f.readlines()
+            
+            # Match R's gsub and strsplit logic exactly
+            fixed_lines = []
+            for line in lines:
+                if old_line in line:
+                    # Replace old_line with separator version
+                    new_line = re.sub(r'([0-9]+)$', r'SePaRaToR\1', old_line)
+                    line = line.replace(old_line, new_line)
+                    # Split on separator
+                    fixed_lines.extend(line.split('SePaRaToR'))
+                else:
+                    fixed_lines.append(line)
+            
+            with open(file_path, 'w', encoding='latin1') as f:
+                f.writelines(fixed_lines)
+                
+            self.logger.info(f"Successfully corrected {file_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Error correcting {file_path}: {str(e)}")
+            raise
+
+    def store_to_rds(self, file_path: Path, output_dir: Path) -> None:
+        """Exact match to R's store_to_rds function with enhanced error handling.
+        
+        Args:
+            file_path: Path to input TXT file
+            output_dir: Directory to save RDS file
+        """
+        try:
+            # Create output name (gsub(".TXT",".rds",f, ignore.case = T))
+            rds_name = re.sub(r'\.TXT$', '.rds', str(file_path), flags=re.IGNORECASE)
+            rds_path = output_dir / Path(rds_name).name
+            
+            self.logger.info(f"Converting {file_path} to {rds_path}")
+            
+            # Read header (readLines(file(f),n=1))
+            with open(file_path, 'r', encoding='latin1') as f:
+                header = f.readline().strip()
+            column_names = header.split('$')
+            
+            # Read data (read.table(f,skip=1,sep="$", comment.char = "",quote=""))
+            df = pd.read_csv(
+                file_path, 
+                sep='$',
+                skiprows=1,
+                names=column_names,
+                quoting=3,  # QUOTE_NONE
+                comment=None,
+                encoding='latin1',
+                dtype=str,
+                on_bad_lines='warn'
+            )
+            
+            # Save as pickle (equivalent to saveRDS)
+            df.to_pickle(rds_path)
+            self.logger.info(f"Successfully saved {rds_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing {file_path}: {str(e)}")
+            raise
+
+    def preprocess_faers_files(self, input_dir: Path, output_dir: Path) -> None:
+        """Preprocess FAERS files exactly like the R implementation.
+        
+        This combines all the R preprocessing steps while maintaining our enhanced features.
+        """
+        self.logger.info("Starting FAERS preprocessing")
+        
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Find all FAERS files
+        faers_list = self.find_faers_files(input_dir)
+        if not faers_list:
+            raise ValueError(f"No FAERS files found in {input_dir}")
+            
+        # Save faers_list
+        faers_df = pd.DataFrame({'x': [str(f) for f in faers_list]})
+        faers_df.to_csv(output_dir / 'faers_list.csv', sep=';', index=False)
+        
+        # Correct known problematic files
+        problem_files = {
+            "Raw_FAERS_QD//aers_ascii_2011q2/ascii/DRUG11Q2.txt": "\\$\\$\\$\\$\\$\\$7475791",
+            "Raw_FAERS_QD//aers_ascii_2011q3/ascii/DRUG11Q3.txt": "\\$\\$\\$\\$\\$\\$7652730",
+            "Raw_FAERS_QD//aers_ascii_2011q4/ascii/DRUG11Q4.txt": "021487\\$7941354"
+        }
+        
+        for file_pattern, old_line in problem_files.items():
+            # Find matching file in our directory structure
+            pattern = Path(file_pattern).name
+            matching_files = list(input_dir.rglob(pattern))
+            if matching_files:
+                self.correct_problematic_file(matching_files[0], old_line)
+        
+        # Process all files to RDS format with progress bar
+        with tqdm(total=len(faers_list), desc="Converting to RDS", unit="file") as pbar:
+            for file_path in faers_list:
+                try:
+                    self.store_to_rds(file_path, output_dir)
+                    pbar.update(1)
+                except Exception as e:
+                    self.logger.error(f"Failed to process {file_path}: {str(e)}")
+                    continue
