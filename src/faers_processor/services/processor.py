@@ -1578,22 +1578,28 @@ class FAERSProcessor:
     def standardize_data(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize data based on its type."""
         try:
-            file_name = os.path.basename(file_path) if file_path else "unknown_file"
-            
             if data_type == 'demo':
-                return self.standardizer.standardize_demographics(df)
+                return self.standardizer.standardize_demographics(df, quarter_name, file_name)
             elif data_type == 'drug':
                 if 'drugname' not in df.columns:
-                    self.logger.warning(f"({file_name}) Required column 'drugname' not found, adding with default value: <NA>")
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column 'drugname' not found, adding with default value: <NA>")
                     df['drugname'] = pd.NA
-                return self.standardizer.standardize_drug_info(df)
+                return self.standardizer.standardize_drug_info(df, quarter_name, file_name)
             elif data_type == 'reac':
-                return self.standardizer.standardize_reactions(df)
+                return self.standardizer.standardize_reactions(df, quarter_name, file_name)
+            elif data_type == 'outc':
+                return self.standardizer.standardize_outcomes(df, quarter_name, file_name)
+            elif data_type == 'rpsr':
+                return self.standardizer.standardize_sources(df, quarter_name, file_name)
+            elif data_type == 'ther':
+                return self.standardizer.standardize_therapies(df, quarter_name, file_name)
+            elif data_type == 'indi':
+                return self.standardizer.standardize_indications(df, quarter_name, file_name)
             else:
-                self.logger.warning(f"({file_name}) Unknown data type: {data_type}")
+                self.logger.warning(f"({quarter_name}) {file_name}: Unknown data type: {data_type}")
                 return df
         except Exception as e:
-            self.logger.error(f"({file_name}) Error standardizing {data_type} data: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing {data_type} data: {str(e)}")
             return df
 
     def process_data_file(self, file_path: Path, data_type: str) -> Optional[pd.DataFrame]:
