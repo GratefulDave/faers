@@ -599,41 +599,50 @@ class FAERSProcessor:
     def process_file(self, file_path: Path, data_type: str, quarter_name: str) -> Optional[pd.DataFrame]:
         """Process a single FAERS data file."""
         try:
-            # Read and clean the file
-            df = pd.read_csv(file_path, delimiter='$', dtype=str)
-            file_name = file_path.name
+            # Try different engines and encodings
+            for engine in ['c', 'python']:
+                try:
+                    df = pd.read_csv(
+                        file_path,
+                        delimiter='$',
+                        dtype=str,
+                        engine=engine,
+                        encoding='utf-8',
+                        on_bad_lines='warn',
+                        low_memory=False
+                    )
+                    if not df.empty:
+                        break
+                except UnicodeDecodeError:
+                    try:
+                        # Try with latin-1 encoding
+                        df = pd.read_csv(
+                            file_path,
+                            delimiter='$',
+                            dtype=str,
+                            engine=engine,
+                            encoding='latin-1',
+                            on_bad_lines='warn',
+                            low_memory=False
+                        )
+                        if not df.empty:
+                            break
+                    except Exception as e:
+                        self.logger.warning(f"Failed to read with {engine} engine and latin-1 encoding: {str(e)}")
+                        continue
+                except Exception as e:
+                    self.logger.warning(f"Failed to read with {engine} engine and utf-8 encoding: {str(e)}")
+                    continue
             
-            if df is None:
-                self.logger.error(f"({quarter_name}) Failed to read file: {file_name}")
-                return None
-                
             if df.empty:
-                self.logger.error(f"({quarter_name}) File is empty: {file_name}")
+                self.logger.error(f"Failed to read file {file_path}")
                 return None
+
+            # Convert column names to lowercase for consistency
+            df.columns = [col.lower() for col in df.columns]
             
-            # Common processing steps
-            df = self._process_common(df, data_type, quarter_name, file_name)
-            
-            # Standardize based on data type
-            try:
-                if data_type == 'demo':
-                    df = self.standardizer.standardize_demographics(df)
-                elif data_type == 'drug':
-                    df = self.standardizer.standardize_drug_info(df)
-                elif data_type == 'reac':
-                    df = self.standardizer.standardize_reactions(df)
-                elif data_type == 'indi':
-                    df = self.standardizer.standardize_indications(df)
-                else:
-                    self.logger.warning(f"({quarter_name}) Unknown data type: {data_type} for file {file_name}")
-            except Exception as e:
-                self.logger.error(f"({quarter_name}) Error standardizing {data_type} data in {file_name}: {str(e)}")
-                return None
-            
-            if df is not None and not df.empty:
-                self.logger.info(f"({quarter_name}) Successfully processed {len(df):,} rows from {file_name}")
-            
-            return df
+            # Process the data based on type
+            return self._process_common(df, data_type, quarter_name, file_path.name)
             
         except Exception as e:
             self.logger.error(f"({quarter_name}) Error processing {file_path.name}: {str(e)}")

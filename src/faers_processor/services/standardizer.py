@@ -161,14 +161,40 @@ class DataStandardizer:
         self._load_meddra_data()
         self._load_diana_dictionary()
         
-    def _get_column_case_insensitive(self, df: pd.DataFrame, column_names: list) -> Optional[str]:
-        """Find column name case-insensitively from a list of possible names."""
-        df_cols = {col.lower(): col for col in df.columns}
+    def _get_column_case_insensitive(self, df: pd.DataFrame, column_names: Union[str, List[str]]) -> Optional[str]:
+        """Get the actual column name that matches any of the given names case-insensitive.
+        First tries exact match, then tries upper case, then lower case."""
+        if isinstance(column_names, str):
+            column_names = [column_names]
+        
+        df_cols = set(df.columns)
+        
+        # First try exact match
         for name in column_names:
-            if name.lower() in df_cols:
-                return df_cols[name.lower()]
+            if name in df_cols:
+                return name
+                
+        # Try upper case
+        for name in column_names:
+            upper_name = name.upper()
+            if upper_name in df_cols:
+                return upper_name
+                
+        # Try lower case
+        for name in column_names:
+            lower_name = name.lower()
+            if lower_name in df_cols:
+                return lower_name
+                
         return None
 
+    def _has_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> bool:
+        """Check if DataFrame has a column, trying exact, upper, and lower case."""
+        df_cols = set(df.columns)
+        return (column_name in df_cols or 
+                column_name.upper() in df_cols or 
+                column_name.lower() in df_cols)
+        
     def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize demographics data."""
         try:
@@ -2213,96 +2239,37 @@ class DataStandardizer:
             logging.error(f"Error removing duplicate primaryids: {str(e)}")
             return df
 
-    def _has_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> bool:
-        """Check if DataFrame has a column, case-insensitive."""
-        return any(col.lower() == column_name.lower() for col in df.columns)
-
-    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> str:
-        """Get the actual column name that matches the given name case-insensitive."""
-        for col in df.columns:
-            if col.lower() == column_name.lower():
-                return col
-        return column_name
-
     def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize drug information."""
         try:
-            # Check for required columns case-insensitively
+            # Define required columns and their possible names (case-insensitive)
             required_columns = {
-                'drugname': ['drugname', 'drug_name'],
-                'prod_ai': ['prod_ai'],
-                'route': ['route'],
-                'dose_amt': ['dose_amt', 'dose_vbm'],
-                'dose_unit': ['dose_unit'],
-                'role_cod': ['role_cod']
+                'drugname': ['drugname', 'drug_name', 'DRUGNAME', 'DRUG_NAME'],
+                'prod_ai': ['prod_ai', 'PROD_AI'],
+                'route': ['route', 'ROUTE'],
+                'dose_amt': ['dose_amt', 'DOSE_AMT'],
+                'dose_unit': ['dose_unit', 'DOSE_UNIT'],
+                'dose_form': ['dose_form', 'DOSE_FORM'],
+                'dose_freq': ['dose_freq', 'DOSE_FREQ'],
+                'drug_seq': ['drug_seq', 'DRUG_SEQ'],
+                'isr': ['isr', 'ISR', 'primaryid', 'PRIMARYID', 'caseid', 'CASEID']
             }
             
-            # For each required column, check all its possible names case-insensitively
+            # Check each required column
             for std_name, possible_names in required_columns.items():
-                found = False
-                for name in possible_names:
-                    if self._has_column_case_insensitive(df, name):
-                        actual_name = self._get_column_case_insensitive(df, name)
-                        if actual_name != std_name:
-                            df = df.rename(columns={actual_name: std_name})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{std_name}' not found, adding with default value: <NA>")
                     df[std_name] = pd.NA
-            
-            # Standardize route
-            if 'route' in df.columns:
-                df['route'] = df['route'].str.upper()
-                valid_routes = {'ORAL', 'INTRAVENOUS', 'SUBCUTANEOUS', 'INTRAMUSCULAR', 'TOPICAL'}
-                invalid_routes = set(df['route'].dropna().str.upper().unique()) - valid_routes
-                if invalid_routes:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Converted invalid routes to NA: {invalid_routes}")
-                    df.loc[df['route'].str.upper().isin(invalid_routes), 'route'] = pd.NA
             
             return df
             
         except Exception as e:
             self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_drug_info: {str(e)}")
             return df
-
-def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
-    """Read and clean the file, detecting delimiter."""
-    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-        # Read sample for delimiter detection
-        sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
-        
-    # Detect delimiter
-    delimiters = ['$', '|', '\t', ',']
-    max_consistent_cols = 0
-    best_delimiter = ','
-    
-    for delimiter in delimiters:
-        cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
-        # Get most common column count
-        from collections import Counter
-        col_counts = Counter(cols_per_row)
-        if col_counts:
-            most_common_count = col_counts.most_common(1)[0][1]
-            if most_common_count > max_consistent_cols:
-                max_consistent_cols = most_common_count
-                best_delimiter = delimiter
-                
-    # Clean all lines
-    cleaned_lines = [clean_line(line) for line in sample_lines]
-    
-    return cleaned_lines, best_delimiter
-
-def clean_line(line: str) -> str:
-    """Clean problematic characters from a line."""
-    # Remove null bytes
-    line = line.replace('\0', '')
-    # Normalize line endings
-    line = line.strip('\r\n')
-    # Handle escaped quotes
-    line = re.sub(r'(?<!\\)"', '\\"', line)
-    return line
 
     def standardize_reactions(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize reaction data."""
@@ -2452,3 +2419,40 @@ def clean_line(line: str) -> str:
         except Exception as e:
             self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_therapies: {str(e)}")
             return df
+
+def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
+    """Read and clean the file, detecting delimiter."""
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        # Read sample for delimiter detection
+        sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
+        
+    # Detect delimiter
+    delimiters = ['$', '|', '\t', ',']
+    max_consistent_cols = 0
+    best_delimiter = ','
+    
+    for delimiter in delimiters:
+        cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
+        # Get most common column count
+        from collections import Counter
+        col_counts = Counter(cols_per_row)
+        if col_counts:
+            most_common_count = col_counts.most_common(1)[0][1]
+            if most_common_count > max_consistent_cols:
+                max_consistent_cols = most_common_count
+                best_delimiter = delimiter
+                
+    # Clean all lines
+    cleaned_lines = [clean_line(line) for line in sample_lines]
+    
+    return cleaned_lines, best_delimiter
+
+def clean_line(line: str) -> str:
+    """Clean problematic characters from a line."""
+    # Remove null bytes
+    line = line.replace('\0', '')
+    # Normalize line endings
+    line = line.strip('\r\n')
+    # Handle escaped quotes
+    line = re.sub(r'(?<!\\)"', '\\"', line)
+    return line
