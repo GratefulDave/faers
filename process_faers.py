@@ -19,11 +19,6 @@ def main():
     )
     
     parser.add_argument(
-        '--max-date',
-        help='Maximum date to process (YYYYMMDD format)'
-    )
-    
-    parser.add_argument(
         '--steps',
         nargs='+',
         choices=['download', 'process', 'deduplicate', 'all'],
@@ -69,13 +64,12 @@ def main():
     
     if 'download' in steps:
         logging.info("Starting download of all quarters...")
-        download_data(paths, args.max_date)
+        download_data(paths)
     
     if 'process' in steps:
         logging.info("Starting processing of all quarters...")
         process_data(
             paths,
-            max_date=args.max_date,
             parallel=args.parallel,
             max_workers=args.max_workers,
             chunk_size=args.chunk_size
@@ -85,7 +79,6 @@ def main():
         logging.info("Starting deduplication of all data...")
         deduplicate_data(
             paths,
-            max_date=args.max_date,
             parallel=args.parallel,
             max_workers=args.max_workers,
             chunk_size=args.chunk_size
