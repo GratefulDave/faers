@@ -104,6 +104,79 @@ class FAERSDeduplicator:
             self.logger.error(f"Error deduplicating by caseid: {str(e)}")
             return df
 
+    def deduplicate_by_manufacturer(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove duplicated manufacturer IDs keeping most recent by FDA date.
+        
+        Matches R implementation:
+        Demo <- Demo[order(fda_dt)]
+        Demo <- Demo[Demo[,.I%in%c(Demo[,.I[.N],by=c("mfr_num","mfr_sndr")]$V1,
+                                Demo[,which(is.na(mfr_num))],
+                                Demo[,which(is.na(mfr_sndr))])]]
+        
+        Args:
+            df: DataFrame with potential duplicate manufacturer IDs
+            
+        Returns:
+            DataFrame with duplicates removed, keeping most recent by FDA date
+        """
+        try:
+            if not all(col in df.columns for col in ['mfr_num', 'mfr_sndr', 'fda_dt']):
+                self.logger.warning("Cannot deduplicate by manufacturer: missing required columns")
+                return df
+            
+            # Convert fda_dt to numeric for sorting
+            df = df.copy()
+            df['fda_dt'] = pd.to_numeric(df['fda_dt'], errors='coerce')
+            
+            # Sort by FDA date
+            df = df.sort_values('fda_dt')
+            
+            # Get indices to keep:
+            # 1. Last record for each mfr_num, mfr_sndr combination
+            valid_mfr = df.dropna(subset=['mfr_num', 'mfr_sndr'])
+            keep_indices = valid_mfr.groupby(['mfr_num', 'mfr_sndr']).tail(1).index
+            
+            # 2. Records with NA mfr_num
+            na_mfr_num = df[df['mfr_num'].isna()].index
+            
+            # 3. Records with NA mfr_sndr
+            na_mfr_sndr = df[df['mfr_sndr'].isna()].index
+            
+            # Combine all indices to keep
+            all_indices = pd.Index(keep_indices).union(na_mfr_num).union(na_mfr_sndr)
+            
+            # Keep only the selected rows
+            df_deduped = df.loc[all_indices]
+            
+            # Log deduplication statistics
+            total_rows = len(df)
+            kept_rows = len(df_deduped)
+            removed_rows = total_rows - kept_rows
+            
+            if removed_rows > 0:
+                self.logger.info(f"Removed {removed_rows} duplicate manufacturer entries, keeping {kept_rows} entries")
+                self.logger.info(f"Kept {len(keep_indices)} manufacturer combinations")
+                self.logger.info(f"Kept {len(na_mfr_num)} records with NA mfr_num")
+                self.logger.info(f"Kept {len(na_mfr_sndr)} records with NA mfr_sndr")
+                
+                # Log some examples of removed duplicates for verification
+                dupes = df[df.duplicated(subset=['mfr_num', 'mfr_sndr'], keep='last')].sort_values(['mfr_num', 'mfr_sndr'])
+                if not dupes.empty:
+                    sample_dupes = dupes.head(3)  # Show up to 3 examples
+                    self.logger.debug("Sample of removed manufacturer duplicates:")
+                    for _, row in sample_dupes.iterrows():
+                        self.logger.debug(
+                            f"mfr_num: {row['mfr_num']}, "
+                            f"mfr_sndr: {row['mfr_sndr']}, "
+                            f"fda_dt: {row['fda_dt']}"
+                        )
+            
+            return df_deduped
+            
+        except Exception as e:
+            self.logger.error(f"Error deduplicating by manufacturer: {str(e)}")
+            return df
+
     def deduplicate_dataset(self, input_path: Path, output_path: Path) -> None:
         """Deduplicate an entire dataset, preserving most recent entries.
         

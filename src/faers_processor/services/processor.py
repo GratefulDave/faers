@@ -936,28 +936,25 @@ class FAERSProcessor:
         if not drug_files:
             raise ValueError("No DRUG files found in the ascii directories")
             
-        # Define common namekey mapping for both datasets
-        namekey = {
-            "ISR": "primaryid",
-            "DRUG_SEQ": "drug_seq",
-            "ROLE_COD": "role_cod",
-            "DRUGNAME": "drugname",
-            "VAL_VBM": "val_vbm",
-            "ROUTE": "route",
-            "DOSE_VBM": "dose_vbm",
-            "DECHAL": "dechal",
-            "RECHAL": "rechal",
-            "LOT_NUM": "lot_num",
-            "NDA_NUM": "nda_num",
-            "EXP_DT": "exp_dt"
-        }
-        
         try:
             # Process DRUG dataset (general information)
             self.logger.info("Processing DRUG dataset")
             drug_df = self.unify_data(
                 files_list=drug_files,
-                namekey=namekey,
+                namekey={
+                    "ISR": "primaryid",
+                    "DRUG_SEQ": "drug_seq",
+                    "ROLE_COD": "role_cod",
+                    "DRUGNAME": "drugname",
+                    "VAL_VBM": "val_vbm",
+                    "ROUTE": "route",
+                    "DOSE_VBM": "dose_vbm",
+                    "DECHAL": "dechal",
+                    "RECHAL": "rechal",
+                    "LOT_NUM": "lot_num",
+                    "NDA_NUM": "nda_num",
+                    "EXP_DT": "exp_dt"
+                },
                 column_subset=[
                     "primaryid", "drug_seq", "role_cod", "drugname", "prod_ai"
                 ],
@@ -975,7 +972,24 @@ class FAERSProcessor:
             self.logger.info("Processing DRUG_INFO dataset")
             drug_info_df = self.unify_data(
                 files_list=drug_files,
-                namekey=namekey,
+                namekey={
+                    "ISR": "primaryid",
+                    "DRUG_SEQ": "drug_seq",
+                    "VAL_VBM": "val_vbm",
+                    "NDA_NUM": "nda_num",
+                    "LOT_NUM": "lot_num",
+                    "ROUTE": "route",
+                    "DOSE_FORM": "dose_form",
+                    "DOSE_FREQ": "dose_freq",
+                    "EXP_DT": "exp_dt",
+                    "DOSE_VBM": "dose_vbm",
+                    "CUM_DOSE_UNIT": "cum_dose_unit",
+                    "CUM_DOSE_CHR": "cum_dose_chr",
+                    "DOSE_AMT": "dose_amt",
+                    "DOSE_UNIT": "dose_unit",
+                    "DECHAL": "dechal",
+                    "RECHAL": "rechal"
+                },
                 column_subset=[
                     "primaryid", "drug_seq", "val_vbm", "nda_num", "lot_num",
                     "route", "dose_form", "dose_freq", "exp_dt",
@@ -1029,10 +1043,13 @@ class FAERSProcessor:
             # 3. Keep only last record for each caseid
             demo_df = self.deduplicator.deduplicate_by_caseid(demo_df)
             
-            # 4. Convert specified columns to categorical
+            # 4. Remove duplicated manufacturer IDs
+            demo_df = self.deduplicator.deduplicate_by_manufacturer(demo_df)
+            
+            # 5. Convert specified columns to categorical
             demo_df = self.finalize_demo_dataset(demo_df)
             
-            # 5. Save final result
+            # 6. Save final result
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / 'DEMO.rds'
             demo_df.to_pickle(output_path)
@@ -1482,7 +1499,7 @@ class FAERSProcessor:
         """Process all FAERS data files in the input directory."""
         try:
             # Process demo files first to get event dates
-            demo_files = list(input_dir.glob('*DEMO*.txt'))
+            demo_files = list(input_dir.glob("*DEMO*.txt"))
             if not demo_files:
                 raise FileNotFoundError("No demographics files found")
                 
