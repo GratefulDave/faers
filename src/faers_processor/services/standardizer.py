@@ -1000,7 +1000,7 @@ class DataStandardizer:
         - "A1" -> NA
         - Continent codes (e.g., XE -> Europe, QU -> Oceania)
         
-        Note: Requires countries.csv in External Sources/Manual_fix/ directory
+        Note: Requires countries.csv in external_data/manual_fixes/ directory
         with format: country;Country_Name
         
         Args:
@@ -1022,10 +1022,10 @@ class DataStandardizer:
                 logging.warning("Reporter country column not found - initialized with empty strings")
                 
             try:
-                # Read country mapping file
+                # Read country mapping file using the correct path
                 countries_file = os.path.join(
                     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                    'External Sources', 'Manual_fix', 'countries.csv'
+                    'external_data', 'manual_fixes', 'countries.csv'
                 )
                 
                 countries_df = pd.read_csv(
@@ -1068,19 +1068,19 @@ class DataStandardizer:
                 reporter_stats = df['reporter_country'].value_counts().head()
                 for country, count in reporter_stats.items():
                     logging.info(f"  {country}: {count}")
-                
-                # Check for unmapped countries
-                unmapped_occr = df[~df['occr_country'].isna()]['occr_country'].unique()
-                unmapped_reporter = df[~df['reporter_country'].isna()]['reporter_country'].unique()
-                unmapped = set(unmapped_occr) | set(unmapped_reporter) - set(country_map.values())
+            
+                # Check for unmapped countries and log them
+                unmapped_occr = set(df[~df['occr_country'].isna()]['occr_country'].unique()) - set(country_map.values())
+                unmapped_reporter = set(df[~df['reporter_country'].isna()]['reporter_country'].unique()) - set(country_map.values())
+                unmapped = unmapped_occr | unmapped_reporter
                 if unmapped:
                     logging.warning(f"Found unmapped countries: {unmapped}")
-                
+            
                 return df
                 
             except FileNotFoundError:
                 logging.error(
-                    "countries.csv not found in External Sources/Manual_fix/. "
+                    "countries.csv not found in external_data/manual_fixes/. "
                     "Please ensure the file exists with format: country;Country_Name"
                 )
                 return df
