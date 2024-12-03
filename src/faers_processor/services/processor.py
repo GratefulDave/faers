@@ -1018,6 +1018,10 @@ class FAERSProcessor:
     def process_demo_dataset(self, input_dir: Path, output_dir: Path) -> None:
         """Process DEMO dataset exactly as in the R implementation."""
         try:
+            # Load necessary datasets
+            drug_df = pd.read_pickle(output_dir / 'DRUG.rds')
+            reac_df = pd.read_pickle(output_dir / 'REAC.rds')
+            
             demo_files = list(input_dir.glob("*DEMO*.txt"))
             if not demo_files:
                 raise FileNotFoundError("No DEMO files found in input directory")
@@ -1046,10 +1050,13 @@ class FAERSProcessor:
             # 4. Remove duplicated manufacturer IDs
             demo_df = self.deduplicator.deduplicate_by_manufacturer(demo_df)
             
-            # 5. Convert specified columns to categorical
+            # 5. Remove incomplete reports
+            demo_df = self.remove_incomplete_reports(demo_df, drug_df, reac_df)
+            
+            # 6. Convert specified columns to categorical
             demo_df = self.finalize_demo_dataset(demo_df)
             
-            # 6. Save final result
+            # 7. Save final result
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / 'DEMO.rds'
             demo_df.to_pickle(output_path)
@@ -1548,3 +1555,84 @@ class FAERSProcessor:
         """
         df = self.standardizer.standardize_drug_info(df, self.max_date)
         return df
+
+    def remove_incomplete_reports(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame, 
+                                reac_df: pd.DataFrame) -> pd.DataFrame:
+        """Remove DEMO cases missing either drug or reaction information.
+        
+        Matches R implementation:
+        Drug <- Drug[!Substance%in%c("no medication","unspecified")]
+        Reac <- Reac[!pt%in%c("no adverse event")]
+        no_drugs <- setdiff(unique(Demo$primaryid),unique(Drug$primaryid))
+        no_event <- setdiff(unique(Demo$primaryid),unique(Reac$primaryid))
+        not_complete <- union(no_drugs,no_event)
+        Demo <- Demo[!primaryid %in% not_complete]
+        
+        Args:
+            demo_df: Demographics DataFrame
+            drug_df: Drug DataFrame
+            reac_df: Reaction DataFrame
+            
+        Returns:
+            Demographics DataFrame with incomplete reports removed
+        """
+        try:
+            # 1. Remove invalid drug entries
+            invalid_substances = ['no medication', 'unspecified']
+            valid_drug_df = drug_df[~drug_df['substance'].isin(invalid_substances)]
+            
+            # 2. Remove invalid reaction entries
+            invalid_reactions = ['no adverse event']
+            valid_reac_df = reac_df[~reac_df['pt'].isin(invalid_reactions)]
+            
+            # 3. Find primaryids missing drug or reaction info
+            demo_ids = set(demo_df['primaryid'].unique())
+            drug_ids = set(valid_drug_df['primaryid'].unique())
+            reac_ids = set(valid_reac_df['primaryid'].unique())
+            
+            # Find cases missing drug or reaction
+            no_drugs = demo_ids - drug_ids
+            no_event = demo_ids - reac_ids
+            not_complete = no_drugs.union(no_event)
+            
+            # Keep only complete cases
+            complete_demo_df = demo_df[~demo_df['primaryid'].isin(not_complete)]
+            
+            # Log removal statistics
+            total_cases = len(demo_ids)
+            complete_cases = len(demo_ids - not_complete)
+            removed_cases = len(not_complete)
+            
+            self.logger.info(f"Report completion statistics:")
+            self.logger.info(f"  Total cases: {total_cases}")
+            self.logger.info(f"  Cases missing drugs: {len(no_drugs)}")
+            self.logger.info(f"  Cases missing events: {len(no_event)}")
+            self.logger.info(f"  Total incomplete cases: {removed_cases}")
+            self.logger.info(f"  Complete cases kept: {complete_cases}")
+            
+            if removed_cases > 0:
+                removal_pct = (removed_cases / total_cases) * 100
+                self.logger.info(f"Removed {removed_cases} incomplete cases ({removal_pct:.1f}%)")
+                
+                # Log some examples of removed cases
+                sample_removed = list(not_complete)[:3]
+                if sample_removed:
+                    self.logger.debug("Sample of removed cases:")
+                    for case_id in sample_removed:
+                        case_info = demo_df[demo_df['primaryid'] == case_id].iloc[0]
+                        missing_type = []
+                        if case_id in no_drugs:
+                            missing_type.append("drug")
+                        if case_id in no_event:
+                            missing_type.append("event")
+                        self.logger.debug(
+                            f"Primaryid: {case_id}, "
+                            f"Missing: {', '.join(missing_type)}, "
+                            f"Quarter: {case_info.get('quarter', 'N/A')}"
+                        )
+            
+            return complete_demo_df
+            
+        except Exception as e:
+            self.logger.error(f"Error removing incomplete reports: {str(e)}")
+            return demo_df
