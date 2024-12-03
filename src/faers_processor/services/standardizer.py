@@ -681,12 +681,15 @@ class DataStandardizer:
         
         return df
 
-    def standardize_sex(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
-        """Standardize sex values while preserving ALL rows.
+    def standardize_sex(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize sex values exactly matching R implementation.
+        
+        According to ASC_NTS.pdf, sex should only be 'F', 'M', or 'UNK'.
+        However, analysis found additional values like 'NS', 'YR', 'P', 'I', 'T'.
+        Following R implementation, we only keep 'F' and 'M', converting others to NA.
         
         Args:
             df: DataFrame with sex column
-            categories: List of valid sex categories
             
         Returns:
             DataFrame with standardized sex values
@@ -694,51 +697,26 @@ class DataStandardizer:
         try:
             df = df.copy()
             
-            # Default categories if none provided
-            if categories is None:
-                categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
-                
-            sex_map = {
-                'f': 'Female',
-                'female': 'Female',
-                'm': 'Male', 
-                'male': 'Male',
-                'u': 'Unknown',
-                'unk': 'Unknown',
-                'unknown': 'Unknown',
-                'ns': 'Not Specified',
-                'not specified': 'Not Specified',
-                'nan': '',
-                'none': '',
-                '': ''
-            }
-            
             # If sex column doesn't exist, add it with empty strings
             if 'sex' not in df.columns:
-                logging.warning(f"Sex column not found - adding empty column")
                 df['sex'] = ''
-            
-            # Convert to string and lowercase, preserving NaN/None
+                logging.warning("Sex column not found - initialized with empty strings")
+                
+            # Convert to string and lowercase
             df['sex'] = df['sex'].fillna('').astype(str).str.lower().str.strip()
             
-            # Track and map unmapped values
-            unmapped = df[~df['sex'].isin(sex_map.keys())]['sex'].unique()
-            if len(unmapped) > 0:
-                logging.warning(f"Found unmapped sex values that will be set to empty string: {unmapped}")
-                for val in unmapped:
-                    sex_map[val] = ''
+            # Following R: Demo[!sex %in% c("F","M")]$sex <- NA
+            # Only keep 'F' and 'M', convert others to NA
+            df.loc[~df['sex'].isin(['f', 'm']), 'sex'] = np.nan
             
-            # Apply mapping, preserving original value if not in map
-            df['sex'] = df['sex'].map(lambda x: sex_map.get(x, ''))
+            # Convert to uppercase to match R
+            df['sex'] = df['sex'].str.upper()
             
-            # Log distribution 
+            # Log distribution
             value_counts = df['sex'].value_counts(dropna=False)
-            logging.info("Sex value distribution after standardization:")
+            logging.info("Sex value distribution:")
             for val, count in value_counts.items():
                 logging.info(f"  {val}: {count} ({count/len(df)*100:.1f}%)")
-            
-            # Convert to categorical with all possible categories
-            df['sex'] = pd.Categorical(df['sex'], categories=categories)
             
             return df
             
@@ -752,7 +730,7 @@ class DataStandardizer:
         try:
             df = df.copy()
             
-            # If age column doesn't exist, add it with empty string
+            # If age column doesn't exist, add it with empty strings
             if 'age' not in df.columns:
                 df['age'] = ''
                 logging.warning("Age column not found - initialized with empty strings")
@@ -762,28 +740,26 @@ class DataStandardizer:
             df['age'] = df['age'].fillna('').astype(str)
             df['age'] = df['age'].str.strip()
             
-            # Try to convert to numeric, using empty string if fails
+            # Try to convert to numeric, keeping original value if fails
             def safe_convert(x):
                 try:
                     # Remove any commas first
                     x = str(x).replace(',', '')
-                    val = pd.to_numeric(x)
-                    # Check if it's NaN and convert to empty string
-                    return '' if pd.isna(val) else val
+                    return pd.to_numeric(x)
                 except:
-                    return ''
+                    return np.nan
             
             df['age'] = df['age'].apply(safe_convert)
             
-            # Log age distribution for non-empty values
-            non_empty = df[df['age'] != '']['age']
-            if len(non_empty) > 0:
+            # Log age distribution for non-null values
+            non_null = df['age'].dropna()
+            if len(non_null) > 0:
                 logging.info("Age distribution after standardization:")
                 logging.info(f"  Total values: {len(df)}")
-                logging.info(f"  Non-empty values: {len(non_empty)}")
-                logging.info(f"  Mean: {non_empty.mean():.1f}")
-                logging.info(f"  Min: {non_empty.min():.1f}")
-                logging.info(f"  Max: {non_empty.max():.1f}")
+                logging.info(f"  Non-null values: {len(non_null)}")
+                logging.info(f"  Mean: {non_null.mean():.1f}")
+                logging.info(f"  Min: {non_null.min():.1f}")
+                logging.info(f"  Max: {non_null.max():.1f}")
             else:
                 logging.warning("No valid numeric age values found")
             
@@ -816,15 +792,15 @@ class DataStandardizer:
             if 'age_group' not in df.columns:
                 df['age_group'] = ''
             
-            # Only categorize valid numeric ages (non-empty strings that are numbers)
-            mask = (df['age'] != '') & df['age'].apply(lambda x: str(x).replace('.','').isdigit())
+            # Only categorize valid numeric ages
+            mask = pd.notna(df['age'])
             if mask.any():
                 bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
                 labels = categories[:-1]  # Exclude empty string
                 
                 # Create age groups only for valid ages
                 age_groups = pd.cut(
-                    pd.to_numeric(df.loc[mask, 'age']),
+                    df.loc[mask, 'age'],
                     bins=bins,
                     labels=labels,
                     right=False
@@ -835,9 +811,6 @@ class DataStandardizer:
                 
                 # Update only the valid age rows
                 df.loc[mask, 'age_group'] = age_groups
-            
-            # Ensure all non-matched rows have empty string
-            df['age_group'] = df['age_group'].fillna('')
             
             # Convert to categorical with all categories
             df['age_group'] = pd.Categorical(df['age_group'], categories=categories)
@@ -1981,15 +1954,15 @@ class DataStandardizer:
             if 'age_group' not in df.columns:
                 df['age_group'] = ''
             
-            # Only categorize valid numeric ages (non-empty strings that are numbers)
-            mask = (df['age'] != '') & df['age'].apply(lambda x: str(x).replace('.','').isdigit())
+            # Only categorize valid numeric ages
+            mask = pd.notna(df['age'])
             if mask.any():
                 bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
                 labels = categories[:-1]  # Exclude empty string
                 
                 # Create age groups only for valid ages
                 age_groups = pd.cut(
-                    pd.to_numeric(df.loc[mask, 'age']),
+                    df.loc[mask, 'age'],
                     bins=bins,
                     labels=labels,
                     right=False
@@ -2000,9 +1973,6 @@ class DataStandardizer:
                 
                 # Update only the valid age rows
                 df.loc[mask, 'age_group'] = age_groups
-            
-            # Ensure all non-matched rows have empty string
-            df['age_group'] = df['age_group'].fillna('')
             
             # Convert to categorical with all categories
             df['age_group'] = pd.Categorical(df['age_group'], categories=categories)
@@ -2019,258 +1989,6 @@ class DataStandardizer:
             logging.error(f"Error creating age groups: {str(e)}")
             # On any error, return original DataFrame
             return df
-
-class DrugStandardizer:
-    """Handles drug name standardization using DIANA dictionary."""
-    
-    def __init__(self, external_data_dir: Path):
-        """Initialize drug standardizer with paths matching R implementation."""
-        self.logger = logging.getLogger(__name__)
-        self.diana_dict_path = external_data_dir / "DiAna_dictionary" / "drugnames_standardized.csv"
-        
-    def _clean_drugname(self, drugname: str) -> str:
-        """Clean drug name exactly as in R implementation."""
-        if pd.isna(drugname):
-            return drugname
-            
-        # Matches R's cleaning steps exactly:
-        # gsub("\\s+"," ",trimws(gsub("\\.$","",trimws(tolower(drugname)))))
-        name = drugname.lower().strip()
-        name = re.sub(r'\.$', '', name)
-        name = re.sub(r'\s+', ' ', name).strip()
-        
-        # Remove leading/trailing non-punctuation outside parentheses
-        # gsub("[^)[:^punct:]]+$","",drugname,perl=TRUE)
-        # gsub("^[^([:^punct:]]+","",drugname,perl=TRUE)
-        for _ in range(2):  # R code does this twice
-            name = re.sub(r'[^)\W]+$', '', name, flags=re.UNICODE).strip()
-            name = re.sub(r'^[^(\W]+', '', name, flags=re.UNICODE).strip()
-        
-        # Fix spacing around parentheses
-        # gsub("\\( ","\\(",drugname)
-        # gsub(" \\)","\\)",drugname)
-        name = re.sub(r'\( ', '(', name)
-        name = re.sub(r' \)', ')', name)
-        
-        return name
-        
-    def standardize_drugs(self, data_file: Path) -> None:
-        """Standardize drug names using DIANA dictionary exactly as in R."""
-        try:
-            # Read DRUG dataset
-            drug_df = pd.read_pickle(data_file)
-            
-            # Clean drug names
-            drug_df['drugname'] = drug_df['drugname'].apply(self._clean_drugname)
-            
-            # Calculate frequencies for dictionary update
-            temp = (drug_df['drugname'].value_counts()
-                   .reset_index()
-                   .rename(columns={'index': 'drugname', 'drugname': 'N'}))
-            temp['freq'] = 100 * temp['N'] / temp['N'].sum()
-            
-            # Read and merge with old dictionary
-            old_diana_dict = pd.read_csv(self.diana_dict_path, sep=';')
-            old_diana_dict = old_diana_dict[
-                ['drugname', 'Substance', 'Checked', 'OpenRefine']
-            ].dropna(subset=['Substance'])
-            old_diana_dict = old_diana_dict[old_diana_dict['Substance'] != 'na']
-            
-            # Update dictionary
-            temp = pd.merge(temp, old_diana_dict, on='drugname', how='left')
-            temp.to_csv(self.diana_dict_path, sep=';', index=False)
-            
-            # Read updated dictionary for standardization
-            diana_dict = pd.read_csv(self.diana_dict_path, sep=';')[['drugname', 'Substance']]
-            diana_dict = diana_dict[
-                (diana_dict['Substance'] != 'na') & 
-                (~diana_dict['Substance'].isna())
-            ]
-            
-            # Standardize drug names
-            drug_df = pd.merge(drug_df, diana_dict, on='drugname', how='left')
-            
-            # Handle multi-substance entries
-            multi_mask = drug_df['Substance'].str.contains(';', na=False)
-            drug_multi = drug_df[multi_mask].copy()
-            drug_one = drug_df[~multi_mask].copy()
-            
-            # Process multi-substance entries
-            if not drug_multi.empty:
-                # Split multi-substances
-                cols = ['primaryid', 'drug_seq', 'Substance', 'role_cod', 'drugname', 'prod_ai']
-                drug_multi = drug_multi[cols].copy()
-                drug_multi = drug_multi.assign(
-                    Substance=drug_multi['Substance'].str.split(';')
-                ).explode('Substance')
-            
-            # Process single-substance entries
-            drug_one = drug_one[['primaryid', 'drug_seq', 'Substance', 'role_cod', 'drugname', 'prod_ai']]
-            
-            # Combine and process final dataset
-            drug_df = pd.concat([drug_multi, drug_one], ignore_index=True)
-            
-            # Handle trial substances
-            drug_df['trial'] = drug_df['Substance'].str.contains(', trial', na=False)
-            self.logger.info(f"Number of trial substances: {drug_df['trial'].sum()}")
-            drug_df['Substance'] = drug_df['Substance'].str.replace(', trial', '')
-            
-            # Convert to categorical (R's as.factor)
-            for col in ['drugname', 'prod_ai', 'Substance']:
-                drug_df[col] = drug_df[col].astype('category')
-            
-            # Save standardized dataset
-            drug_df.to_pickle(data_file)
-            self.logger.info("Completed drug standardization")
-            
-        except Exception as e:
-            self.logger.error(f"Error in drug standardization: {str(e)}")
-            raise
-
-class MedDRAStandardizer:
-    """Handles MedDRA standardization exactly matching R implementation."""
-    
-    def __init__(self, external_data_dir: Path):
-        """Initialize MedDRA standardizer with paths matching R implementation."""
-        self.logger = logging.getLogger(__name__)
-        self.meddra_dir = external_data_dir / "meddra" / "MedAscii"
-        self.manual_fix_file = external_data_dir / "manual_fixes" / "pt_fixed.csv"
-        self.pt_list: Set[str] = set()
-        self._load_meddra()
-    
-    def _load_meddra(self) -> None:
-        """Load and merge MedDRA files exactly as in R implementation."""
-        try:
-            # Read all MedDRA files with exact column selection
-            soc = pd.read_csv(self.meddra_dir / "soc.asc", sep="$", engine='python', header=None, usecols=[0,1,2])
-            soc.columns = ['soc_cod', 'soc', 'def']
-            
-            soc_hlgt = pd.read_csv(self.meddra_dir / "soc_hlgt.asc", sep="$", engine='python', header=None, usecols=[0,1])
-            soc_hlgt.columns = ['soc_cod', 'hlgt_cod']
-            
-            hlgt = pd.read_csv(self.meddra_dir / "hlgt.asc", sep="$", engine='python', header=None, usecols=[0,1])
-            hlgt.columns = ['hlgt_cod', 'hlgt']
-            
-            hlgt_hlt = pd.read_csv(self.meddra_dir / "hlgt_hlt.asc", sep="$", engine='python', header=None, usecols=[0,1])
-            hlgt_hlt.columns = ['hlgt_cod', 'hlt_cod']
-            
-            hlt = pd.read_csv(self.meddra_dir / "hlt.asc", sep="$", engine='python', header=None, usecols=[0,1])
-            hlt.columns = ['hlt_cod', 'hlt']
-            
-            hlt_pt = pd.read_csv(self.meddra_dir / "hlt_pt.asc", sep="$", engine='python', header=None, usecols=[0,1])
-            hlt_pt.columns = ['hlt_cod', 'pt_cod']
-            
-            pts = pd.read_csv(self.meddra_dir / "pt.asc", sep="$", engine='python', header=None, usecols=[0,1,3])
-            pts.columns = ['pt_cod', 'pt', 'primary_soc_cod']
-            
-            llt = pd.read_csv(self.meddra_dir / "llt.asc", sep="$", engine='python', header=None, usecols=[0,1,2])
-            llt.columns = ['llt_cod', 'llt', 'pt_cod']
-            
-            # Merge all dataframes exactly as in R
-            meddra = (soc.merge(soc_hlgt, how='outer')
-                        .merge(hlgt, how='outer')
-                        .merge(hlgt_hlt, how='outer')
-                        .merge(hlt, how='outer')
-                        .merge(hlt_pt, how='outer')
-                        .merge(pts, how='outer')
-                        .merge(llt, how='outer'))
-            
-            # Convert all columns to lowercase
-            for col in meddra.columns:
-                meddra[col] = meddra[col].str.lower()
-            
-            # Save distinct values
-            meddra_distinct = (meddra[['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']]
-                             .drop_duplicates())
-            meddra_distinct.to_csv(self.meddra_dir.parent / "meddra.csv", 
-                                 sep=";", index=False)
-            
-            # Save primary SOC relationships
-            meddra_primary = (meddra[meddra['soc_cod'] == meddra['primary_soc_cod']]
-                            [['def', 'soc', 'hlgt', 'hlt', 'pt']]
-                            .drop_duplicates())
-            meddra_primary.to_csv(self.meddra_dir.parent / "meddra_primary.csv", 
-                                sep=";", index=False)
-            
-            # Store unique lowercase PT values
-            self.pt_list = set(pd.read_csv(self.meddra_dir.parent / "meddra.csv", sep=";")["pt"]
-                             .str.lower().str.strip().unique())
-            
-        except Exception as e:
-            self.logger.error(f"Error loading MedDRA files: {str(e)}")
-            raise
-    
-    def standardize_pt(self, data_file: Path, pt_variable: str) -> pd.DataFrame:
-        """Standardize PT values exactly matching R's standardize_PT function."""
-        try:
-            # Read data file
-            data = pd.read_pickle(data_file)
-            
-            # Extract PTs and calculate frequencies
-            pt_values = data[pt_variable].str.lower().str.strip()
-            pt_freq = (pd.DataFrame(pt_values[pt_values.notna()].value_counts())
-                      .reset_index()
-                      .rename(columns={"index": "pt", pt_variable: "N"}))
-            
-            # Check standardization status
-            pt_freq["standard_pt"] = pt_freq["pt"].apply(
-                lambda x: x if x in self.pt_list else np.nan)
-            pt_freq["freq"] = round(pt_freq["N"] / pt_freq["N"].sum() * 100, 2)
-            
-            # Get unstandardized PTs
-            not_pts = pt_freq[pt_freq["standard_pt"].isna()][["pt", "N", "freq"]]
-            
-            initial_unstandardized = (not_pts["N"].sum() * 100 / 
-                                    len(data[pt_variable].dropna()))
-            self.logger.info(f"Initial unstandardized PTs: {round(initial_unstandardized, 3)}%")
-            
-            # Try LLT standardization
-            meddra_df = pd.read_csv(self.meddra_dir.parent / "meddra.csv", sep=";")
-            llts = pd.merge(not_pts, 
-                          meddra_df[["pt", "llt"]].rename(columns={"pt": "standard_pt"}),
-                          left_on="pt", right_on="llt", how="left")
-            not_llts = llts[llts["standard_pt"].isna()][["pt", "N", "freq"]]
-            
-            # Try manual fixes
-            pt_fixed = pd.read_csv(self.manual_fix_file, sep=";")[["pt", "standard_pt"]]
-            manual = pd.merge(not_llts, pt_fixed, on="pt", how="left")
-            manual = manual[manual["standard_pt"].isna()][["pt", "standard_pt"]]
-            
-            # Combine all standardization attempts
-            pt_fixed = (pd.concat([
-                pt_fixed,
-                manual,
-                llts[llts["standard_pt"].notna()][["pt", "standard_pt"]]
-            ]).drop_duplicates())
-            
-            unstandardized = pt_fixed[pt_fixed["standard_pt"].isna()]
-            self.logger.info(
-                f"{len(unstandardized)} PTs not standardized: {'; '.join(unstandardized['pt'])}")
-            
-            # Save updated manual fixes
-            pt_fixed.to_csv(self.manual_fix_file, sep=";", index=False)
-            
-            # Update data with standardized values
-            data["pt_temp"] = data[pt_variable].str.lower().str.strip()
-            data = pd.merge(data, pt_fixed, left_on="pt_temp", right_on="pt", how="left")
-            data["pt_temp"] = data.apply(
-                lambda x: x["standard_pt"] if pd.notna(x["standard_pt"]) else x["pt_temp"],
-                axis=1)
-            
-            # Calculate final standardization percentage
-            standardized = (data[data["pt_temp"].isin(self.pt_list)].shape[0] * 100 /
-                          data["pt_temp"].dropna().shape[0])
-            self.logger.info(f"Final standardized PTs: {round(standardized, 3)}%")
-            
-            # Update column name
-            data = data.drop(columns=[pt_variable, "standard_pt", "pt"])
-            data = data.rename(columns={"pt_temp": pt_variable})
-            
-            return data
-            
-        except Exception as e:
-            self.logger.error(f"Error standardizing {pt_variable}: {str(e)}")
-            raise
 
 def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
     """Read and clean the file, detecting delimiter."""
