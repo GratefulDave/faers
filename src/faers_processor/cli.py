@@ -120,7 +120,8 @@ def process_data(paths: ProjectPaths, parallel: bool = True,
     for quarter_dir in sorted(quarters):
         try:
             logging.info(f"\n{'='*50}")
-            logging.info(f"Processing quarter: {quarter_dir.name}")
+            quarter_name = quarter_dir.name.upper()
+            logging.info(f"Processing quarter: {quarter_name}")
             logging.info(f"Quarter directory: {quarter_dir}")
             # Let the processor find the ASCII directory case-insensitively
             processor.process_quarter(
@@ -129,9 +130,9 @@ def process_data(paths: ProjectPaths, parallel: bool = True,
                 max_workers=max_workers,
                 chunk_size=chunk_size or 50000
             )
-            logging.info(f"Finished processing quarter: {quarter_dir.name}")
+            logging.info(f"Finished processing quarter: {quarter_name}")
         except Exception as e:
-            logging.error(f"Failed processing quarter {quarter_dir.name}: {str(e)}")
+            logging.error(f"({quarter_name}) Error processing quarter: {str(e)}")
             logging.error(f"Quarter directory that failed: {quarter_dir}")
 
 def deduplicate_data(paths: ProjectPaths, max_date: Optional[str] = None,

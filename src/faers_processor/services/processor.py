@@ -458,16 +458,17 @@ class FAERSProcessor:
         
         return None
 
-    def process_quarter(self, quarter_dir: Path, parallel: bool = True, 
-                       max_workers: Optional[int] = None, chunk_size: int = 50000) -> Dict[str, pd.DataFrame]:
+    def process_quarter(self, quarter_dir: Path, parallel: bool = True, max_workers: Optional[int] = None, chunk_size: int = 50000) -> Dict[str, pd.DataFrame]:
         """Process a single quarter directory."""
         quarter_dir = self._normalize_quarter_path(quarter_dir)
         ascii_dir = self._find_ascii_directory(quarter_dir)
+        quarter_name = quarter_dir.name
         
         if not ascii_dir:
+            self.logger.error(f"({quarter_name}) No ASCII directory found in {quarter_dir}")
             raise ValueError(f"No ASCII directory found in {quarter_dir}")
             
-        self.logger.info(f"Processing quarter directory: {quarter_dir}")
+        self.logger.info(f"\nProcessing quarter: {quarter_name}")
         self.logger.info(f"Using ASCII directory: {ascii_dir}")
         
         # Initialize results dictionary for all FAERS file types
@@ -482,7 +483,7 @@ class FAERSProcessor:
         }
         
         # Create quarter summary
-        quarter_summary = QuarterSummary(quarter=quarter_dir.name)
+        quarter_summary = QuarterSummary(quarter=quarter_name)
         start_time = time.time()
         
         # Process each file type
@@ -502,24 +503,23 @@ class FAERSProcessor:
                 file_path = self._find_data_file(ascii_dir, patterns)
                 
                 if not file_path:
-                    self.logger.warning(f"No {data_type} files found in {ascii_dir}")
+                    self.logger.warning(f"({quarter_name}) No {data_type} files found in {ascii_dir}")
                     continue
                     
                 # Process the file
-                self.logger.info(f"Processing {data_type} file: {file_path}")
+                self.logger.info(f"({quarter_name}) Processing {data_type} file: {file_path}")
                 
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
-                df = self.process_file(file_path, data_type, table_summary, parallel=parallel, 
-                                     max_workers=max_workers, chunk_size=chunk_size)
+                df = self.process_file(file_path, data_type, quarter_name)
                 
                 if not df.empty:
                     results[data_type] = df
-                    self.logger.info(f"Successfully processed {data_type} file. Shape: {df.shape}")
+                    self.logger.info(f"({quarter_name}) Successfully processed {data_type} file. Shape: {df.shape}")
                 else:
-                    self.logger.warning(f"Empty DataFrame returned for {data_type}")
+                    self.logger.warning(f"({quarter_name}) Empty DataFrame returned for {data_type}")
                     
             except Exception as e:
-                error_msg = f"Error processing {data_type}: {str(e)}"
+                error_msg = f"({quarter_name}) Error processing {data_type}: {str(e)}"
                 self.logger.error(error_msg)
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
                 table_summary.add_parsing_error(error_msg)
@@ -535,281 +535,82 @@ class FAERSProcessor:
         
         return results
 
-    def process_file(self, file_path: Path, data_type: str, table_summary: TableSummary, 
-                    parallel: bool = True, max_workers: Optional[int] = None, 
-                    chunk_size: int = 50000) -> pd.DataFrame:
-        """Process a single FAERS file with enhanced error tracking."""
-        start_time = time.time()
-        
+    def _process_common(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Common processing steps for all data types."""
         try:
-            # Read the file with error handling like R's read.delim
-            try:
-                df = pd.read_csv(
-                    file_path,
-                    delimiter='$',
-                    encoding='latin1',
-                    on_bad_lines='skip',  # Skip bad lines like R does
-                    low_memory=False,  # Avoid mixed type inference warnings
-                    dtype=str,  # Read all columns as string initially like R
-                    quoting=3,  # QUOTE_NONE like R's quote=""
-                    skip_blank_lines=True  # Skip blank lines like R
-                )
-                
-                if df.empty:
-                    error_msg = f"({file_path.name}) Empty DataFrame after reading {file_path}"
-                    self.logger.error(error_msg)
-                    table_summary.add_parsing_error(error_msg)
-                    return df
-                    
-                self.logger.info(f"({file_path.name}) Successfully read {len(df):,} rows from {file_path}")
-                table_summary.total_rows = len(df)
-                
-                # Process DataFrame through common processing first
-                df = self._process_dataframe(df, data_type, table_summary)
-                if df.empty:
-                    return df
-                
-            except pd.errors.ParserError as e:
-                error_msg = f"({file_path.name}) Parser error in {file_path}: {str(e)}"
-                self.logger.error(error_msg)
-                table_summary.add_parsing_error(error_msg)
-                return pd.DataFrame()
-                
-            except Exception as e:
-                error_msg = f"({file_path.name}) Error reading {file_path}: {str(e)}"
-                self.logger.error(error_msg)
-                table_summary.add_parsing_error(error_msg)
-                return pd.DataFrame()
+            # Add missing columns with appropriate defaults
+            if data_type == 'indi':
+                if 'indi_pt' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Required column 'indi_pt' not found in {file_name}, adding with default value: <NA>")
+                    df['indi_pt'] = pd.NA
+            elif data_type == 'demo':
+                if 'i_f_code' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Required column 'i_f_code' not found in {file_name}, adding with default value: I")
+                    df['i_f_code'] = 'I'
+                if 'sex' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Required column 'sex' not found in {file_name}, adding with default value: <NA>")
+                    df['sex'] = pd.NA
+                if 'country' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Country column not found in {file_name}, skipping country standardization")
+            elif data_type == 'drug':
+                if 'drugname' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Required column 'drugname' not found in {file_name}, adding with default value: <NA>")
+                    df['drugname'] = pd.NA
+                if 'prod_ai' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Required column 'prod_ai' not found in {file_name}, adding with default value: <NA>")
+                    df['prod_ai'] = pd.NA
+                if 'route' not in df.columns:
+                    self.logger.warning(f"({quarter_name}) Required column 'route' not found in {file_name}, adding with default value: <NA>")
+                    df['route'] = pd.NA
             
-            # Process based on data type
-            try:
-                if data_type == 'demo':
-                    df = self.standardizer.standardize_demographics(df, self.current_date)
-                elif data_type == 'drug':
-                    if 'drugname' not in df.columns:
-                        self.logger.warning(f"({file_path.name}) Required column 'drugname' not found, adding with default value: <NA>")
-                        df['drugname'] = pd.NA
-                    df = self.standardizer.standardize_drugs(df)
-                elif data_type == 'reac':
-                    df = self.standardizer.standardize_reactions(df)
-                elif data_type == 'outc':
-                    df = self.standardizer.standardize_outcomes(df)
-                elif data_type == 'rpsr':
-                    df = self.standardizer.standardize_sources(df)
-                elif data_type == 'ther':
-                    df = self.standardizer.standardize_therapies(df, self.current_date)
-                elif data_type == 'indi':
-                    df = self.standardizer.standardize_indications(df)
-                
-                if df is None or df.empty:
-                    error_msg = f"({file_path.name}) Empty DataFrame after standardizing {data_type}"
-                    self.logger.error(error_msg)
-                    table_summary.add_parsing_error(error_msg)
-                    return pd.DataFrame()
-                
-                table_summary.processed_rows = len(df)
-                table_summary.processing_time = time.time() - start_time
-                
-                self.logger.info(f"({file_path.name}) Successfully processed {data_type} file. Input rows: {table_summary.total_rows:,}, Output rows: {table_summary.processed_rows:,}")
-                if table_summary.total_rows != table_summary.processed_rows:
-                    self.logger.warning(f"({file_path.name}) Row count changed during processing. {table_summary.total_rows - table_summary.processed_rows:,} rows were filtered out")
-                
-                return df
-                
-            except Exception as e:
-                error_msg = f"({file_path.name}) Error standardizing {data_type}: {str(e)}"
-                self.logger.error(error_msg)
-                table_summary.add_parsing_error(error_msg)
-                return pd.DataFrame()
+            return df
             
         except Exception as e:
-            error_msg = f"({file_path.name}) Unexpected error processing {data_type}: {str(e)}"
-            self.logger.error(error_msg)
-            table_summary.add_parsing_error(error_msg)
-            return pd.DataFrame()
-
-    def _process_dataframe(self, df: pd.DataFrame, data_type: str, table_summary: TableSummary) -> pd.DataFrame:
-        """Process a DataFrame based on its type."""
-        if df.empty:
+            self.logger.error(f"({quarter_name}) Error processing {file_name}: {str(e)}")
             return df
 
+    def process_file(self, file_path: Path, data_type: str, quarter_name: str) -> Optional[pd.DataFrame]:
+        """Process a single FAERS data file."""
         try:
-            # Common processing for all types
-            df = df.fillna('')  # Replace NaN with empty string
-            table_summary.total_rows = len(df)
+            # Read and clean the file
+            df = pd.read_csv(file_path, delimiter='$', dtype=str)
+            file_name = file_path.name
             
-            # Type-specific processing
-            if data_type == 'demo':
-                # Check required columns
-                if 'i_f_code' not in df.columns:
-                    table_summary.add_missing_column('i_f_code', 'I')
-                    df['i_f_code'] = 'I'
-                    self.logger.warning(f"({df.columns[0]}) Required column 'i_f_code' not found, adding with default value: I")
-                    
-                if 'sex' not in df.columns:
-                    table_summary.add_missing_column('sex', '<NA>')
-                    df['sex'] = '<NA>'
-                    self.logger.warning(f"({df.columns[0]}) Required column 'sex' not found, adding with default value: <NA>")
+            if df is None:
+                self.logger.error(f"({quarter_name}) Failed to read file: {file_name}")
+                return None
                 
-                # Validate dates
-                date_fields = ['event_dt', 'fda_dt', 'rept_dt']
-                for field in date_fields:
-                    if field in df.columns:
-                        invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
-                        if invalid_dates > 0:
-                            table_summary.add_invalid_date(field, invalid_dates)
-                            self.logger.warning(f"({df.columns[0]}) {invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
-                
-                # Check country standardization
-                if 'country' not in df.columns:
-                    self.logger.warning(f"({df.columns[0]}) Country column not found, skipping country standardization")
+            if df.empty:
+                self.logger.error(f"({quarter_name}) File is empty: {file_name}")
+                return None
             
-            elif data_type == 'drug':
-                # Check for required drug fields
-                required_fields = ['drugname', 'prod_ai', 'route', 'dose_amt', 'dose_unit', 'dose_form']
-                for field in required_fields:
-                    if field not in df.columns:
-                        table_summary.add_missing_column(field, '<NA>')
-                        df[field] = '<NA>'
-                        self.logger.warning(f"({df.columns[0]}) Required column '{field}' not found, adding with default value: <NA>")
-                
-            elif data_type == 'reac':
-                if 'pt' not in df.columns:
-                    table_summary.add_missing_column('pt', '<NA>')
-                    df['pt'] = '<NA>'
-                    self.logger.warning(f"({df.columns[0]}) Required column 'pt' not found, adding with default value: <NA>")
-                    
-            elif data_type == 'outc':
-                if 'outc_cod' not in df.columns:
-                    table_summary.add_missing_column('outc_cod', '<NA>')
-                    df['outc_cod'] = '<NA>'
-                    self.logger.warning(f"({df.columns[0]}) Required column 'outc_cod' not found, adding with default value: <NA>")
-                    
-            elif data_type == 'rpsr':
-                if 'rpsr_cod' not in df.columns:
-                    table_summary.add_missing_column('rpsr_cod', '<NA>')
-                    df['rpsr_cod'] = '<NA>'
-                    self.logger.warning(f"({df.columns[0]}) Required column 'rpsr_cod' not found, adding with default value: <NA>")
-                    
-            elif data_type == 'ther':
-                # Check for required therapy fields
-                required_fields = ['dsg_drug_seq', 'start_dt', 'end_dt']
-                for field in required_fields:
-                    if field not in df.columns:
-                        table_summary.add_missing_column(field, '<NA>')
-                        df[field] = '<NA>'
-                        self.logger.warning(f"({df.columns[0]}) Required column '{field}' not found, adding with default value: <NA>")
-                        
-                # Validate dates
-                date_fields = ['start_dt', 'end_dt']
-                for field in date_fields:
-                    if field in df.columns:
-                        invalid_dates = df[~df[field].str.match(r'^\d{8}$', na=True)].shape[0]
-                        if invalid_dates > 0:
-                            table_summary.add_invalid_date(field, invalid_dates)
-                            self.logger.warning(f"({df.columns[0]}) {invalid_dates}/{len(df)} rows ({invalid_dates/len(df)*100:.1f}%) had invalid dates in {field}")
-                            
-            elif data_type == 'indi':
-                if 'indi_pt' not in df.columns:
-                    table_summary.add_missing_column('indi_pt', '<NA>')
-                    df['indi_pt'] = '<NA>'
-                    self.logger.warning(f"({df.columns[0]}) Required column 'indi_pt' not found, adding with default value: <NA>")
+            # Common processing steps
+            df = self._process_common(df, data_type, quarter_name, file_name)
             
-            # Call standardizer for final processing
-            df = self.standardizer.standardize_data(df, data_type, file_path=str(file_path))
+            # Standardize based on data type
+            try:
+                if data_type == 'demo':
+                    df = self.standardizer.standardize_demographics(df)
+                elif data_type == 'drug':
+                    df = self.standardizer.standardize_drug_info(df)
+                elif data_type == 'reac':
+                    df = self.standardizer.standardize_reactions(df)
+                elif data_type == 'indi':
+                    df = self.standardizer.standardize_indications(df)
+                else:
+                    self.logger.warning(f"({quarter_name}) Unknown data type: {data_type} for file {file_name}")
+            except Exception as e:
+                self.logger.error(f"({quarter_name}) Error standardizing {data_type} data in {file_name}: {str(e)}")
+                return None
+            
+            if df is not None and not df.empty:
+                self.logger.info(f"({quarter_name}) Successfully processed {len(df):,} rows from {file_name}")
+            
+            return df
             
         except Exception as e:
-            error_msg = f"({df.columns[0]}) Error processing DataFrame: {str(e)}"
-            table_summary.add_parsing_error(error_msg)
-            self.logger.error(error_msg)
-            return pd.DataFrame()
-            
-        return df
-
-    def _fix_known_data_issues(self, file_path: Path) -> str:
-        """Fix known data formatting issues in specific FAERS files.
-
-        Args:
-            file_path: Path to the file being processed
-
-        Returns:
-            Fixed content with proper line breaks
-        """
-        # Known problematic files and their fixes - adjusted line numbers to be 0-based
-        known_issues = {
-            "DRUG11Q2.TXT": {
-                "line": 322966,
-                "pattern": "$$$$$$7475791",
-                "expected_fields": 13
-            },
-            "DRUG11Q3.TXT": {
-                "line": 247895,
-                "pattern": "$$$$$$7652730",
-                "expected_fields": 13
-            },
-            "DRUG11Q4.TXT": {
-                "line": 446737,
-                "pattern": "021487$7941354",
-                "expected_fields": 13
-            },
-            "DEMO12Q1.TXT": {
-                "line": 105916,
-                "pattern": None,
-                "expected_fields": 24
-            }
-        }
-
-        filename = os.path.basename(file_path).upper()
-        if filename in known_issues:
-            issue = known_issues[filename]
-            lines = []
-            with open(file_path, 'r') as f:
-                for line in f:
-                    lines.append(line.strip())
-            # Check surrounding lines for the issue
-            problem_line = issue["line"]
-            for offset in [-1, 0, 1]:  # Check the line before, the line itself, and the line after
-                check_line = problem_line + offset
-                if 0 <= check_line < len(lines):
-                    current_line = lines[check_line]
-                    fields = current_line.split("$")
-
-                    # If we have too many fields
-                    if len(fields) > issue["expected_fields"]:
-                        if issue["pattern"]:
-                            # Try to split at the known pattern
-                            if issue["pattern"] in current_line:
-                                parts = current_line.split(issue["pattern"])
-                                if len(parts) == 2:
-                                    # Create two properly formatted lines
-                                    first_line = parts[0] + "$" * (issue["expected_fields"] - 1)
-                                    second_line = "$".join([""] * (issue["expected_fields"] - 1)) + parts[1]
-                                    lines[check_line] = first_line
-                                    lines.insert(check_line + 1, second_line)
-                                    break
-                        else:
-                            # Generic handling for field count issues
-                            new_lines = []
-                            current_fields = []
-                            for field in fields:
-                                current_fields.append(field)
-                                if len(current_fields) == issue["expected_fields"]:
-                                    new_lines.append("$".join(current_fields))
-                                    current_fields = []
-
-                            if current_fields:  # Handle any remaining fields
-                                while len(current_fields) < issue["expected_fields"]:
-                                    current_fields.append("")
-                                new_lines.append("$".join(current_fields))
-
-                            # Replace the problematic line with fixed lines
-                            lines[check_line:check_line+1] = new_lines
-                            break
-
-            # Rejoin the lines
-            content = "\n".join(lines)
-
-        return content
+            self.logger.error(f"({quarter_name}) Error processing {file_path.name}: {str(e)}")
+            return None
 
     def _normalize_quarter_path(self, quarter_dir: Path) -> Path:
         """Normalize quarter directory path to handle case sensitivity.
@@ -1898,6 +1699,7 @@ class FAERSProcessor:
         """Process a FAERS data file."""
         file_name = file_path.name
         try:
+            # Read the file
             df = pd.read_csv(file_path, delimiter='$', dtype=str)
             
             if df is None:

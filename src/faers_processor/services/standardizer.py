@@ -2380,13 +2380,14 @@ class DataStandardizer:
                 # Return empty DataFrame on failure to maintain row count
                 return pd.DataFrame(columns=header if 'header' in locals() else None)
 
-    def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None) -> pd.DataFrame:
+    def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None, quarter_name: Optional[str] = None) -> pd.DataFrame:
         """Standardize data based on its type.
         
         Args:
             df: DataFrame to standardize
             data_type: Type of data ('demo', 'drug', 'reac', etc.)
             file_path: Optional path to source file for error logging
+            quarter_name: Optional quarter name for logging
             
         Returns:
             Standardized DataFrame
@@ -2425,7 +2426,8 @@ class DataStandardizer:
             
         except Exception as e:
             file_info = f" in file {file_path}" if file_path else ""
-            logging.error(f"Error in standardize_data for {data_type}{file_info}: {str(e)}")
+            quarter_info = f" ({quarter_name})" if quarter_name else ""
+            logging.error(f"Error in standardize_data for {data_type}{file_info}{quarter_info}: {str(e)}")
             return df
 
     def calculate_time_to_onset(self, demo_df: pd.DataFrame, ther_df: pd.DataFrame) -> pd.DataFrame:
