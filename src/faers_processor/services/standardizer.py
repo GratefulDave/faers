@@ -161,265 +161,330 @@ class DataStandardizer:
         self._load_meddra_data()
         self._load_diana_dictionary()
         
-    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> Optional[str]:
-        """Get the actual column name by checking uppercase first, then lowercase."""
-        # Try uppercase first
-        upper_name = column_name.upper()
-        if upper_name in df.columns:
-            return upper_name
-            
-        # Try lowercase
-        lower_name = column_name.lower()
-        if lower_name in df.columns:
-            return lower_name
-            
-        return None
+    # DO NOT CHANGE - Column mappings for FAERS data standardization
+    DEMO_MAPPING = {
+        'ISR': 'primaryid',
+        'CASE': 'caseid',
+        'FOLL_SEQ': 'caseversion',
+        'I_F_COD': 'i_f_cod',
+        'EVENT_DT': 'event_dt',
+        'MFR_DT': 'mfr_dt',
+        'FDA_DT': 'fda_dt',
+        'REPT_COD': 'rept_cod',
+        'MFR_NUM': 'mfr_num',
+        'MFR_SNDR': 'mfr_sndr',
+        'AGE': 'age',
+        'AGE_COD': 'age_cod',
+        'GNDR_COD': 'sex',
+        'E_SUB': 'e_sub',
+        'WT': 'wt',
+        'WT_COD': 'wt_cod',
+        'REPT_DT': 'rept_dt',
+        'OCCP_COD': 'occp_cod',
+        'TO_MFR': 'to_mfr',
+        'REPORTER_COUNTRY': 'reporter_country',
+        'i_f_code': 'i_f_cod'
+    }
 
-    def _has_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> bool:
-        """Check if DataFrame has a column, trying exact, upper, and lower case."""
-        df_cols = set(df.columns)
-        return (column_name in df_cols or 
-                column_name.upper() in df_cols or 
-                column_name.lower() in df_cols)
+    # DO NOT CHANGE - Required columns for demographics data
+    DEMO_REQUIRED_COLS = {
+        'primaryid', 'caseid', 'caseversion', 'i_f_cod', 'sex', 'age', 'age_cod', 'age_grp',
+        'wt', 'wt_cod', 'reporter_country', 'occr_country', 'event_dt', 'rept_dt',
+        'mfr_dt', 'init_fda_dt', 'fda_dt', 'rept_cod', 'occp_cod', 'mfr_num', 'mfr_sndr',
+        'to_mfr', 'e_sub', 'quarter', 'auth_num', 'lit_ref'
+    }
+
+    # DO NOT CHANGE - Column mappings for drug data
+    DRUG_MAPPING = {
+        'ISR': 'primaryid',
+        'DRUG_SEQ': 'drug_seq',
+        'ROLE_COD': 'role_cod',
+        'DRUGNAME': 'drugname',
+        'VAL_VBM': 'val_vbm',
+        'ROUTE': 'route',
+        'DOSE_VBM': 'dose_vbm',
+        'DECHAL': 'dechal',
+        'RECHAL': 'rechal',
+        'LOT_NUM': 'lot_num',
+        'NDA_NUM': 'nda_num',
+        'EXP_DT': 'exp_dt'
+    }
+
+    # DO NOT CHANGE - Required columns for drug data
+    DRUG_REQUIRED_COLS = {
+        'primaryid', 'drug_seq', 'role_cod', 'drugname', 'prod_ai'
+    }
+
+    # DO NOT CHANGE - Required columns for drug info
+    DRUG_INFO_REQUIRED_COLS = {
+        'primaryid', 'drug_seq', 'val_vbm', 'nda_num', 'lot_num',
+        'route', 'dose_form', 'dose_freq', 'exp_dt', 'dose_vbm',
+        'cum_dose_unit', 'cum_dose_chr', 'dose_amt', 'dose_unit',
+        'dechal', 'rechal'
+    }
+
+    # DO NOT CHANGE - Column mappings for indications data
+    INDI_MAPPING = {
+        'ISR': 'primaryid',
+        'DRUG_SEQ': 'drug_seq',
+        'indi_drug_seq': 'drug_seq',
+        'INDI_PT': 'indi_pt'
+    }
+
+    # DO NOT CHANGE - Required columns for indications data
+    INDI_REQUIRED_COLS = {
+        'primaryid', 'drug_seq', 'indi_pt'
+    }
+
+    # DO NOT CHANGE - Column mappings for outcomes data
+    OUTC_MAPPING = {
+        'ISR': 'primaryid',
+        'OUTC_COD': 'outc_cod'
+    }
+
+    # DO NOT CHANGE - Required columns for outcomes data
+    OUTC_REQUIRED_COLS = {
+        'primaryid', 'outc_cod'
+    }
+
+    # DO NOT CHANGE - Column mappings for reactions data
+    REAC_MAPPING = {
+        'ISR': 'primaryid',
+        'PT': 'pt'
+    }
+
+    # DO NOT CHANGE - Required columns for reactions data
+    REAC_REQUIRED_COLS = {
+        'primaryid', 'pt', 'drug_rec_act'
+    }
+
+    # DO NOT CHANGE - Column mappings for sources data
+    RPSR_MAPPING = {
+        'ISR': 'primaryid',
+        'RPSR_COD': 'rpsr_cod'
+    }
+
+    # DO NOT CHANGE - Required columns for sources data
+    RPSR_REQUIRED_COLS = {
+        'primaryid', 'rpsr_cod'
+    }
+
+    # DO NOT CHANGE - Column mappings for therapies data
+    THER_MAPPING = {
+        'ISR': 'primaryid',
+        'dsg_drug_seq': 'drug_seq',
+        'DRUG_SEQ': 'drug_seq',
+        'START_DT': 'start_dt',
+        'END_DT': 'end_dt',
+        'DUR': 'dur',
+        'DUR_COD': 'dur_cod'
+    }
+
+    # DO NOT CHANGE - Required columns for therapies data
+    THER_REQUIRED_COLS = {
+        'primaryid', 'drug_seq', 'start_dt', 'end_dt', 'dur', 'dur_cod'
+    }
+
+    def _get_case_insensitive_columns(self, df: pd.DataFrame, columns: List[str]) -> Dict[str, str]:
+        """Get case-insensitive column mapping from DataFrame.
         
-    def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize demographics information."""
-        try:
-            # Required columns exactly as defined in documentation.html
-            required_columns = {
-                'isr': ['ISR'],
-                'age': ['AGE'],
-                'age_cod': ['AGE_COD'],
-                'sex': ['SEX'],
-                'event_dt': ['EVENT_DT'],
-                'i_f_cod': ['I_F_COD'],
-                'rept_cod': ['REPT_COD'],
-                'lit_ref': ['LIT_REF'],
-                'age_grp': ['AGE_GRP']
-            }
+        Args:
+            df: DataFrame to check
+            columns: List of column names to look for (case-insensitive)
             
-            # Process each required column
-            for target_col, source_cols in required_columns.items():
-                found = False
-                for col in source_cols:
-                    if col in df.columns:
-                        if col != target_col:
-                            df = df.rename(columns={col: target_col})
-                        found = True
-                        break
+        Returns:
+            Dictionary mapping requested column names to actual DataFrame column names
+        """
+        df_cols = set(df.columns)
+        col_mapping = {}
+        
+        for col in columns:
+            # Find case-insensitive match
+            matches = [c for c in df_cols if c.upper() == col.upper()]
+            if matches:
+                col_mapping[col] = matches[0]
                 
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
-                    df[target_col] = pd.NA
-                    if target_col == 'i_f_cod':
-                        df[target_col] = 'I'
+        return col_mapping
+
+    def _standardize_columns(self, df: pd.DataFrame, mapping: Dict[str, str], required_cols: Set[str]) -> pd.DataFrame:
+        """Standardize column names using case-insensitive mapping.
+        
+        Args:
+            df: DataFrame to standardize
+            mapping: Dictionary of source->target column names
+            required_cols: Set of required column names
             
+        Returns:
+            DataFrame with standardized column names
+        """
+        # Create case-insensitive column mapping
+        df_cols = set(df.columns)
+        col_mapping = {}
+        
+        for src, target in mapping.items():
+            # Find case-insensitive match for source column
+            matches = [c for c in df_cols if c.upper() == src.upper()]
+            if matches:
+                col_mapping[matches[0]] = target
+                
+        # Rename columns based on mapping
+        if col_mapping:
+            df = df.rename(columns=col_mapping)
+            
+        return df
+
+    def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize demographics data.
+        
+        Args:
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
+            
+        Returns:
+            Standardized DataFrame
+        """
+        try:
+            # Apply column standardization
+            df = self._standardize_columns(df, self.DEMO_MAPPING, self.DEMO_REQUIRED_COLS)
+            
+            # Handle duplicated columns if present
+            if ' rept_dt' in df.columns and 'rept_dt' in df.columns:
+                df = df.drop(columns=[' rept_dt'])
+            if 'gndr_cod' in df.columns and 'sex' in df.columns:
+                df = df.drop(columns=['gndr_cod'])
+                
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_demographics: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing demographics data: {str(e)}")
             return df
 
     def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize drug information."""
-        try:
-            # Required columns exactly as defined in documentation.html
-            required_columns = {
-                'isr': ['ISR'],
-                'drug_seq': ['DRUG_SEQ'],
-                'role_cod': ['ROLE_COD'],
-                'drugname': ['DRUGNAME'],
-                'prod_ai': ['PROD_AI'],
-                'val_vbm': ['VAL_VBM'],
-                'route': ['ROUTE'],
-                'dose_vbm': ['DOSE_VBM'],
-                'cum_dose_chr': ['CUM_DOSE_CHR'],
-                'cum_dose_unit': ['CUM_DOSE_UNIT'],
-                'dechal': ['DECHAL'],
-                'rechal': ['RECHAL'],
-                'lot_num': ['LOT_NUM'],
-                'exp_dt': ['EXP_DT'],
-                'nda_num': ['NDA_NUM']
-            }
+        """Standardize drug information.
+        
+        Args:
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
             
-            # Process each required column
-            for target_col, source_cols in required_columns.items():
-                found = False
-                for col in source_cols:
-                    if col in df.columns:
-                        if col != target_col:
-                            df = df.rename(columns={col: target_col})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
-                    df[target_col] = pd.NA
+        Returns:
+            Standardized DataFrame
+        """
+        try:
+            # Apply column standardization
+            df = self._standardize_columns(df, self.DRUG_MAPPING, self.DRUG_REQUIRED_COLS)
             
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_drug_info: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing drug information: {str(e)}")
             return df
 
     def standardize_reactions(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize reactions information."""
-        try:
-            # Required columns exactly as defined in documentation.html
-            required_columns = {
-                'isr': ['ISR'],
-                'pt': ['PT'],
-                'drug_rec_act': ['DRUG_REC_ACT']
-            }
+        """Standardize reactions information.
+        
+        Args:
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
             
-            # Process each required column
-            for target_col, source_cols in required_columns.items():
-                found = False
-                for col in source_cols:
-                    if col in df.columns:
-                        if col != target_col:
-                            df = df.rename(columns={col: target_col})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
-                    df[target_col] = pd.NA
+        Returns:
+            Standardized DataFrame
+        """
+        try:
+            # Apply column standardization
+            df = self._standardize_columns(df, self.REAC_MAPPING, self.REAC_REQUIRED_COLS)
             
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_reactions: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing reactions information: {str(e)}")
             return df
 
     def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize indication data."""
-        try:
-            # Column name mappings
-            column_mappings = {
-                'indi_pt': ['INDI_PT', 'indi_pt'],
-                'drug_seq': ['DRUG_SEQ', 'drug_seq', 'INDI_DRUG_SEQ', 'indi_drug_seq'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
+        """Standardize indications information.
+        
+        Args:
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
             
-            # Standardize column names
-            for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names[0])
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
-                else:
-                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+        Returns:
+            Standardized DataFrame
+        """
+        try:
+            # Apply column standardization
+            df = self._standardize_columns(df, self.INDI_MAPPING, self.INDI_REQUIRED_COLS)
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error in standardize_indications: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing indications information: {str(e)}")
             return df
 
     def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize outcome data."""
+        """Standardize outcomes information.
+        
+        Args:
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
+            
+        Returns:
+            Standardized DataFrame
+        """
         try:
-            # Column name mappings
-            column_mappings = {
-                'outc_cod': ['OUTC_COD', 'outc_cod'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
-            
-            # Standardize column names
-            for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names[0])
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
-                else:
-                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
-            
-            # Standardize outcome codes
-            if 'outc_cod' in df.columns:
-                df['outc_cod'] = df['outc_cod'].str.upper()
-                invalid_codes = set(df['outc_cod'].dropna().unique()) - self.valid_outcomes
-                if invalid_codes:
-                    self.logger.warning(f"Converted invalid outcome codes to NA: {invalid_codes}")
-                    df.loc[df['outc_cod'].isin(invalid_codes), 'outc_cod'] = pd.NA
+            # Apply column standardization
+            df = self._standardize_columns(df, self.OUTC_MAPPING, self.OUTC_REQUIRED_COLS)
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error in standardize_outcomes: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing outcomes information: {str(e)}")
             return df
 
     def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize therapy data."""
+        """Standardize therapy information.
+        
+        Args:
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
+            
+        Returns:
+            Standardized DataFrame
+        """
         try:
-            # Column name mappings
-            column_mappings = {
-                'drug_seq': ['DRUG_SEQ', 'drug_seq', 'DSG_DRUG_SEQ', 'dsg_drug_seq'],
-                'start_dt': ['START_DT', 'start_dt'],
-                'end_dt': ['END_DT', 'end_dt'],
-                'dur': ['DUR', 'dur'],
-                'dur_cod': ['DUR_COD', 'dur_cod'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
-            }
-            
-            # Standardize column names
-            for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names[0])
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
-                else:
-                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
-            
-            # Standardize dates
-            date_columns = ['start_dt', 'end_dt']
-            for col in date_columns:
-                if col in df.columns:
-                    try:
-                        df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
-                        invalid_dates = df[col].isna().sum()
-                        if invalid_dates > 0:
-                            self.logger.warning(f"Found {invalid_dates} invalid dates in {col}")
-                    except Exception as e:
-                        self.logger.error(f"Error converting {col} to datetime: {str(e)}")
+            # Apply column standardization
+            df = self._standardize_columns(df, self.THER_MAPPING, self.THER_REQUIRED_COLS)
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error in standardize_therapies: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing therapy information: {str(e)}")
             return df
 
-    def remove_incomplete_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
-                                reac_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Log statistics about cases that don't have valid drugs or reactions, but do not remove them.
+    def standardize_sources(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize report source information.
         
         Args:
-            demo_df: Demographics DataFrame
-            drug_df: Drug DataFrame
-            reac_df: Reactions DataFrame
-        
+            df: DataFrame to standardize
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
+            
         Returns:
-            Original demographics DataFrame, unmodified
+            Standardized DataFrame
         """
-        # Find cases without valid drugs
-        valid_drug_cases = set(drug_df['primaryid'].unique())
-        all_cases = set(demo_df['primaryid'].unique())
-        cases_without_drugs = all_cases - valid_drug_cases
-
-        # Find cases without valid reactions
-        valid_reaction_cases = set(reac_df['primaryid'].unique())
-        cases_without_reactions = all_cases - valid_reaction_cases
-
-        # Calculate and log results
-        logging.info(f"Total cases: {len(all_cases)}")
-        logging.info(f"Cases without drugs: {len(cases_without_drugs)}")
-        logging.info(f"Cases without reactions: {len(cases_without_reactions)}")
-
-        return demo_df
+        try:
+            # Apply column standardization
+            df = self._standardize_columns(df, self.RPSR_MAPPING, self.RPSR_REQUIRED_COLS)
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing report source information: {str(e)}")
+            return df
 
     def _load_reference_data(self):
         """Load reference data for standardization."""
