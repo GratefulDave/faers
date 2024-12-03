@@ -17,8 +17,13 @@ from .validator import DataValidator, ValidationResult
 @dataclass
 class TableSummary:
     """Summary statistics for a single FAERS table."""
+    file_name: str = ""
+    start_time: float = 0.0
+    end_time: float = 0.0
     total_rows: int = 0
     processed_rows: int = 0
+    success: bool = False
+    error: Optional[str] = None
     invalid_dates: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     missing_columns: Dict[str, str] = field(default_factory=dict)  # column -> default value
     parsing_errors: List[str] = field(default_factory=list)
@@ -381,10 +386,9 @@ class FAERSProcessor:
                                                na_values=[''], keep_default_na=False,
                                                encoding=encoding, chunksize=chunk_size,
                                                on_bad_lines='warn'):
-                            # Basic cleaning for each chunk
-                            chunk = chunk.replace(r'^\s*$', '', regex=True)  # Replace empty strings
-                            chunk = chunk.replace(r'\s+', ' ', regex=True)   # Normalize whitespace
-                            chunks.append(chunk)
+                            # Clean each chunk
+                            cleaned_chunk = self._clean_dataframe(chunk)
+                            chunks.append(cleaned_chunk)
                         
                         if chunks:
                             df = pd.concat(chunks, ignore_index=True)
@@ -398,10 +402,9 @@ class FAERSProcessor:
                         if df.empty:
                             self.logger.warning(f"Empty file: {file_path.name}")
                             continue
-                            
-                        # Basic cleaning
-                        df = df.replace(r'^\s*$', '', regex=True)  # Replace empty strings
-                        df = df.replace(r'\s+', ' ', regex=True)   # Normalize whitespace
+                        
+                        # Clean the DataFrame
+                        df = self._clean_dataframe(df)
                         break
                     
                 except UnicodeDecodeError:
@@ -417,67 +420,38 @@ class FAERSProcessor:
                 self.logger.error(f"Could not read file {file_path.name} with any supported encoding")
                 return None
             
+            # Convert column names to lowercase
+            df.columns = [col.strip().lower() for col in df.columns]
+            
             return df
             
         except Exception as e:
             self.logger.error(f"Error reading file {file_path.name}: {str(e)}")
             return None
 
-    def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
-        """Process a dataset with error tracking and validation."""
-        table_summary = TableSummary(
-            file_name=file_name,
-            start_time=time.time(),
-            total_rows=len(df)
-        )
-        
-        try:
-            # Validate data
-            validation_result = self.validator.validate_data(df, data_type)
-            if not validation_result.valid:
-                self._handle_validation_errors(validation_result, quarter_name, file_name)
-            self._log_validation_warnings(validation_result, quarter_name, file_name)
-            
-            # Process the data based on type
-            df = self.standardizer.standardize_data(df, data_type, file_name, quarter_name)
-            
-            # Update summary
-            table_summary.success = True
-            table_summary.processed_rows = len(df)
-            table_summary.end_time = time.time()
-            
-            return df, table_summary
-            
-        except Exception as e:
-            error_msg = f"Error processing {data_type} dataset: {str(e)}"
-            table_summary.success = False
-            table_summary.error = str(e)
-            table_summary.end_time = time.time()
-            self.logger.error(f"({quarter_name}) {error_msg}")
-            return df, table_summary
-            
     def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Perform basic DataFrame cleaning with case-insensitive column handling."""
-        try:
-            # Convert column names to lowercase and remove whitespace
-            df.columns = [col.strip().lower() for col in df.columns]
+        """Clean a DataFrame by handling empty strings and whitespace.
+        
+        Args:
+            df: Input DataFrame
             
-            # Remove leading/trailing whitespace from string columns
-            for col in df.select_dtypes(include=['object']).columns:
-                df[col] = df[col].str.strip()
-                
-            # Replace empty strings with empty values
-            df = df.replace(r'^\s*$', '', regex=True)
-            
-            # Normalize whitespace in string columns
-            for col in df.select_dtypes(include=['object']).columns:
-                df[col] = df[col].str.replace(r'\s+', ' ', regex=True)
-                
-            return df
-            
-        except Exception as e:
-            self.logger.warning(f"Error during DataFrame cleaning: {str(e)}")
-            return df
+        Returns:
+            Cleaned DataFrame
+        """
+        # Make a copy to avoid modifying the original
+        cleaned = df.copy()
+        
+        # Convert all columns to string type explicitly
+        for col in cleaned.columns:
+            cleaned[col] = cleaned[col].astype(str)
+        
+        # Replace empty or whitespace-only strings with empty string
+        cleaned = cleaned.apply(lambda x: x.str.strip().replace(r'^\s*$', '', regex=True))
+        
+        # Normalize whitespace in non-empty strings
+        cleaned = cleaned.apply(lambda x: x.str.replace(r'\s+', ' ', regex=True))
+        
+        return cleaned
             
     def _handle_dataset_errors(self, error: Exception, data_type: str, quarter_name: str, file_name: str, table_summary: TableSummary):
         """Handle dataset processing errors."""
@@ -1654,6 +1628,39 @@ class FAERSProcessor:
             self.logger.error(f"({file_name}) Error processing file: {str(e)}")
             return None
 
+    def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
+        """Process a dataset with error tracking and validation."""
+        table_summary = TableSummary(
+            file_name=file_name,
+            start_time=time.time(),
+            total_rows=len(df)
+        )
+        
+        try:
+            # Validate data
+            validation_result = self.validator.validate_data(df, data_type)
+            if not validation_result.valid:
+                self._handle_validation_errors(validation_result, quarter_name, file_name)
+            self._log_validation_warnings(validation_result, quarter_name, file_name)
+            
+            # Process the data based on type
+            df = self.standardizer.standardize_data(df, data_type, file_name, quarter_name)
+            
+            # Update summary
+            table_summary.success = True
+            table_summary.processed_rows = len(df)
+            table_summary.end_time = time.time()
+            
+            return df, table_summary
+            
+        except Exception as e:
+            error_msg = f"Error processing {data_type} dataset: {str(e)}"
+            table_summary.success = False
+            table_summary.error = str(e)
+            table_summary.end_time = time.time()
+            self.logger.error(f"({quarter_name}) {error_msg}")
+            return df, table_summary
+
 class FAERSProcessingSummary:
     """Tracks and generates summary reports for FAERS data processing."""
 
@@ -1717,7 +1724,7 @@ class FAERSProcessingSummary:
                         report.append("| Field | Invalid Count | Percentage |")
                         report.append("|-------|---------------|------------|")
                         for field, count in table_summary.invalid_dates.items():
-                            pct = (count/table_summary.total_rows*100)
+                            pct = (count/table_summary.total_rows*100) if table_summary.total_rows > 0 else 0
                             report.append(f"| {field} | {count:,}/{table_summary.total_rows:,} | {pct:.1f}% |")
                     
                     # Data Errors
