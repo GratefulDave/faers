@@ -427,54 +427,76 @@ class DataStandardizer:
             raise
 
     def _load_meddra_data(self):
-        """Load MedDRA terminology data from external files."""
-        meddra_dir = self.external_dir / 'meddra' / 'MedAscii'
-
-        # Load SOC data
-        soc_file = meddra_dir / 'soc.asc'
-        if soc_file.exists():
-            self.soc_data = pd.read_csv(soc_file, sep='$', dtype=str, low_memory=False, usecols=[0,1,2])
-            self.soc_data.columns = ['soc_code', 'soc_name', 'soc_abbrev']
-
-        # Load PT data
-        pt_file = meddra_dir / 'pt.asc'
-        if pt_file.exists():
-            self.pt_data = pd.read_csv(pt_file, sep='$', dtype=str, low_memory=False, usecols=[0,1,3])
-            self.pt_data.columns = ['pt_code', 'pt_name', 'pt_soc_code']
-
-        # Load LLT data
-        llt_file = meddra_dir / 'llt.asc'
-        if llt_file.exists():
-            self.llt_data = pd.read_csv(llt_file, sep='$', dtype=str, low_memory=False, usecols=[0,1,2])
-            self.llt_data.columns = ['llt_code', 'llt_name', 'pt_code']
-
-        # Create PT to LLT mapping (case-insensitive)
-        self.pt_to_llt_map = {}
-        if hasattr(self, 'llt_data') and hasattr(self, 'pt_data'):
-            pt_llt_merged = pd.merge(
-                self.llt_data[['llt_name', 'pt_code']],
-                self.pt_data[['pt_code', 'pt_name']],
-                on='pt_code'
-            )
-            for _, row in pt_llt_merged.iterrows():
-                self.pt_to_llt_map[row['llt_name'].lower()] = row['pt_name']
-
-        # Initialize standardization tracking
-        self.standardization_stats = {
-            'total_terms': 0,
-            'direct_pt_matches': 0,
-            'llt_translations': 0,
-            'manual_fixes': 0,
-            'unstandardized': 0
-        }
-
-        # Load manual fixes for terms
-        self.manual_pt_fixes = {}
-        manual_fix_file = self.external_dir / 'manual_fix' / 'pt_manual_fixes.csv'
-        if manual_fix_file.exists():
-            manual_fixes = pd.read_csv(manual_fix_file, low_memory=False)
-            self.manual_pt_fixes = dict(zip(manual_fixes['original'].str.lower(), 
-                                          manual_fixes['standardized']))
+        """Load and process MedDRA data from ASC files."""
+        try:
+            meddra_dir = self.external_dir / 'meddra/MedAscii'
+            
+            # Read all MedDRA files
+            soc = pd.read_csv(meddra_dir / 'soc.asc', sep='$', header=None, usecols=[0,1,2])
+            soc.columns = ['soc_cod', 'soc', 'def']
+            
+            soc_hlgt = pd.read_csv(meddra_dir / 'soc_hlgt.asc', sep='$', header=None, usecols=[0,1])
+            soc_hlgt.columns = ['soc_cod', 'hlgt_cod']
+            
+            hlgt = pd.read_csv(meddra_dir / 'hlgt.asc', sep='$', header=None, usecols=[0,1])
+            hlgt.columns = ['hlgt_cod', 'hlgt']
+            
+            hlgt_hlt = pd.read_csv(meddra_dir / 'hlgt_hlt.asc', sep='$', header=None, usecols=[0,1])
+            hlgt_hlt.columns = ['hlgt_cod', 'hlt_cod']
+            
+            hlt = pd.read_csv(meddra_dir / 'hlt.asc', sep='$', header=None, usecols=[0,1])
+            hlt.columns = ['hlt_cod', 'hlt']
+            
+            hlt_pt = pd.read_csv(meddra_dir / 'hlt_pt.asc', sep='$', header=None, usecols=[0,1])
+            hlt_pt.columns = ['hlt_cod', 'pt_cod']
+            
+            pts = pd.read_csv(meddra_dir / 'pt.asc', sep='$', header=None, usecols=[0,1,3])
+            pts.columns = ['pt_cod', 'pt', 'primary_soc_cod']
+            
+            llt = pd.read_csv(meddra_dir / 'llt.asc', sep='$', header=None, usecols=[0,1,2])
+            llt.columns = ['llt_cod', 'llt', 'pt_cod']
+            
+            # Merge all MedDRA tables
+            meddra = (soc.merge(soc_hlgt, on='soc_cod', how='outer')
+                     .merge(hlgt, on='hlgt_cod', how='outer')
+                     .merge(hlgt_hlt, on='hlgt_cod', how='outer')
+                     .merge(hlt, on='hlt_cod', how='outer')
+                     .merge(hlt_pt, on='hlt_cod', how='outer')
+                     .merge(pts, on='pt_cod', how='outer')
+                     .merge(llt, on='pt_cod', how='outer'))
+            
+            # Convert all text columns to lowercase
+            text_columns = ['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']
+            for col in text_columns:
+                if col in meddra.columns:
+                    meddra[col] = meddra[col].str.lower()
+            
+            # Save distinct combinations
+            meddra_distinct = (meddra[['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']]
+                             .drop_duplicates())
+            
+            # Save primary SOC relationships
+            meddra_primary = (meddra[meddra['soc_cod'] == meddra['primary_soc_cod']]
+                            [['def', 'soc', 'hlgt', 'hlt', 'pt']]
+                            .drop_duplicates())
+            
+            # Save to CSV files
+            meddra_distinct.to_csv(self.external_dir / 'meddra/meddra.csv', 
+                                 sep=';', index=False)
+            meddra_primary.to_csv(self.external_dir / 'meddra/meddra_primary.csv', 
+                                sep=';', index=False)
+            
+            # Create PT list for standardization
+            self.pt_list = meddra_distinct['pt'].dropna().unique()
+            self.llt_to_pt = dict(zip(meddra['llt'].str.lower(), meddra['pt'].str.lower()))
+            
+            logging.info(f"Loaded {len(self.pt_list):,} unique PTs from MedDRA")
+            logging.info(f"Loaded {len(self.llt_to_pt):,} LLT to PT mappings")
+            
+        except Exception as e:
+            logging.error(f"Error loading MedDRA data: {str(e)}")
+            self.pt_list = []
+            self.llt_to_pt = {}
 
     def _load_diana_dictionary(self):
         """Load and prepare the DiAna drug dictionary."""
@@ -510,86 +532,109 @@ class DataStandardizer:
             self.drug_map = {}
 
     def standardize_pt(self, df: pd.DataFrame, pt_variable: str = 'pt') -> pd.DataFrame:
-        """Standardize PT terms exactly as in R script.
+        """Standardize PT terms following R script exactly.
         
         Args:
             df: DataFrame with PT terms
-            pt_variable: Name of the PT column (default: 'pt')
+            pt_variable: Name of the PT column
             
         Returns:
             DataFrame with standardized PT terms
         """
-        df = df.copy()
-        
-        # 1. Load MedDRA PT list and convert to lowercase for matching
-        meddra_df = pd.read_csv(self.external_dir / 'Dictionaries/MedDRA/meddra.csv', 
-                               sep=';', low_memory=False)
-        pt_list = pd.Series(meddra_df['pt'].unique()).str.strip().str.lower().unique()
-        
-        # 2. Clean and standardize PT terms (matching R script)
-        if pt_variable in df.columns:
-            # Clean terms: lowercase and strip whitespace
+        try:
+            if pt_variable not in df.columns:
+                return df
+                
+            df = df.copy()
+            
+            # Clean and standardize PT terms
             df[pt_variable] = df[pt_variable].str.strip().str.lower()
             
-            # Calculate frequencies before standardization
+            # Calculate initial frequencies
             pt_freq = (df[~df[pt_variable].isna()]
                       .groupby(pt_variable).size()
                       .reset_index(name='N')
                       .sort_values('N', ascending=False))
             
             # Mark standard PTs
-            pt_freq['standard_pt'] = np.where(pt_freq[pt_variable].isin(pt_list), 
-                                            pt_freq[pt_variable], 
-                                            np.nan)
-            pt_freq['freq'] = np.round(pt_freq['N'] / pt_freq['N'].sum() * 100, 2)
+            pt_freq['standard_pt'] = pt_freq[pt_variable].apply(
+                lambda x: x if x in self.pt_list else None
+            )
+            pt_freq['freq'] = round(pt_freq['N'] / pt_freq['N'].sum() * 100, 2)
             
             # Get unstandardized PTs
             not_pts = pt_freq[pt_freq['standard_pt'].isna()][[pt_variable, 'N', 'freq']]
             
             # Calculate initial non-standardized percentage
-            initial_nonstd_pct = np.round(not_pts['N'].sum() * 100 / len(df[~df[pt_variable].isna()]), 3)
+            initial_nonstd_pct = round(
+                not_pts['N'].sum() * 100 / len(df[~df[pt_variable].isna()]), 
+                3
+            )
             logging.info(f"Initial non-standardized PT percentage: {initial_nonstd_pct}%")
             
             # Try LLT translations
-            llt_mappings = meddra_df[['pt', 'llt']].copy()
-            llt_mappings.columns = ['standard_pt', pt_variable]
-            llt_mappings[pt_variable] = llt_mappings[pt_variable].str.strip().str.lower()
-            llt_mappings['standard_pt'] = llt_mappings['standard_pt'].str.strip()
-            
-            not_pts = not_pts.merge(llt_mappings, on=pt_variable, how='left')
+            not_pts['standard_pt'] = not_pts[pt_variable].map(self.llt_to_pt)
             not_llts = not_pts[not_pts['standard_pt'].isna()].drop('standard_pt', axis=1)
             
             # Try manual fixes
-            manual_fixes = pd.read_csv(self.external_dir / 'Manual_fix/pt_fixed.csv', 
-                                     sep=';', low_memory=False)
+            manual_fixes = pd.read_csv(
+                self.external_dir / 'Manual_fix/pt_fixed.csv',
+                sep=';', 
+                low_memory=False
+            )
             manual_fixes = manual_fixes[[pt_variable, 'standard_pt']]
             manual_fixes[pt_variable] = manual_fixes[pt_variable].str.strip().str.lower()
             manual_fixes['standard_pt'] = manual_fixes['standard_pt'].str.strip()
             
             # Apply standardization in order: direct PT, LLT, manual fixes
-            df['standard_pt'] = df[pt_variable].map(lambda x: x if x in pt_list else None)
-            mask = df['standard_pt'].isna()
-            df.loc[mask, 'standard_pt'] = df.loc[mask, pt_variable].map(
-                dict(zip(llt_mappings[pt_variable], llt_mappings['standard_pt']))
+            df['standard_pt'] = df[pt_variable].apply(
+                lambda x: x if x in self.pt_list else None
             )
+            
+            # Apply LLT translations
+            mask = df['standard_pt'].isna()
+            df.loc[mask, 'standard_pt'] = df.loc[mask, pt_variable].map(self.llt_to_pt)
+            
+            # Apply manual fixes
             still_missing = df['standard_pt'].isna()
             df.loc[still_missing, 'standard_pt'] = df.loc[still_missing, pt_variable].map(
                 dict(zip(manual_fixes[pt_variable], manual_fixes['standard_pt']))
             )
             
-            # Log standardization results
-            total = len(df)
-            standardized = df['standard_pt'].notna().sum()
-            logging.info(f"PT standardization results:")
-            logging.info(f"  Total terms: {total}")
-            logging.info(f"  Standardized: {standardized} ({100*standardized/total:.1f}%)")
-            logging.info(f"  Unstandardized: {total-standardized} ({100*(total-standardized)/total:.1f}%)")
+            # Update unstandardized terms in manual fixes file
+            unstandardized = df[df['standard_pt'].isna()][pt_variable].unique()
+            if len(unstandardized) > 0:
+                new_manual_fixes = pd.DataFrame({
+                    pt_variable: unstandardized,
+                    'standard_pt': pd.NA
+                })
+                manual_fixes = pd.concat([manual_fixes, new_manual_fixes]).drop_duplicates()
+                manual_fixes.to_csv(
+                    self.external_dir / 'Manual_fix/pt_fixed.csv',
+                    sep=';',
+                    index=False
+                )
+                logging.warning(
+                    f"{len(unstandardized)} terms not standardized. "
+                    f"Added to pt_fixed.csv: {', '.join(unstandardized)}"
+                )
             
-            # Replace original column with standardized version
+            # Calculate final standardization percentage
+            final_std_pct = round(
+                df['standard_pt'].notna().sum() * 100 / len(df[~df[pt_variable].isna()]),
+                3
+            )
+            logging.info(f"Final standardized PT percentage: {final_std_pct}%")
+            
+            # Replace original with standardized
             df[pt_variable] = df['standard_pt']
             df = df.drop('standard_pt', axis=1)
-        
-        return df
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Error standardizing {pt_variable}: {str(e)}")
+            return df
 
     def standardize_drugs(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize drug names using DiAna dictionary.
