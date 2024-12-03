@@ -748,34 +748,42 @@ class DataStandardizer:
             return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize age values while preserving ALL rows.
-        
-        Args:
-            df: DataFrame with age columns
-            
-        Returns:
-            DataFrame with standardized age values
-        """
+        """Standardize age values while preserving ALL rows."""
         try:
             df = df.copy()
             
-            # If age column doesn't exist, add it
+            # If age column doesn't exist, add it with empty strings
             if 'age' not in df.columns:
-                df['age'] = np.nan
-                logging.warning("Age column not found - initialized with NaN")
+                df['age'] = ''
+                logging.warning("Age column not found - initialized with empty strings")
                 return df
             
-            # Convert age to numeric, invalid values become NaN
-            df['age'] = pd.to_numeric(df['age'], errors='coerce')
+            # First convert to string and clean
+            df['age'] = df['age'].fillna('').astype(str)
+            df['age'] = df['age'].str.strip()
             
-            # Log age distribution
-            age_stats = df['age'].describe()
-            logging.info("Age distribution after standardization:")
-            logging.info(f"  Count (non-null): {age_stats['count']}")
-            logging.info(f"  Mean: {age_stats['mean']:.1f}")
-            logging.info(f"  Std: {age_stats['std']:.1f}")
-            logging.info(f"  Min: {age_stats['min']:.1f}")
-            logging.info(f"  Max: {age_stats['max']:.1f}")
+            # Try to convert to numeric, keeping original value if fails
+            def safe_convert(x):
+                try:
+                    # Remove any commas first
+                    x = str(x).replace(',', '')
+                    return pd.to_numeric(x)
+                except:
+                    return np.nan
+            
+            df['age'] = df['age'].apply(safe_convert)
+            
+            # Log age distribution for non-null values
+            non_null = df['age'].dropna()
+            if len(non_null) > 0:
+                logging.info("Age distribution after standardization:")
+                logging.info(f"  Total values: {len(df)}")
+                logging.info(f"  Non-null values: {len(non_null)}")
+                logging.info(f"  Mean: {non_null.mean():.1f}")
+                logging.info(f"  Min: {non_null.min():.1f}")
+                logging.info(f"  Max: {non_null.max():.1f}")
+            else:
+                logging.warning("No valid numeric age values found")
             
             return df
             
@@ -785,19 +793,8 @@ class DataStandardizer:
             return df
 
     def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
-        """Add standardized age groups based on age in years.
-        
-        Args:
-            df: DataFrame with age_in_years column
-            categories: List of valid age group categories
-            
-        Returns:
-            DataFrame with age groups added
-        """
+        """Add standardized age groups based on age values."""
         try:
-            if 'age_in_years' not in df.columns:
-                return df
-                
             df = df.copy()
             
             if categories is None:
@@ -813,40 +810,45 @@ class DataStandardizer:
                     ''
                 ]
             
-            # Define age group bins and labels
-            bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
-            labels = categories[:-1]  # Exclude empty string from labels
+            # Initialize age_group column if it doesn't exist
+            if 'age_group' not in df.columns:
+                df['age_group'] = ''
             
-            # Create age groups using pd.cut
-            df['age_group'] = pd.cut(
-                df['age_in_years'],
-                bins=bins,
-                labels=labels,
-                right=False
-            )
+            # Only categorize valid numeric ages
+            mask = pd.notna(df['age'])
+            if mask.any():
+                bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
+                labels = categories[:-1]  # Exclude empty string
+                
+                # Create age groups only for valid ages
+                age_groups = pd.cut(
+                    df.loc[mask, 'age'],
+                    bins=bins,
+                    labels=labels,
+                    right=False
+                )
+                
+                # Convert to string and replace nan with empty string
+                age_groups = age_groups.astype(str).replace('nan', '')
+                
+                # Update only the valid age rows
+                df.loc[mask, 'age_group'] = age_groups
             
-            # Convert to string first
-            df['age_group'] = df['age_group'].astype(str)
-            
-            # Replace 'nan' with empty string
-            df['age_group'] = df['age_group'].replace('nan', '')
-            
-            # Convert to categorical with predefined categories
-            df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=categories)
+            # Convert to categorical with all categories
+            df['age_group'] = pd.Categorical(df['age_group'], categories=categories)
             
             # Log distribution
-            age_dist = df['age_group'].value_counts(dropna=False)
-            total = len(df)
+            value_counts = df['age_group'].value_counts(dropna=False)
             logging.info("Age group distribution:")
-            for group, count in age_dist.items():
-                pct = round(100 * count / total, 2)
-                logging.info(f"  {group}: {count} ({pct}%)")
+            for val, count in value_counts.items():
+                logging.info(f"  {val}: {count} ({count/len(df)*100:.1f}%)")
             
             return df
             
         except Exception as e:
             logging.error(f"Error creating age groups: {str(e)}")
-            raise e  # Re-raise to see full traceback
+            # On any error, return original DataFrame
+            return df
 
     def standardize_weight(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize weight values to kilograms.
@@ -1695,14 +1697,7 @@ class DataStandardizer:
             return df
 
     def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize demographics data while preserving ALL rows.
-        
-        Args:
-            df: Raw demographics DataFrame
-            
-        Returns:
-            Processed demographics DataFrame
-        """
+        """Standardize demographics data while preserving ALL rows."""
         try:
             df = df.copy()
             orig_len = len(df)
@@ -1957,17 +1952,9 @@ class DataStandardizer:
             return df
 
     def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
-        """Add standardized age groups based on age in years.
-        
-        Args:
-            df: DataFrame with age_in_years column
-            categories: List of valid age group categories
-            
-        Returns:
-            DataFrame with age groups added
-        """
+        """Add standardized age groups based on age values."""
         try:
-            if 'age_in_years' not in df.columns:
+            if 'age' not in df.columns:
                 return df
                 
             df = df.copy()
@@ -1985,40 +1972,45 @@ class DataStandardizer:
                     ''
                 ]
             
-            # Define age group bins and labels
-            bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
-            labels = categories[:-1]  # Exclude empty string from labels
+            # Initialize age_group column if it doesn't exist
+            if 'age_group' not in df.columns:
+                df['age_group'] = ''
             
-            # Create age groups using pd.cut
-            df['age_group'] = pd.cut(
-                df['age_in_years'],
-                bins=bins,
-                labels=labels,
-                right=False
-            )
+            # Only categorize valid numeric ages
+            mask = pd.notna(df['age'])
+            if mask.any():
+                bins = [-float('inf'), 0, 2, 12, 18, 35, 50, 65, float('inf')]
+                labels = categories[:-1]  # Exclude empty string
+                
+                # Create age groups only for valid ages
+                age_groups = pd.cut(
+                    df.loc[mask, 'age'],
+                    bins=bins,
+                    labels=labels,
+                    right=False
+                )
+                
+                # Convert to string and replace nan with empty string
+                age_groups = age_groups.astype(str).replace('nan', '')
+                
+                # Update only the valid age rows
+                df.loc[mask, 'age_group'] = age_groups
             
-            # Convert to string first
-            df['age_group'] = df['age_group'].astype(str)
-            
-            # Replace 'nan' with empty string
-            df['age_group'] = df['age_group'].replace('nan', '')
-            
-            # Convert to categorical with predefined categories
-            df['age_group'] = pd.Categorical(df['age_group'].tolist(), categories=categories)
+            # Convert to categorical with all categories
+            df['age_group'] = pd.Categorical(df['age_group'], categories=categories)
             
             # Log distribution
-            age_dist = df['age_group'].value_counts(dropna=False)
-            total = len(df)
+            value_counts = df['age_group'].value_counts(dropna=False)
             logging.info("Age group distribution:")
-            for group, count in age_dist.items():
-                pct = round(100 * count / total, 2)
-                logging.info(f"  {group}: {count} ({pct}%)")
+            for val, count in value_counts.items():
+                logging.info(f"  {val}: {count} ({count/len(df)*100:.1f}%)")
             
             return df
             
         except Exception as e:
             logging.error(f"Error creating age groups: {str(e)}")
-            raise e  # Re-raise to see full traceback
+            # On any error, return original DataFrame
+            return df
 
 def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
     """Read and clean the file, detecting delimiter."""
