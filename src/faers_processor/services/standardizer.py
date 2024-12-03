@@ -2028,56 +2028,41 @@ class DataStandardizer:
             logging.error(f"Error standardizing indications: {str(e)}")
             return df
 
-    def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize demographics data while preserving ALL rows."""
+    def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize demographics data."""
         try:
-            df = df.copy()
-            orig_len = len(df)
+            # Convert column names to lowercase for consistent processing
+            df.columns = df.columns.str.lower()
             
-            # Pre-define categories
-            sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
-            age_group_categories = [
-                'Prenatal',
-                'Infant (0-2)', 
-                'Child (2-12)',
-                'Adolescent (12-18)',
-                'Young Adult (18-35)',
-                'Adult (35-50)',
-                'Middle Age (50-65)',
-                'Elderly (65+)',
-                ''
-            ]
+            # Check for required columns using both legacy and new names
+            if 'i_f_cod' in df.columns:
+                df = df.rename(columns={'i_f_cod': 'i_f_code'})
+            elif 'i_f_code' not in df.columns:
+                self.logger.warning(f"({quarter_name}) {file_name}: i_f_code column not found - initialized with default value: I")
+                df['i_f_code'] = 'I'
             
-            # Initialize missing columns with empty strings first
-            if 'sex' not in df.columns:
-                df['sex'] = ''
-                logging.warning("Sex column not found - initialized with empty values")
-                
-            if 'age_group' not in df.columns:
-                df['age_group'] = ''
-                logging.warning("Age group column not found - initialized with empty values")
+            if 'gndr_cod' in df.columns:
+                df = df.rename(columns={'gndr_cod': 'sex'})
+            elif 'sex' not in df.columns:
+                self.logger.warning(f"({quarter_name}) {file_name}: sex column not found - initialized with empty values")
+                df['sex'] = pd.NA
             
-            # Standardize fields - preserve ALL rows
-            df = self.standardize_dates(df)
-            df = self.standardize_sex(df)
-            df = self.standardize_age(df)
-            df = self.standardize_age_groups(df)
-            df = self.standardize_weight(df)
-            df = self.standardize_country(df)
-            df = self.standardize_occupation(df)
-            df = self.standardize_manufacturer(df)
-            
-            # Verify NO rows were lost
-            if len(df) != orig_len:
-                msg = f"CRITICAL ERROR: Row count changed from {orig_len} to {len(df)} - this should never happen"
-                logging.error(msg)
-                raise ValueError(msg)
+            # Standardize dates
+            date_columns = ['fda_dt', 'rept_dt', 'event_dt']
+            for col in date_columns:
+                if col in df.columns:
+                    try:
+                        df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
+                        invalid_dates = df[col].isna().sum()
+                        if invalid_dates > 0:
+                            self.logger.warning(f"({quarter_name}) {file_name}: Found {invalid_dates} invalid dates in {col}")
+                    except Exception as e:
+                        self.logger.error(f"({quarter_name}) {file_name}: Error converting {col} to datetime: {str(e)}")
             
             return df
             
         except Exception as e:
-            logging.error(f"Error in standardize_demographics: {str(e)}")
-            # On any error, return original DataFrame
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_demographics: {str(e)}")
             return df
 
     def standardize_drug_info(self, df: pd.DataFrame, max_date: int = None) -> pd.DataFrame:
@@ -2404,7 +2389,7 @@ class DataStandardizer:
             
             # Type-specific standardization
             if data_type == 'demo':
-                df = self.standardize_demographics(df)
+                df = self.standardize_demographics(df, quarter_name, file_path)
             elif data_type == 'drug':
                 df = self.standardize_drugs(df)
             elif data_type == 'reac':

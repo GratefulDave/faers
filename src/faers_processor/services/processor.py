@@ -538,6 +538,33 @@ class FAERSProcessor:
     def _process_common(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Common processing steps for all data types."""
         try:
+            # Standardize column names to lowercase
+            df.columns = df.columns.str.lower()
+            
+            # Map old column names to new ones
+            column_mappings = {
+                'i_f_cod': 'i_f_code',
+                'gndr_cod': 'sex',
+                'reporter_country': 'country',
+                'drugname': 'drug_name',
+                'val_vbm': 'valid_trade_name',
+                'route': 'drug_route',
+                'dose_amt': 'drug_dose',
+                'dose_unit': 'drug_unit',
+                'cum_dose_chr': 'cumulative_dose',
+                'cum_dose_unit': 'cumulative_unit',
+                'dechal': 'dechallenge',
+                'rechal': 'rechallenge',
+                'lot_num': 'lot_number',
+                'exp_dt': 'expiration_date',
+                'nda_num': 'nda_number',
+                'pt': 'preferred_term',
+                'drug_seq': 'drug_sequence'
+            }
+            
+            # Rename columns if they exist
+            df = df.rename(columns=column_mappings)
+            
             # Add missing columns with appropriate defaults
             if data_type == 'indi':
                 if 'indi_pt' not in df.columns:
