@@ -794,3 +794,80 @@ class FAERSProcessor:
 
         # Create new path with normalized name
         return quarter_dir.parent / normalized_name
+
+    def unify_data(self, files_list: List[str], namekey: Dict[str, str], 
+                   column_subset: List[str], duplicated_cols_x: List[str], 
+                   duplicated_cols_y: List[str]) -> pd.DataFrame:
+        """Exact implementation of R's unify_data function.
+        
+        Args:
+            files_list: List of file paths to process
+            namekey: Dictionary mapping original column names to new names
+            column_subset: List of columns to keep
+            duplicated_cols_x: List of target columns for duplicate handling
+            duplicated_cols_y: List of source columns for duplicate handling
+            
+        Returns:
+            DataFrame with unified data
+        """
+        result_df = None
+        
+        for i, f in enumerate(files_list):
+            # Match R's gsub(".TXT", ".rds", f, ignore.case = TRUE)
+            name = re.sub(r'\.TXT$', '.rds', f, flags=re.IGNORECASE)
+            self.logger.info(f"Processing {name}")
+            
+            # Read RDS file
+            try:
+                x = pd.read_pickle(name)
+            except Exception as e:
+                self.logger.error(f"Error reading {name}: {e}")
+                continue
+                
+            # Drop columns with NA names (x <- x[!is.na(names(x))])
+            x = x.loc[:, x.columns.notna()]
+            
+            # Extract quarter (substr(name, nchar(name) - 7, nchar(name) - 4))
+            quart = name[-8:-4]
+            
+            # Add quarter column (x <- setDT(x)[, quarter := quart])
+            x['quarter'] = quart
+            
+            # Rename columns using namekey (names(x) <- namekey[names(x)])
+            x = x.rename(columns=lambda col: namekey.get(col, col))
+            
+            # Combine DataFrames (rbindlist with fill=TRUE equivalent)
+            if result_df is not None:
+                result_df = pd.concat([result_df, x], ignore_index=True, sort=False)
+            else:
+                result_df = x
+        
+        if result_df is None:
+            return pd.DataFrame()
+            
+        # Handle duplicated columns
+        if duplicated_cols_x and duplicated_cols_y:
+            for x_col, y_col in zip(duplicated_cols_x, duplicated_cols_y):
+                if pd.isna(x_col) or pd.isna(y_col):
+                    continue
+                # Match R's: y[is.na(get(duplicated_cols_x[n])), (duplicated_cols_x[n]) := get(duplicated_cols_y[n])]
+                result_df.loc[result_df[x_col].isna(), x_col] = result_df[y_col]
+        
+        # Get removed columns (setdiff(colnames(y),column_subset))
+        removed_cols = set(result_df.columns) - set(column_subset)
+        
+        # Keep only subset columns (y <- y[, ..cols])
+        result_df = result_df[column_subset]
+        
+        # Convert empty strings to NA (y[y == ""] <- NA)
+        result_df = result_df.replace(r'^\s*$', pd.NA, regex=True)
+        
+        # Remove duplicates (y <- y %>% distinct())
+        result_df = result_df.drop_duplicates()
+        
+        # Print removed columns message
+        removed_cols_msg = "The following columns were lost in the cleaning: " + "; ".join(removed_cols)
+        self.logger.info(removed_cols_msg)
+        print(removed_cols_msg)
+        
+        return result_df
