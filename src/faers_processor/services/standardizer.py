@@ -321,31 +321,27 @@ class DataStandardizer:
 
     def _standardize_columns(self, df: pd.DataFrame, mapping: Dict[str, str], required_cols: Set[str]) -> pd.DataFrame:
         """Standardize column names using case-insensitive mapping."""
-        # Create case-insensitive column mapping
-        df_cols_upper = {col.strip('$').upper(): col for col in df.columns}
-        col_mapping = {}
+        # Create case-insensitive column lookup
+        df_cols = {col.upper(): col for col in df.columns}
         
-        # First pass: Try to map all source columns case-insensitively
-        for src, target in mapping.items():
-            src_upper = src.strip('$').upper()
-            if src_upper in df_cols_upper:
-                col_mapping[df_cols_upper[src_upper]] = target
-        
-        # Special handling for ISR->primaryid mapping (ALWAYS present in some form)
-        if 'primaryid' not in col_mapping.values():
-            isr_variants = ['ISR', 'isr']
-            isr_col = None
-            for variant in isr_variants:
-                if variant.upper() in df_cols_upper:
-                    isr_col = df_cols_upper[variant.upper()]
+        # Map columns case-insensitively
+        new_columns = {}
+        for col in df.columns:
+            col_upper = col.upper()
+            # Check if this column maps to something
+            for src, target in mapping.items():
+                if src.upper() == col_upper:
+                    new_columns[col] = target
                     break
-            if isr_col:
-                col_mapping[isr_col] = 'primaryid'
-        
-        # Apply the mapping
-        if col_mapping:
-            df = df.rename(columns=col_mapping)
             
+            # Special case for ISR -> primaryid
+            if col_upper == 'ISR':
+                new_columns[col] = 'primaryid'
+        
+        # Apply the mapping if we found any
+        if new_columns:
+            df = df.rename(columns=new_columns)
+        
         return df
 
     def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
@@ -408,13 +404,22 @@ class DataStandardizer:
             Standardized DataFrame
         """
         try:
-            # Apply column standardization
-            df = self._standardize_columns(df, self.REAC_MAPPING, self.REAC_REQUIRED_COLS)
+            # Define mappings with all possible case variations
+            reac_mappings = {
+                'ISR': 'primaryid',
+                'isr': 'primaryid',
+                'PT': 'pt',
+                'pt': 'pt',
+                'DRUG_REC_ACT': 'drug_rec_act',
+                'drug_rec_act': 'drug_rec_act'
+            }
             
+            # Apply standardization
+            df = self._standardize_columns(df, reac_mappings, self.REAC_REQUIRED_COLS)
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing reactions information: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_reactions: {str(e)}")
             return df
 
     def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
@@ -429,26 +434,22 @@ class DataStandardizer:
             Standardized DataFrame
         """
         try:
-            # Print column names before standardization for debugging
-            self.logger.debug(f"({quarter_name}) {file_name}: Original columns: {list(df.columns)}")
+            # Define mappings with all possible case variations
+            indi_mappings = {
+                'ISR': 'primaryid',
+                'isr': 'primaryid',
+                'DRUG_SEQ': 'drug_seq',
+                'drug_seq': 'drug_seq',
+                'INDI_PT': 'indi_pt',
+                'indi_pt': 'indi_pt'
+            }
             
-            # Apply column standardization
-            df = self._standardize_columns(df, self.INDI_MAPPING, self.INDI_REQUIRED_COLS)
-            
-            # Print column names after standardization for debugging
-            self.logger.debug(f"({quarter_name}) {file_name}: Standardized columns: {list(df.columns)}")
-            
-            # Verify ISR/primaryid mapping worked
-            if 'primaryid' not in df.columns:
-                actual_isr_col = next((col for col in df.columns if col.upper().strip('$') == 'ISR'), None)
-                if actual_isr_col:
-                    df = df.rename(columns={actual_isr_col: 'primaryid'})
-                    self.logger.debug(f"({quarter_name}) {file_name}: Mapped {actual_isr_col} to primaryid")
-            
+            # Apply standardization
+            df = self._standardize_columns(df, indi_mappings, self.INDI_REQUIRED_COLS)
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing indications information: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_indications: {str(e)}")
             return df
 
     def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
@@ -463,13 +464,20 @@ class DataStandardizer:
             Standardized DataFrame
         """
         try:
-            # Apply column standardization
-            df = self._standardize_columns(df, self.OUTC_MAPPING, self.OUTC_REQUIRED_COLS)
+            # Define mappings with all possible case variations
+            outc_mappings = {
+                'ISR': 'primaryid',
+                'isr': 'primaryid',
+                'OUTC_COD': 'outc_cod',
+                'outc_cod': 'outc_cod'
+            }
             
+            # Apply standardization
+            df = self._standardize_columns(df, outc_mappings, self.OUTC_REQUIRED_COLS)
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing outcomes information: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_outcomes: {str(e)}")
             return df
 
     def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
@@ -484,13 +492,28 @@ class DataStandardizer:
             Standardized DataFrame
         """
         try:
-            # Apply column standardization
-            df = self._standardize_columns(df, self.THER_MAPPING, self.THER_REQUIRED_COLS)
+            # Define mappings with all possible case variations
+            ther_mappings = {
+                'ISR': 'primaryid',
+                'isr': 'primaryid',
+                'DSG_DRUG_SEQ': 'dsg_drug_seq',
+                'dsg_drug_seq': 'dsg_drug_seq',
+                'START_DT': 'start_dt',
+                'start_dt': 'start_dt',
+                'END_DT': 'end_dt',
+                'end_dt': 'end_dt',
+                'DUR': 'dur',
+                'dur': 'dur',
+                'DUR_COD': 'dur_cod',
+                'dur_cod': 'dur_cod'
+            }
             
+            # Apply standardization
+            df = self._standardize_columns(df, ther_mappings, self.THER_REQUIRED_COLS)
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing therapy information: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_therapies: {str(e)}")
             return df
 
     def standardize_sources(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
@@ -505,13 +528,20 @@ class DataStandardizer:
             Standardized DataFrame
         """
         try:
-            # Apply column standardization
-            df = self._standardize_columns(df, self.RPSR_MAPPING, self.RPSR_REQUIRED_COLS)
+            # Define mappings with all possible case variations
+            rpsr_mappings = {
+                'ISR': 'primaryid',
+                'isr': 'primaryid',
+                'RPSR_COD': 'rpsr_cod',
+                'rpsr_cod': 'rpsr_cod'
+            }
             
+            # Apply standardization
+            df = self._standardize_columns(df, rpsr_mappings, self.RPSR_REQUIRED_COLS)
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing report source information: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_sources: {str(e)}")
             return df
 
     def _load_reference_data(self):
