@@ -1395,6 +1395,21 @@ class FAERSProcessor:
             self.logger.error(f"Error in MedDRA standardization: {str(e)}")
             raise
 
+    def standardize_drugs(self) -> None:
+        """Standardize drug names using DIANA dictionary exactly as in R."""
+        paths = self.get_project_paths()
+        self.logger.info("Starting drug standardization")
+        
+        try:
+            standardizer = DrugStandardizer(paths["external"])
+            drug_file = paths["clean"] / "DRUG.rds"
+            standardizer.standardize_drugs(drug_file)
+            self.logger.info("Completed drug standardization")
+            
+        except Exception as e:
+            self.logger.error(f"Error in drug standardization: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         

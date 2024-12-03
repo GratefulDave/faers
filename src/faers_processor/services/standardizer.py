@@ -2020,42 +2020,112 @@ class DataStandardizer:
             # On any error, return original DataFrame
             return df
 
-def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
-    """Read and clean the file, detecting delimiter."""
-    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-        # Read sample for delimiter detection
-        sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
+class DrugStandardizer:
+    """Handles drug name standardization using DIANA dictionary."""
+    
+    def __init__(self, external_data_dir: Path):
+        """Initialize drug standardizer with paths matching R implementation."""
+        self.logger = logging.getLogger(__name__)
+        self.diana_dict_path = external_data_dir / "DiAna_dictionary" / "drugnames_standardized.csv"
         
-    # Detect delimiter
-    delimiters = ['$', '|', '\t', ',']
-    max_consistent_cols = 0
-    best_delimiter = ','
-    
-    for delimiter in delimiters:
-        cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
-        # Get most common column count
-        from collections import Counter
-        col_counts = Counter(cols_per_row)
-        if col_counts:
-            most_common_count = col_counts.most_common(1)[0][1]
-            if most_common_count > max_consistent_cols:
-                max_consistent_cols = most_common_count
-                best_delimiter = delimiter
-                
-    # Clean all lines
-    cleaned_lines = [clean_line(line) for line in sample_lines]
-    
-    return cleaned_lines, best_delimiter
-
-def clean_line(line: str) -> str:
-    """Clean problematic characters from a line."""
-    # Remove null bytes
-    line = line.replace('\0', '')
-    # Normalize line endings
-    line = line.strip('\r\n')
-    # Handle escaped quotes
-    line = re.sub(r'(?<!\\)"', '\\"', line)
-    return line
+    def _clean_drugname(self, drugname: str) -> str:
+        """Clean drug name exactly as in R implementation."""
+        if pd.isna(drugname):
+            return drugname
+            
+        # Matches R's cleaning steps exactly:
+        # gsub("\\s+"," ",trimws(gsub("\\.$","",trimws(tolower(drugname)))))
+        name = drugname.lower().strip()
+        name = re.sub(r'\.$', '', name)
+        name = re.sub(r'\s+', ' ', name).strip()
+        
+        # Remove leading/trailing non-punctuation outside parentheses
+        # gsub("[^)[:^punct:]]+$","",drugname,perl=TRUE)
+        # gsub("^[^([:^punct:]]+","",drugname,perl=TRUE)
+        for _ in range(2):  # R code does this twice
+            name = re.sub(r'[^)\W]+$', '', name, flags=re.UNICODE).strip()
+            name = re.sub(r'^[^(\W]+', '', name, flags=re.UNICODE).strip()
+        
+        # Fix spacing around parentheses
+        # gsub("\\( ","\\(",drugname)
+        # gsub(" \\)","\\)",drugname)
+        name = re.sub(r'\( ', '(', name)
+        name = re.sub(r' \)', ')', name)
+        
+        return name
+        
+    def standardize_drugs(self, data_file: Path) -> None:
+        """Standardize drug names using DIANA dictionary exactly as in R."""
+        try:
+            # Read DRUG dataset
+            drug_df = pd.read_pickle(data_file)
+            
+            # Clean drug names
+            drug_df['drugname'] = drug_df['drugname'].apply(self._clean_drugname)
+            
+            # Calculate frequencies for dictionary update
+            temp = (drug_df['drugname'].value_counts()
+                   .reset_index()
+                   .rename(columns={'index': 'drugname', 'drugname': 'N'}))
+            temp['freq'] = 100 * temp['N'] / temp['N'].sum()
+            
+            # Read and merge with old dictionary
+            old_diana_dict = pd.read_csv(self.diana_dict_path, sep=';')
+            old_diana_dict = old_diana_dict[
+                ['drugname', 'Substance', 'Checked', 'OpenRefine']
+            ].dropna(subset=['Substance'])
+            old_diana_dict = old_diana_dict[old_diana_dict['Substance'] != 'na']
+            
+            # Update dictionary
+            temp = pd.merge(temp, old_diana_dict, on='drugname', how='left')
+            temp.to_csv(self.diana_dict_path, sep=';', index=False)
+            
+            # Read updated dictionary for standardization
+            diana_dict = pd.read_csv(self.diana_dict_path, sep=';')[['drugname', 'Substance']]
+            diana_dict = diana_dict[
+                (diana_dict['Substance'] != 'na') & 
+                (~diana_dict['Substance'].isna())
+            ]
+            
+            # Standardize drug names
+            drug_df = pd.merge(drug_df, diana_dict, on='drugname', how='left')
+            
+            # Handle multi-substance entries
+            multi_mask = drug_df['Substance'].str.contains(';', na=False)
+            drug_multi = drug_df[multi_mask].copy()
+            drug_one = drug_df[~multi_mask].copy()
+            
+            # Process multi-substance entries
+            if not drug_multi.empty:
+                # Split multi-substances
+                cols = ['primaryid', 'drug_seq', 'Substance', 'role_cod', 'drugname', 'prod_ai']
+                drug_multi = drug_multi[cols].copy()
+                drug_multi = drug_multi.assign(
+                    Substance=drug_multi['Substance'].str.split(';')
+                ).explode('Substance')
+            
+            # Process single-substance entries
+            drug_one = drug_one[['primaryid', 'drug_seq', 'Substance', 'role_cod', 'drugname', 'prod_ai']]
+            
+            # Combine and process final dataset
+            drug_df = pd.concat([drug_multi, drug_one], ignore_index=True)
+            
+            # Handle trial substances
+            drug_df['trial'] = drug_df['Substance'].str.contains(', trial', na=False)
+            self.logger.info(f"Number of trial substances: {drug_df['trial'].sum()}")
+            drug_df['Substance'] = drug_df['Substance'].str.replace(', trial', '')
+            
+            # Convert to categorical (R's as.factor)
+            for col in ['drugname', 'prod_ai', 'Substance']:
+                drug_df[col] = drug_df[col].astype('category')
+            
+            # Save standardized dataset
+            drug_df.to_pickle(data_file)
+            self.logger.info("Completed drug standardization")
+            
+        except Exception as e:
+            self.logger.error(f"Error in drug standardization: {str(e)}")
+            raise
 
 class MedDRAStandardizer:
     """Handles MedDRA standardization exactly matching R implementation."""
@@ -2072,29 +2142,29 @@ class MedDRAStandardizer:
         """Load and merge MedDRA files exactly as in R implementation."""
         try:
             # Read all MedDRA files with exact column selection
-            soc = pd.read_csv(self.meddra_dir / "soc.asc", sep="$", header=None, 
-                            usecols=[0,1,2], names=["soc_cod", "soc", "def"])
+            soc = pd.read_csv(self.meddra_dir / "soc.asc", sep="$", engine='python', header=None, usecols=[0,1,2])
+            soc.columns = ['soc_cod', 'soc', 'def']
             
-            soc_hlgt = pd.read_csv(self.meddra_dir / "soc_hlgt.asc", sep="$", header=None,
-                                 usecols=[0,1], names=["soc_cod", "hlgt_cod"])
+            soc_hlgt = pd.read_csv(self.meddra_dir / "soc_hlgt.asc", sep="$", engine='python', header=None, usecols=[0,1])
+            soc_hlgt.columns = ['soc_cod', 'hlgt_cod']
             
-            hlgt = pd.read_csv(self.meddra_dir / "hlgt.asc", sep="$", header=None,
-                             usecols=[0,1], names=["hlgt_cod", "hlgt"])
+            hlgt = pd.read_csv(self.meddra_dir / "hlgt.asc", sep="$", engine='python', header=None, usecols=[0,1])
+            hlgt.columns = ['hlgt_cod', 'hlgt']
             
-            hlgt_hlt = pd.read_csv(self.meddra_dir / "hlgt_hlt.asc", sep="$", header=None,
-                                 usecols=[0,1], names=["hlgt_cod", "hlt_cod"])
+            hlgt_hlt = pd.read_csv(self.meddra_dir / "hlgt_hlt.asc", sep="$", engine='python', header=None, usecols=[0,1])
+            hlgt_hlt.columns = ['hlgt_cod', 'hlt_cod']
             
-            hlt = pd.read_csv(self.meddra_dir / "hlt.asc", sep="$", header=None,
-                            usecols=[0,1], names=["hlt_cod", "hlt"])
+            hlt = pd.read_csv(self.meddra_dir / "hlt.asc", sep="$", engine='python', header=None, usecols=[0,1])
+            hlt.columns = ['hlt_cod', 'hlt']
             
-            hlt_pt = pd.read_csv(self.meddra_dir / "hlt_pt.asc", sep="$", header=None,
-                               usecols=[0,1], names=["hlt_cod", "pt_cod"])
+            hlt_pt = pd.read_csv(self.meddra_dir / "hlt_pt.asc", sep="$", engine='python', header=None, usecols=[0,1])
+            hlt_pt.columns = ['hlt_cod', 'pt_cod']
             
-            pts = pd.read_csv(self.meddra_dir / "pt.asc", sep="$", header=None,
-                            usecols=[0,1,3], names=["pt_cod", "pt", "primary_soc_cod"])
+            pts = pd.read_csv(self.meddra_dir / "pt.asc", sep="$", engine='python', header=None, usecols=[0,1,3])
+            pts.columns = ['pt_cod', 'pt', 'primary_soc_cod']
             
-            llt = pd.read_csv(self.meddra_dir / "llt.asc", sep="$", header=None,
-                            usecols=[0,1,2], names=["llt_cod", "llt", "pt_cod"])
+            llt = pd.read_csv(self.meddra_dir / "llt.asc", sep="$", engine='python', header=None, usecols=[0,1,2])
+            llt.columns = ['llt_cod', 'llt', 'pt_cod']
             
             # Merge all dataframes exactly as in R
             meddra = (soc.merge(soc_hlgt, how='outer')
@@ -2110,14 +2180,14 @@ class MedDRAStandardizer:
                 meddra[col] = meddra[col].str.lower()
             
             # Save distinct values
-            meddra_distinct = (meddra[["def", "soc", "hlgt", "hlt", "pt", "llt"]]
+            meddra_distinct = (meddra[['def', 'soc', 'hlgt', 'hlt', 'pt', 'llt']]
                              .drop_duplicates())
             meddra_distinct.to_csv(self.meddra_dir.parent / "meddra.csv", 
                                  sep=";", index=False)
             
             # Save primary SOC relationships
-            meddra_primary = (meddra[meddra["soc_cod"] == meddra["primary_soc_cod"]]
-                            [["def", "soc", "hlgt", "hlt", "pt"]]
+            meddra_primary = (meddra[meddra['soc_cod'] == meddra['primary_soc_cod']]
+                            [['def', 'soc', 'hlgt', 'hlt', 'pt']]
                             .drop_duplicates())
             meddra_primary.to_csv(self.meddra_dir.parent / "meddra_primary.csv", 
                                 sep=";", index=False)
@@ -2201,3 +2271,40 @@ class MedDRAStandardizer:
         except Exception as e:
             self.logger.error(f"Error standardizing {pt_variable}: {str(e)}")
             raise
+
+def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
+    """Read and clean the file, detecting delimiter."""
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        # Read sample for delimiter detection
+        sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
+        
+    # Detect delimiter
+    delimiters = ['$', '|', '\t', ',']
+    max_consistent_cols = 0
+    best_delimiter = ','
+    
+    for delimiter in delimiters:
+        cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
+        # Get most common column count
+        from collections import Counter
+        col_counts = Counter(cols_per_row)
+        if col_counts:
+            most_common_count = col_counts.most_common(1)[0][1]
+            if most_common_count > max_consistent_cols:
+                max_consistent_cols = most_common_count
+                best_delimiter = delimiter
+                
+    # Clean all lines
+    cleaned_lines = [clean_line(line) for line in sample_lines]
+    
+    return cleaned_lines, best_delimiter
+
+def clean_line(line: str) -> str:
+    """Clean problematic characters from a line."""
+    # Remove null bytes
+    line = line.replace('\0', '')
+    # Normalize line endings
+    line = line.strip('\r\n')
+    # Handle escaped quotes
+    line = re.sub(r'(?<!\\)"', '\\"', line)
+    return line
