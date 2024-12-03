@@ -996,3 +996,89 @@ class FAERSProcessor:
                 except Exception as e:
                     self.logger.error(f"Failed to process {file_path}: {str(e)}")
                     continue
+
+    def process_demo_dataset(self, input_dir: Path, output_dir: Path) -> None:
+        """Process DEMO dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Excludes IMAGE, CONFID, and DEATH_DT variables
+        2. Derives sex from sex and gndr_cod
+        3. Combines rept_dt and " rept_dt" for reporter date
+        """
+        self.logger.info("Processing DEMO dataset")
+        
+        # Find DEMO files (str_detect(faers_list, regex("demo", ignore_case = T)))
+        demo_files = [f for f in self.find_faers_files(input_dir) 
+                     if re.search(r'demo', str(f), re.IGNORECASE)]
+        
+        if not demo_files:
+            raise ValueError("No DEMO files found")
+            
+        # Define exact column mappings as in R
+        namekey = {
+            "ISR": "primaryid",
+            "CASE": "caseid",
+            "FOLL_SEQ": "caseversion",
+            "I_F_COD": "i_f_cod",
+            "EVENT_DT": "event_dt",
+            "MFR_DT": "mfr_dt",
+            "FDA_DT": "fda_dt",
+            "REPT_COD": "rept_cod",
+            "MFR_NUM": "mfr_num",
+            "MFR_SNDR": "mfr_sndr",
+            "AGE": "age",
+            "AGE_COD": "age_cod",
+            "GNDR_COD": "sex",
+            "E_SUB": "e_sub",
+            "WT": "wt",
+            "WT_COD": "wt_cod",
+            "REPT_DT": "rept_dt",
+            "OCCP_COD": "occp_cod",
+            "TO_MFR": "to_mfr",
+            "REPORTER_COUNTRY": "reporter_country",
+            "quarter": "quarter",
+            "i_f_code": "i_f_cod"
+        }
+        
+        # Define exact column subset as in R
+        column_subset = [
+            "primaryid", "caseid", "caseversion", "i_f_cod", "sex", "age",
+            "age_cod", "age_grp", "wt", "wt_cod", "reporter_country",
+            "occr_country", "event_dt", "rept_dt", "mfr_dt", "init_fda_dt",
+            "fda_dt", "rept_cod", "occp_cod", "mfr_num", "mfr_sndr", "to_mfr",
+            "e_sub", "quarter", "auth_num", "lit_ref"
+        ]
+        
+        # Define duplicated columns exactly as in R
+        duplicated_cols_x = ["rept_dt", "sex"]
+        duplicated_cols_y = [" rept_dt", "gndr_cod"]
+        
+        try:
+            # Process DEMO files
+            demo_df = self.unify_data(
+                files_list=demo_files,
+                namekey=namekey,
+                column_subset=column_subset,
+                duplicated_cols_x=duplicated_cols_x,
+                duplicated_cols_y=duplicated_cols_y
+            )
+            
+            # Explicitly verify excluded columns are not present
+            excluded_cols = ["IMAGE", "CONFID", "DEATH_DT"]
+            for col in excluded_cols:
+                if col in demo_df.columns:
+                    self.logger.warning(f"Excluded column {col} found in dataset - removing")
+                    demo_df = demo_df.drop(columns=[col])
+            
+            # Save processed DEMO dataset
+            output_path = output_dir / "DEMO.rds"
+            demo_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed DEMO dataset to {output_path}")
+            
+            # Log summary statistics
+            self.logger.info(f"DEMO dataset shape: {demo_df.shape}")
+            self.logger.info(f"DEMO columns: {', '.join(demo_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing DEMO dataset: {str(e)}")
+            raise
