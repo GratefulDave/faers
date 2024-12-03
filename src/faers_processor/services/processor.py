@@ -881,6 +881,215 @@ class FAERSProcessor:
                 faers_list.append(file)
         return faers_list
 
+    def get_project_paths(self) -> Dict[str, Path]:
+        """Get standardized project paths matching exact project structure."""
+        project_root = Path("/Users/davidandrews/Documents/Projects/DiAna")
+        return {
+            "raw": project_root / "data" / "raw",
+            "clean": project_root / "data" / "clean",
+            "external": project_root / "external_data",
+            "dictionary": project_root / "external_data" / "DiAna_dictionary",
+            "manual_fixes": project_root / "external_data" / "manual_fixes",
+            "meddra": project_root / "external_data" / "meddra",
+            "meddra_ascii": project_root / "external_data" / "meddra" / "MedAscii",
+            "scripts": project_root / "src" / "faers_processor" / "services"  # Python equivalent of R-scripts
+        }
+
+    def save_faers_list(self, faers_list: List[Path]) -> None:
+        """Save faers_list to CSV in the same format as R's write.csv2."""
+        paths = self.get_project_paths()
+        faers_df = pd.DataFrame({'x': [str(f) for f in faers_list]})
+        
+        # Create clean directory if it doesn't exist
+        paths["clean"].mkdir(parents=True, exist_ok=True)
+        
+        # Save using semicolon separator like R's write.csv2
+        output_path = paths["clean"] / "faers_list.csv"
+        faers_df.to_csv(output_path, sep=';', index=False)
+        self.logger.info(f"Saved faers_list to {output_path}")
+
+    def process_drug_datasets(self) -> None:
+        """Process DRUG datasets exactly as in the R implementation.
+        
+        Creates two datasets:
+        1. DRUG: General information about drugs and suspect degree
+        2. DRUG_INFO: Details about doses, formulations, dechallenge, and routes
+        
+        Both datasets maintain primary (primaryid) and secondary (drug_seq) keys.
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing DRUG datasets")
+        
+        # Verify directory structure
+        if not paths["raw"].exists():
+            raise ValueError(f"Raw data directory not found at {paths['raw']}")
+        if not paths["clean"].exists():
+            paths["clean"].mkdir(parents=True)
+            
+        # Find DRUG files (str_detect(faers_list, regex("drug", ignore_case = T)))
+        drug_files = []
+        for quarter_dir in paths["raw"].iterdir():
+            if quarter_dir.is_dir():
+                ascii_dir = quarter_dir / "ascii"
+                if ascii_dir.exists():
+                    for file in ascii_dir.glob("*.[tT][xX][tT]"):
+                        if re.search(r'drug', file.name, re.IGNORECASE):
+                            drug_files.append(file)
+        
+        if not drug_files:
+            raise ValueError("No DRUG files found in the ascii directories")
+            
+        # Define common namekey mapping for both datasets
+        namekey = {
+            "ISR": "primaryid",
+            "DRUG_SEQ": "drug_seq",
+            "ROLE_COD": "role_cod",
+            "DRUGNAME": "drugname",
+            "VAL_VBM": "val_vbm",
+            "ROUTE": "route",
+            "DOSE_VBM": "dose_vbm",
+            "DECHAL": "dechal",
+            "RECHAL": "rechal",
+            "LOT_NUM": "lot_num",
+            "NDA_NUM": "nda_num",
+            "EXP_DT": "exp_dt"
+        }
+        
+        try:
+            # Process DRUG dataset (general information)
+            self.logger.info("Processing DRUG dataset")
+            drug_df = self.unify_data(
+                files_list=drug_files,
+                namekey=namekey,
+                column_subset=[
+                    "primaryid", "drug_seq", "role_cod", "drugname", "prod_ai"
+                ],
+                duplicated_cols_x=None,  # NA in R
+                duplicated_cols_y=None   # NA in R
+            )
+            
+            # Save DRUG dataset
+            drug_output = paths["clean"] / "DRUG.rds"
+            drug_df.to_pickle(drug_output)
+            self.logger.info(f"Saved DRUG dataset to {drug_output}")
+            self.logger.info(f"DRUG shape: {drug_df.shape}")
+            
+            # Process DRUG_INFO dataset (detailed information)
+            self.logger.info("Processing DRUG_INFO dataset")
+            drug_info_df = self.unify_data(
+                files_list=drug_files,
+                namekey=namekey,
+                column_subset=[
+                    "primaryid", "drug_seq", "val_vbm", "nda_num", "lot_num",
+                    "route", "dose_form", "dose_freq", "exp_dt",
+                    "dose_vbm", "cum_dose_unit", "cum_dose_chr", "dose_amt",
+                    "dose_unit", "dechal", "rechal"
+                ],
+                duplicated_cols_x=["lot_num"],
+                duplicated_cols_y=["lot_nbr"]
+            )
+            
+            # Save DRUG_INFO dataset
+            drug_info_output = paths["clean"] / "DRUG_INFO.rds"
+            drug_info_df.to_pickle(drug_info_output)
+            self.logger.info(f"Saved DRUG_INFO dataset to {drug_info_output}")
+            self.logger.info(f"DRUG_INFO shape: {drug_info_df.shape}")
+            
+            # Log summary of both datasets
+            self.logger.info("DRUG processing complete:")
+            self.logger.info(f"DRUG columns: {', '.join(drug_df.columns)}")
+            self.logger.info(f"DRUG_INFO columns: {', '.join(drug_info_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing DRUG datasets: {str(e)}")
+            raise
+
+    def process_demo_dataset(self, input_dir: Path, output_dir: Path) -> None:
+        """Process DEMO dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Excludes IMAGE, CONFID, and DEATH_DT variables
+        2. Derives sex from sex and gndr_cod
+        3. Combines rept_dt and " rept_dt" for reporter date
+        """
+        self.logger.info("Processing DEMO dataset")
+        
+        # Find DEMO files (str_detect(faers_list, regex("demo", ignore_case = T)))
+        demo_files = [f for f in self.find_faers_files(input_dir) 
+                     if re.search(r'demo', str(f), re.IGNORECASE)]
+        
+        if not demo_files:
+            raise ValueError("No DEMO files found")
+            
+        # Define exact column mappings as in R
+        namekey = {
+            "ISR": "primaryid",
+            "CASE": "caseid",
+            "FOLL_SEQ": "caseversion",
+            "I_F_COD": "i_f_cod",
+            "EVENT_DT": "event_dt",
+            "MFR_DT": "mfr_dt",
+            "FDA_DT": "fda_dt",
+            "REPT_COD": "rept_cod",
+            "MFR_NUM": "mfr_num",
+            "MFR_SNDR": "mfr_sndr",
+            "AGE": "age",
+            "AGE_COD": "age_cod",
+            "GNDR_COD": "sex",
+            "E_SUB": "e_sub",
+            "WT": "wt",
+            "WT_COD": "wt_cod",
+            "REPT_DT": "rept_dt",
+            "OCCP_COD": "occp_cod",
+            "TO_MFR": "to_mfr",
+            "REPORTER_COUNTRY": "reporter_country",
+            "quarter": "quarter",
+            "i_f_code": "i_f_cod"
+        }
+        
+        # Define exact column subset as in R
+        column_subset = [
+            "primaryid", "caseid", "caseversion", "i_f_cod", "sex", "age",
+            "age_cod", "age_grp", "wt", "wt_cod", "reporter_country",
+            "occr_country", "event_dt", "rept_dt", "mfr_dt", "init_fda_dt",
+            "fda_dt", "rept_cod", "occp_cod", "mfr_num", "mfr_sndr", "to_mfr",
+            "e_sub", "quarter", "auth_num", "lit_ref"
+        ]
+        
+        # Define duplicated columns exactly as in R
+        duplicated_cols_x = ["rept_dt", "sex"]
+        duplicated_cols_y = [" rept_dt", "gndr_cod"]
+        
+        try:
+            # Process DEMO files
+            demo_df = self.unify_data(
+                files_list=demo_files,
+                namekey=namekey,
+                column_subset=column_subset,
+                duplicated_cols_x=duplicated_cols_x,
+                duplicated_cols_y=duplicated_cols_y
+            )
+            
+            # Explicitly verify excluded columns are not present
+            excluded_cols = ["IMAGE", "CONFID", "DEATH_DT"]
+            for col in excluded_cols:
+                if col in demo_df.columns:
+                    self.logger.warning(f"Excluded column {col} found in dataset - removing")
+                    demo_df = demo_df.drop(columns=[col])
+            
+            # Save processed DEMO dataset
+            output_path = output_dir / "DEMO.rds"
+            demo_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed DEMO dataset to {output_path}")
+            self.logger.info(f"DEMO shape: {demo_df.shape}")
+            
+            # Log summary statistics
+            self.logger.info(f"DEMO columns: {', '.join(demo_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing DEMO dataset: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         
@@ -971,7 +1180,7 @@ class FAERSProcessor:
             
         # Save faers_list
         faers_df = pd.DataFrame({'x': [str(f) for f in faers_list]})
-        faers_df.to_csv(output_dir / 'faers_list.csv', sep=';', index=False)
+        self.save_faers_list(faers_list)
         
         # Correct known problematic files
         problem_files = {
@@ -996,182 +1205,3 @@ class FAERSProcessor:
                 except Exception as e:
                     self.logger.error(f"Failed to process {file_path}: {str(e)}")
                     continue
-
-    def process_demo_dataset(self, input_dir: Path, output_dir: Path) -> None:
-        """Process DEMO dataset exactly as in the R implementation.
-        
-        Specific steps:
-        1. Excludes IMAGE, CONFID, and DEATH_DT variables
-        2. Derives sex from sex and gndr_cod
-        3. Combines rept_dt and " rept_dt" for reporter date
-        """
-        self.logger.info("Processing DEMO dataset")
-        
-        # Find DEMO files (str_detect(faers_list, regex("demo", ignore_case = T)))
-        demo_files = [f for f in self.find_faers_files(input_dir) 
-                     if re.search(r'demo', str(f), re.IGNORECASE)]
-        
-        if not demo_files:
-            raise ValueError("No DEMO files found")
-            
-        # Define exact column mappings as in R
-        namekey = {
-            "ISR": "primaryid",
-            "CASE": "caseid",
-            "FOLL_SEQ": "caseversion",
-            "I_F_COD": "i_f_cod",
-            "EVENT_DT": "event_dt",
-            "MFR_DT": "mfr_dt",
-            "FDA_DT": "fda_dt",
-            "REPT_COD": "rept_cod",
-            "MFR_NUM": "mfr_num",
-            "MFR_SNDR": "mfr_sndr",
-            "AGE": "age",
-            "AGE_COD": "age_cod",
-            "GNDR_COD": "sex",
-            "E_SUB": "e_sub",
-            "WT": "wt",
-            "WT_COD": "wt_cod",
-            "REPT_DT": "rept_dt",
-            "OCCP_COD": "occp_cod",
-            "TO_MFR": "to_mfr",
-            "REPORTER_COUNTRY": "reporter_country",
-            "quarter": "quarter",
-            "i_f_code": "i_f_cod"
-        }
-        
-        # Define exact column subset as in R
-        column_subset = [
-            "primaryid", "caseid", "caseversion", "i_f_cod", "sex", "age",
-            "age_cod", "age_grp", "wt", "wt_cod", "reporter_country",
-            "occr_country", "event_dt", "rept_dt", "mfr_dt", "init_fda_dt",
-            "fda_dt", "rept_cod", "occp_cod", "mfr_num", "mfr_sndr", "to_mfr",
-            "e_sub", "quarter", "auth_num", "lit_ref"
-        ]
-        
-        # Define duplicated columns exactly as in R
-        duplicated_cols_x = ["rept_dt", "sex"]
-        duplicated_cols_y = [" rept_dt", "gndr_cod"]
-        
-        try:
-            # Process DEMO files
-            demo_df = self.unify_data(
-                files_list=demo_files,
-                namekey=namekey,
-                column_subset=column_subset,
-                duplicated_cols_x=duplicated_cols_x,
-                duplicated_cols_y=duplicated_cols_y
-            )
-            
-            # Explicitly verify excluded columns are not present
-            excluded_cols = ["IMAGE", "CONFID", "DEATH_DT"]
-            for col in excluded_cols:
-                if col in demo_df.columns:
-                    self.logger.warning(f"Excluded column {col} found in dataset - removing")
-                    demo_df = demo_df.drop(columns=[col])
-            
-            # Save processed DEMO dataset
-            output_path = output_dir / "DEMO.rds"
-            demo_df.to_pickle(output_path)
-            self.logger.info(f"Saved processed DEMO dataset to {output_path}")
-            self.logger.info(f"DEMO shape: {demo_df.shape}")
-            
-            # Log summary statistics
-            self.logger.info(f"DEMO columns: {', '.join(demo_df.columns)}")
-            
-        except Exception as e:
-            self.logger.error(f"Error processing DEMO dataset: {str(e)}")
-            raise
-
-    def get_project_paths(self) -> Dict[str, Path]:
-        """Get standardized project paths."""
-        project_root = Path("/Users/davidandrews/Documents/Projects/DiAna")
-        return {
-            "raw": project_root / "data" / "raw",
-            "clean": project_root / "data" / "clean",
-            "external": project_root / "data" / "external"
-        }
-
-    def process_drug_datasets(self) -> None:
-        """Process DRUG datasets exactly as in the R implementation.
-        
-        Creates two datasets:
-        1. DRUG: General information about drugs and suspect degree
-        2. DRUG_INFO: Details about doses, formulations, dechallenge, and routes
-        
-        Both datasets maintain primary (primaryid) and secondary (drug_seq) keys.
-        """
-        paths = self.get_project_paths()
-        self.logger.info("Processing DRUG datasets")
-        
-        # Find DRUG files (str_detect(faers_list, regex("drug", ignore_case = T)))
-        drug_files = [f for f in self.find_faers_files(paths["raw"]) 
-                     if re.search(r'drug', str(f), re.IGNORECASE)]
-        
-        if not drug_files:
-            raise ValueError("No DRUG files found")
-            
-        # Define common namekey mapping for both datasets
-        namekey = {
-            "ISR": "primaryid",
-            "DRUG_SEQ": "drug_seq",
-            "ROLE_COD": "role_cod",
-            "DRUGNAME": "drugname",
-            "VAL_VBM": "val_vbm",
-            "ROUTE": "route",
-            "DOSE_VBM": "dose_vbm",
-            "DECHAL": "dechal",
-            "RECHAL": "rechal",
-            "LOT_NUM": "lot_num",
-            "NDA_NUM": "nda_num",
-            "EXP_DT": "exp_dt"
-        }
-        
-        try:
-            # Process DRUG dataset (general information)
-            self.logger.info("Processing DRUG dataset")
-            drug_df = self.unify_data(
-                files_list=drug_files,
-                namekey=namekey,
-                column_subset=[
-                    "primaryid", "drug_seq", "role_cod", "drugname", "prod_ai"
-                ],
-                duplicated_cols_x=None,  # NA in R
-                duplicated_cols_y=None   # NA in R
-            )
-            
-            # Save DRUG dataset
-            drug_output = paths["clean"] / "DRUG.rds"
-            drug_df.to_pickle(drug_output)
-            self.logger.info(f"Saved DRUG dataset to {drug_output}")
-            self.logger.info(f"DRUG shape: {drug_df.shape}")
-            
-            # Process DRUG_INFO dataset (detailed information)
-            self.logger.info("Processing DRUG_INFO dataset")
-            drug_info_df = self.unify_data(
-                files_list=drug_files,
-                namekey=namekey,
-                column_subset=[
-                    "primaryid", "drug_seq", "val_vbm", "nda_num", "lot_num",
-                    "route", "dose_form", "dose_freq", "exp_dt",
-                    "dose_vbm", "cum_dose_unit", "cum_dose_chr", "dose_amt",
-                    "dose_unit", "dechal", "rechal"
-                ],
-                duplicated_cols_x=["lot_num"],
-                duplicated_cols_y=["lot_nbr"]
-            )
-            
-            # Save DRUG_INFO dataset
-            drug_info_output = paths["clean"] / "DRUG_INFO.rds"
-            drug_info_df.to_pickle(drug_info_output)
-            self.logger.info(f"Saved DRUG_INFO dataset to {drug_info_output}")
-            self.logger.info(f"DRUG_INFO shape: {drug_info_df.shape}")
-            
-            # Log summary of both datasets
-            self.logger.info("DRUG processing complete:")
-            self.logger.info(f"DRUG columns: {', '.join(drug_df.columns)}")
-            self.logger.info(f"DRUG_INFO columns: {', '.join(drug_info_df.columns)}")
-            
-        except Exception as e:
-            self.logger.error(f"Error processing DRUG datasets: {str(e)}")
-            raise
