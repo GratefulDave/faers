@@ -14,18 +14,17 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Tuple, Any
+from typing import Dict, List, Optional, Set, Any, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-import dask.dataframe as dd
-from dask.distributed import Client, LocalCluster
-from tabulate import tabulate
+import tabulate
 
 @dataclass
 class TableSummary:
@@ -1627,70 +1626,55 @@ class DataStandardizer:
             self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_indications: {str(e)}")
             return df
 
-    def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
-        """Process all FAERS quarters with summary reporting.
+    def process_quarters(self, quarters_dir: Path, parallel: bool = True, max_workers: Optional[int] = None) -> Dict[str, Any]:
+        """Process multiple FAERS quarters.
         
         Args:
-            quarters_dir: Directory containing FAERS quarter data
-            parallel: If True, process quarters in parallel using dask
-            n_workers: Number of worker processes for parallel processing
+            quarters_dir: Directory containing quarter directories
+            parallel: If True, process quarters in parallel using ThreadPoolExecutor
+            max_workers: Maximum number of worker threads for parallel processing
             
         Returns:
-            Markdown formatted summary report
+            Dictionary containing processing results
         """
+        results = {}
+        
         try:
-            # Ensure quarters_dir is a Path and exists
-            quarters_dir = Path(quarters_dir).resolve()
-            if not quarters_dir.exists():
-                raise FileNotFoundError(f"Quarters directory not found at {quarters_dir}")
-            
             # Get list of quarter directories
             quarter_dirs = [d for d in quarters_dir.iterdir() if d.is_dir()]
-            if not quarter_dirs:
-                raise ValueError(f"No quarter directories found in {quarters_dir}")
+            self.logger.info(f"Found {len(quarter_dirs)} quarter directories")
             
-            self.logger.info(f"Found {len(quarter_dirs)} quarters to process")
-            
-            # Initialize summary tracker
-            summary = FAERSProcessingSummary()
-            
-            if parallel and len(quarter_dirs) > 1:
-                # Set up dask client for parallel processing
-                n_workers = n_workers or min(len(quarter_dirs), os.cpu_count() or 1)
-                cluster = LocalCluster(n_workers=n_workers)
-                client = Client(cluster)
-                self.logger.info(f"Processing {len(quarter_dirs)} quarters in parallel with {n_workers} workers")
-                
-                # Create dask bag of quarter directories
-                quarters_bag = db.from_sequence(quarter_dirs)
-                results = quarters_bag.map(self.process_quarter).compute()
-                
-                # Add results to summary
-                for quarter_dir, result in zip(quarter_dirs, results):
-                    if result:
-                        summary.add_quarter_summary(quarter_dir.name, result)
-                
-                # Close dask client
-                client.close()
-                cluster.close()
-                
+            if parallel:
+                # Use ThreadPoolExecutor for parallel processing
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_quarter = {
+                        executor.submit(self.process_quarter, quarter_dir): quarter_dir
+                        for quarter_dir in quarter_dirs
+                    }
+                    
+                    for future in as_completed(future_to_quarter):
+                        quarter_dir = future_to_quarter[future]
+                        try:
+                            result = future.result()
+                            if result:
+                                results[quarter_dir.name] = result
+                        except Exception as e:
+                            self.logger.error(f"Error processing quarter {quarter_dir}: {str(e)}")
             else:
-                # Process quarters sequentially
-                self.logger.info(f"Processing {len(quarter_dirs)} quarters sequentially")
-                for quarter_dir in tqdm(quarter_dirs, desc="Processing quarters"):
+                # Process sequentially
+                for quarter_dir in quarter_dirs:
                     try:
                         result = self.process_quarter(quarter_dir)
                         if result:
-                            summary.add_quarter_summary(quarter_dir.name, result)
+                            results[quarter_dir.name] = result
                     except Exception as e:
-                        self.logger.error(f"Error processing quarter {quarter_dir.name}: {str(e)}")
+                        self.logger.error(f"Error processing quarter {quarter_dir}: {str(e)}")
             
-            # Generate and return report
-            return summary.generate_markdown_report()
+            return results
             
         except Exception as e:
             self.logger.error(f"Error in process_quarters: {str(e)}")
-            return f"Error processing quarters: {str(e)}"
+            return results
 
     def process_quarter(self, quarter_dir: Path) -> Optional[QuarterSummary]:
         """Process a single quarter.
