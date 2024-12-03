@@ -1,6 +1,44 @@
 #!/usr/bin/env python3
 """
 CLI interface for FAERS data processing.
+
+This script provides a command-line interface for downloading, processing, and deduplicating 
+FDA Adverse Event Reporting System (FAERS) data. It handles all quarters from 2004Q1 up to 
+either a specified maximum date or the current quarter.
+
+Directory Structure:
+    project_root/
+    ├── data/
+    │   ├── clean/     # Processed and deduplicated files
+    │   └── raw/       # Raw FAERS quarterly data
+    └── external_data/
+        ├── DiAna_dictionary/
+        ├── manual_fixes/
+        └── meddra/
+
+Usage:
+    # Process all quarters up to current date
+    python process_faers.py --project-root .
+
+    # Process all quarters up to specific date
+    python process_faers.py --project-root . --max-date 20240930
+
+    # Run specific steps
+    python process_faers.py --project-root . --steps download
+    python process_faers.py --project-root . --steps process
+    python process_faers.py --project-root . --steps deduplicate
+
+    # Enable parallel processing
+    python process_faers.py --project-root . --parallel --workers 4
+
+Steps:
+    1. download: Downloads all FAERS quarterly data files
+    2. process: Standardizes and processes all downloaded quarters
+    3. deduplicate: Removes duplicates across all processed data
+
+All steps process quarters from 2004Q1 up to either:
+    - The quarter specified by max-date (YYYYMMDD format)
+    - The current quarter if no max-date is specified
 """
 
 import argparse
@@ -15,8 +53,31 @@ from faers_processor.services.downloader import FAERSDownloader
 from faers_processor.services.deduplicator import FAERSDeduplicator
 
 class ProjectPaths:
-    """Manages project directory paths."""
+    """
+    Manages project directory structure and file paths.
+    
+    This class handles all path-related operations including:
+    - Directory creation and validation
+    - Quarter-specific path generation
+    - Case-insensitive file finding across all quarters
+    
+    Attributes:
+        root (Path): Project root directory
+        raw (Path): Directory for raw FAERS data
+        clean (Path): Directory for processed data
+        external (Path): Directory for external reference data
+        diana_dict (Path): Directory for DiAna dictionary
+        manual_fixes (Path): Directory for manual data fixes
+        meddra (Path): Directory for MedDRA vocabulary files
+    """
+    
     def __init__(self, project_root: Path):
+        """
+        Initialize project directory structure.
+        
+        Args:
+            project_root (Path): Root directory of the project
+        """
         self.root = project_root
         self.raw = project_root / 'data' / 'raw'
         self.clean = project_root / 'data' / 'clean'
@@ -29,16 +90,37 @@ class ProjectPaths:
         self.clean.mkdir(parents=True, exist_ok=True)
         
     def get_quarter_dir(self, quarter: str) -> Path:
-        """Get path to quarter directory in raw data."""
+        """
+        Get path to quarter directory in raw data.
+        
+        Args:
+            quarter (str): Quarter identifier (e.g., '2004q1')
+            
+        Returns:
+            Path: Path to the quarter's ASCII data directory
+        """
         return self.raw / quarter / 'ascii'
         
     def find_text_files(self, prefix: str) -> list[Path]:
-        """Find text files case-insensitively across all quarters."""
+        """
+        Find text files case-insensitively across all quarters.
+        
+        Args:
+            prefix (str): File prefix to search for
+            
+        Returns:
+            list[Path]: List of matching file paths
+        """
         pattern = f"**/{prefix}*.[Tt][Xx][Tt]"
         return list(self.raw.glob(pattern))
         
     def get_all_quarters(self) -> list[str]:
-        """Get all available quarters in raw data directory."""
+        """
+        Get all available quarters in raw data directory.
+        
+        Returns:
+            list[str]: Sorted list of quarter identifiers (e.g., ['2004q1', '2004q2'])
+        """
         quarters = []
         for quarter_dir in self.raw.iterdir():
             if quarter_dir.is_dir() and re.match(r'\d{4}q[1-4]', quarter_dir.name.lower()):
@@ -53,7 +135,17 @@ def setup_logging(level: str) -> None:
     )
 
 def download_data(paths: ProjectPaths, max_date: Optional[str] = None) -> None:
-    """Download all FAERS quarterly data."""
+    """
+    Download all FAERS quarterly data.
+    
+    Downloads data for all quarters from 2004Q1 up to either:
+    - The quarter specified by max_date
+    - The current quarter if no max_date is specified
+    
+    Args:
+        paths (ProjectPaths): Project paths manager
+        max_date (Optional[str]): Maximum date in YYYYMMDD format
+    """
     downloader = FAERSDownloader(paths.raw)
     
     # Calculate quarters to download based on max_date
@@ -92,8 +184,18 @@ def download_data(paths: ProjectPaths, max_date: Optional[str] = None) -> None:
             logging.error(f"Error downloading quarter {quarter}: {str(e)}")
 
 def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
-                parallel: bool = False, workers: Optional[int] = None) -> None:
-    """Process all FAERS data."""
+                parallel: bool = True, max_workers: Optional[int] = None,
+                chunk_size: Optional[int] = None) -> None:
+    """
+    Process all FAERS data in parallel.
+    
+    Args:
+        paths (ProjectPaths): Project paths manager
+        max_date (Optional[str]): Maximum date in YYYYMMDD format
+        parallel (bool): Whether to use parallel processing (default: True)
+        max_workers (Optional[int]): Number of worker processes (default: CPU count)
+        chunk_size (Optional[int]): Size of data chunks for parallel processing (default: 50000)
+    """
     standardizer = DataStandardizer(paths.external, paths.clean)
     
     # Process all available quarters
@@ -107,17 +209,34 @@ def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
                     quarter_dir,
                     max_date=max_date,
                     parallel=parallel,
-                    n_workers=workers
+                    max_workers=max_workers,
+                    chunk_size=chunk_size or 50000
                 )
         except Exception as e:
             logging.error(f"Error processing quarter {quarter}: {str(e)}")
 
-def deduplicate_data(paths: ProjectPaths, max_date: Optional[str] = None) -> None:
-    """Deduplicate all processed FAERS data."""
+def deduplicate_data(paths: ProjectPaths, max_date: Optional[str] = None,
+                    parallel: bool = True, max_workers: Optional[int] = None,
+                    chunk_size: Optional[int] = None) -> None:
+    """
+    Deduplicate all processed FAERS data in parallel.
+    
+    Args:
+        paths (ProjectPaths): Project paths manager
+        max_date (Optional[str]): Maximum date in YYYYMMDD format
+        parallel (bool): Whether to use parallel processing (default: True)
+        max_workers (Optional[int]): Number of worker processes (default: CPU count)
+        chunk_size (Optional[int]): Size of data chunks for parallel processing (default: 50000)
+    """
     try:
         logging.info("Starting deduplication of all processed data...")
         deduplicator = FAERSDeduplicator(paths.clean)
-        deduplicator.deduplicate_all(max_date)
+        deduplicator.deduplicate_all(
+            max_date=max_date,
+            parallel=parallel,
+            max_workers=max_workers,
+            chunk_size=chunk_size or 50000
+        )
     except Exception as e:
         logging.error(f"Error during deduplication: {str(e)}")
 
@@ -148,13 +267,21 @@ def main():
     parser.add_argument(
         '--parallel',
         action='store_true',
-        help='Enable parallel processing'
+        default=True,
+        help='Enable parallel processing (default: True)'
     )
     
     parser.add_argument(
-        '--workers',
+        '--max-workers',
         type=int,
-        help='Number of worker processes for parallel processing'
+        help='Number of worker processes for parallel processing (default: CPU count)'
+    )
+    
+    parser.add_argument(
+        '--chunk-size',
+        type=int,
+        default=50000,
+        help='Size of data chunks for parallel processing (default: 50000)'
     )
     
     parser.add_argument(
@@ -179,11 +306,23 @@ def main():
     
     if 'process' in steps:
         logging.info("Starting processing of all quarters...")
-        process_data(paths, args.max_date, args.parallel, args.workers)
+        process_data(
+            paths,
+            max_date=args.max_date,
+            parallel=args.parallel,
+            max_workers=args.max_workers,
+            chunk_size=args.chunk_size
+        )
     
     if 'deduplicate' in steps:
         logging.info("Starting deduplication of all data...")
-        deduplicate_data(paths, args.max_date)
+        deduplicate_data(
+            paths,
+            max_date=args.max_date,
+            parallel=args.parallel,
+            max_workers=args.max_workers,
+            chunk_size=args.chunk_size
+        )
     
     logging.info("All requested steps completed successfully")
 
