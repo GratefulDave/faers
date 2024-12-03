@@ -317,16 +317,22 @@ class DataStandardizer:
             DataFrame with standardized column names
         """
         # Create case-insensitive column mapping
-        df_cols = set(df.columns)
+        df_cols_upper = {col.upper(): col for col in df.columns}
         col_mapping = {}
         
+        # First pass: Try to map all source columns case-insensitively
         for src, target in mapping.items():
-            # Find case-insensitive match for source column
-            matches = [c for c in df_cols if c.upper() == src.upper()]
-            if matches:
-                col_mapping[matches[0]] = target
-                
-        # Rename columns based on mapping
+            src_upper = src.upper()
+            if src_upper in df_cols_upper:
+                col_mapping[df_cols_upper[src_upper]] = target
+        
+        # Special handling for ISR->primaryid mapping (ALWAYS present in some form)
+        if 'primaryid' not in col_mapping.values():
+            isr_col = next((df_cols_upper[col] for col in df_cols_upper if col in ['ISR', 'isr']), None)
+            if isr_col:
+                col_mapping[isr_col] = 'primaryid'
+        
+        # Apply the mapping
         if col_mapping:
             df = df.rename(columns=col_mapping)
             
