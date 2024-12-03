@@ -1147,6 +1147,60 @@ class FAERSProcessor:
             self.logger.error(f"Error processing INDI dataset: {str(e)}")
             raise
 
+    def process_outc_dataset(self) -> None:
+        """Process OUTC dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Process OUTC files
+        2. Remove rows with no outcome specified (NA outc_cod)
+        3. Save to RDS/pickle format
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing OUTC dataset")
+        
+        # Find OUTC files (str_detect(faers_list, regex("outc", ignore_case = T)))
+        outc_files = []
+        for quarter_dir in paths["raw"].iterdir():
+            if quarter_dir.is_dir():
+                ascii_dir = quarter_dir / "ascii"
+                if ascii_dir.exists():
+                    for file in ascii_dir.glob("*.[tT][xX][tT]"):
+                        if re.search(r'outc', file.name, re.IGNORECASE):
+                            outc_files.append(file)
+        
+        if not outc_files:
+            raise ValueError("No OUTC files found in the ascii directories")
+            
+        try:
+            # Process OUTC dataset with exact R parameters
+            outc_df = self.unify_data(
+                files_list=outc_files,
+                namekey={
+                    "ISR": "primaryid",
+                    "OUTC_COD": "outc_cod"
+                },
+                column_subset=[
+                    "primaryid",
+                    "outc_cod"
+                ],
+                duplicated_cols_x=["outc_cod"],  # Matches R's c("outc_cod")
+                duplicated_cols_y=["outc_code"]  # Matches R's c("outc_code")
+            )
+            
+            # Remove rows with NA outc_cod (OUTC <- OUTC[!is.na(outc_cod)])
+            outc_df = outc_df.dropna(subset=['outc_cod'])
+            
+            # Save processed OUTC dataset
+            output_path = paths["clean"] / "OUTC.rds"
+            outc_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed OUTC dataset to {output_path}")
+            self.logger.info(f"OUTC shape: {outc_df.shape}")
+            self.logger.info(f"OUTC columns: {', '.join(outc_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing OUTC dataset: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         
