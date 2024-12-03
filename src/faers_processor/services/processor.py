@@ -531,6 +531,11 @@ class FAERSProcessor:
                 self.logger.info(f"Successfully read {len(df):,} rows from {file_path}")
                 table_summary.total_rows = len(df)
                 
+                # Process DataFrame through common processing first
+                df = self._process_dataframe(df, data_type, table_summary)
+                if df.empty:
+                    return df
+                
             except pd.errors.ParserError as e:
                 error_msg = f"Parser error in {file_path}: {str(e)}"
                 self.logger.error(error_msg)
@@ -586,91 +591,6 @@ class FAERSProcessor:
             self.logger.error(error_msg)
             table_summary.add_parsing_error(error_msg)
             return pd.DataFrame()
-
-    def _fix_known_data_issues(self, file_path: Path) -> str:
-        """Fix known data formatting issues in specific FAERS files.
-
-        Args:
-            file_path: Path to the file being processed
-
-        Returns:
-            Fixed content with proper line breaks
-        """
-        # Known problematic files and their fixes - adjusted line numbers to be 0-based
-        known_issues = {
-            "DRUG11Q2.TXT": {
-                "line": 322966,
-                "pattern": "$$$$$$7475791",
-                "expected_fields": 13
-            },
-            "DRUG11Q3.TXT": {
-                "line": 247895,
-                "pattern": "$$$$$$7652730",
-                "expected_fields": 13
-            },
-            "DRUG11Q4.TXT": {
-                "line": 446737,
-                "pattern": "021487$7941354",
-                "expected_fields": 13
-            },
-            "DEMO12Q1.TXT": {
-                "line": 105916,
-                "pattern": None,
-                "expected_fields": 24
-            }
-        }
-
-        filename = os.path.basename(file_path).upper()
-        if filename in known_issues:
-            issue = known_issues[filename]
-            lines = []
-            with open(file_path, 'r') as f:
-                for line in f:
-                    lines.append(line.strip())
-            # Check surrounding lines for the issue
-            problem_line = issue["line"]
-            for offset in [-1, 0, 1]:  # Check the line before, the line itself, and the line after
-                check_line = problem_line + offset
-                if 0 <= check_line < len(lines):
-                    current_line = lines[check_line]
-                    fields = current_line.split("$")
-
-                    # If we have too many fields
-                    if len(fields) > issue["expected_fields"]:
-                        if issue["pattern"]:
-                            # Try to split at the known pattern
-                            if issue["pattern"] in current_line:
-                                parts = current_line.split(issue["pattern"])
-                                if len(parts) == 2:
-                                    # Create two properly formatted lines
-                                    first_line = parts[0] + "$" * (issue["expected_fields"] - 1)
-                                    second_line = "$".join([""] * (issue["expected_fields"] - 1)) + parts[1]
-                                    lines[check_line] = first_line
-                                    lines.insert(check_line + 1, second_line)
-                                    break
-                        else:
-                            # Generic handling for field count issues
-                            new_lines = []
-                            current_fields = []
-                            for field in fields:
-                                current_fields.append(field)
-                                if len(current_fields) == issue["expected_fields"]:
-                                    new_lines.append("$".join(current_fields))
-                                    current_fields = []
-
-                            if current_fields:  # Handle any remaining fields
-                                while len(current_fields) < issue["expected_fields"]:
-                                    current_fields.append("")
-                                new_lines.append("$".join(current_fields))
-
-                            # Replace the problematic line with fixed lines
-                            lines[check_line:check_line+1] = new_lines
-                            break
-
-            # Rejoin the lines
-            content = "\n".join(lines)
-
-        return content
 
     def _process_dataframe(self, df: pd.DataFrame, data_type: str, table_summary: TableSummary) -> pd.DataFrame:
         """Process a DataFrame based on its type."""
@@ -769,6 +689,91 @@ class FAERSProcessor:
             return pd.DataFrame()
             
         return df
+
+    def _fix_known_data_issues(self, file_path: Path) -> str:
+        """Fix known data formatting issues in specific FAERS files.
+
+        Args:
+            file_path: Path to the file being processed
+
+        Returns:
+            Fixed content with proper line breaks
+        """
+        # Known problematic files and their fixes - adjusted line numbers to be 0-based
+        known_issues = {
+            "DRUG11Q2.TXT": {
+                "line": 322966,
+                "pattern": "$$$$$$7475791",
+                "expected_fields": 13
+            },
+            "DRUG11Q3.TXT": {
+                "line": 247895,
+                "pattern": "$$$$$$7652730",
+                "expected_fields": 13
+            },
+            "DRUG11Q4.TXT": {
+                "line": 446737,
+                "pattern": "021487$7941354",
+                "expected_fields": 13
+            },
+            "DEMO12Q1.TXT": {
+                "line": 105916,
+                "pattern": None,
+                "expected_fields": 24
+            }
+        }
+
+        filename = os.path.basename(file_path).upper()
+        if filename in known_issues:
+            issue = known_issues[filename]
+            lines = []
+            with open(file_path, 'r') as f:
+                for line in f:
+                    lines.append(line.strip())
+            # Check surrounding lines for the issue
+            problem_line = issue["line"]
+            for offset in [-1, 0, 1]:  # Check the line before, the line itself, and the line after
+                check_line = problem_line + offset
+                if 0 <= check_line < len(lines):
+                    current_line = lines[check_line]
+                    fields = current_line.split("$")
+
+                    # If we have too many fields
+                    if len(fields) > issue["expected_fields"]:
+                        if issue["pattern"]:
+                            # Try to split at the known pattern
+                            if issue["pattern"] in current_line:
+                                parts = current_line.split(issue["pattern"])
+                                if len(parts) == 2:
+                                    # Create two properly formatted lines
+                                    first_line = parts[0] + "$" * (issue["expected_fields"] - 1)
+                                    second_line = "$".join([""] * (issue["expected_fields"] - 1)) + parts[1]
+                                    lines[check_line] = first_line
+                                    lines.insert(check_line + 1, second_line)
+                                    break
+                        else:
+                            # Generic handling for field count issues
+                            new_lines = []
+                            current_fields = []
+                            for field in fields:
+                                current_fields.append(field)
+                                if len(current_fields) == issue["expected_fields"]:
+                                    new_lines.append("$".join(current_fields))
+                                    current_fields = []
+
+                            if current_fields:  # Handle any remaining fields
+                                while len(current_fields) < issue["expected_fields"]:
+                                    current_fields.append("")
+                                new_lines.append("$".join(current_fields))
+
+                            # Replace the problematic line with fixed lines
+                            lines[check_line:check_line+1] = new_lines
+                            break
+
+            # Rejoin the lines
+            content = "\n".join(lines)
+
+        return content
 
     def _normalize_quarter_path(self, quarter_dir: Path) -> Path:
         """Normalize quarter directory path to handle case sensitivity.
