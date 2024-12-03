@@ -131,351 +131,210 @@ class FAERSProcessingSummary:
         return "\n".join(report)
 
 class DataStandardizer:
-    """Standardizes FAERS data fields."""
+    """Standardizes FAERS data according to FDA specifications."""
     
-    def __init__(self, external_dir: Path, output_dir: Path):
-        """Initialize the standardizer.
-        
-        Args:
-            external_dir: Path to external data directory
-            output_dir: Path to output directory
-        """
-        self.external_dir = external_dir
-        self.output_dir = output_dir
-        
-        # Create output directory if it doesn't exist
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize logging
-        logging.info(f"Using external data from: {self.external_dir}")
-        logging.info(f"Saving processed data to: {self.output_dir}")
-        
-        # Load reference data
-        self._load_reference_data()
-        self._load_meddra_data()
-        self._load_diana_dictionary()
-        
-        # Configure NumPy optimizations for Apple Silicon
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        # Valid values for standardization
+        self.valid_routes = {'ORAL', 'INTRAVENOUS', 'SUBCUTANEOUS', 'INTRAMUSCULAR', 'TOPICAL'}
+        self.valid_roles = {'PS', 'SS', 'C', 'I'}
+        self.valid_outcomes = {'DE', 'LT', 'HO', 'DS', 'CA', 'RI', 'OT'}
+    
+    def _get_column_case_insensitive(self, df: pd.DataFrame, column_names: list) -> Optional[str]:
+        """Find column name case-insensitively from a list of possible names."""
+        df_cols = {col.lower(): col for col in df.columns}
+        for name in column_names:
+            if name.lower() in df_cols:
+                return df_cols[name.lower()]
+        return None
+
+    def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize demographics data."""
         try:
-            import numpy.distutils.system_info as sysinfo
-            blas_info = sysinfo.get_info('blas_opt')
-            if blas_info:
-                logging.info("Using optimized BLAS for Apple Silicon")
-                # Set NumPy threading to match physical cores for M1/M2
-                import multiprocessing as mp
-                physical_cores = mp.cpu_count() // 2  # Account for efficiency cores
-                os.environ["OMP_NUM_THREADS"] = str(physical_cores)
-                os.environ["OPENBLAS_NUM_THREADS"] = str(physical_cores)
-                os.environ["MKL_NUM_THREADS"] = str(physical_cores)
-                os.environ["VECLIB_MAXIMUM_THREADS"] = str(physical_cores)
-                os.environ["NUMEXPR_NUM_THREADS"] = str(physical_cores)
-            else:
-                logging.info("Standard BLAS configuration in use")
-        except Exception as e:
-            logging.info(f"Using default NumPy configuration: {str(e)}")
-
-    def _init_logging(self):
-        """Initialize logging configuration."""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-
-    def get_drug_dictionary(self) -> Dict[str, str]:
-        """Get or load drug standardization dictionary."""
-        if not hasattr(self, '_drug_dictionary'):
-            dict_path = self.external_dir / 'drug_dictionary.csv'
-            if dict_path.exists():
-                df = pd.read_csv(dict_path, low_memory=False)
-                self._drug_dictionary = dict(zip(df['original'], df['standard']))
-            else:
-                logging.warning(f"Drug dictionary not found at {dict_path}")
-                self._drug_dictionary = {}
-        return self._drug_dictionary
-
-    def standardize_dates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize date columns in demographics data.
-        
-        Args:
-            df: DataFrame containing date columns
+            # Column name mappings (standardized name: possible names)
+            column_mappings = {
+                'i_f_code': ['I_F_CODE', 'I_F_COD', 'i_f_code', 'i_f_cod'],
+                'sex': ['SEX', 'GNDR_COD', 'sex', 'gndr_cod'],
+                'age': ['AGE', 'age'],
+                'age_cod': ['AGE_COD', 'age_cod'],
+                'event_dt': ['EVENT_DT', 'event_dt'],
+                'fda_dt': ['FDA_DT', 'fda_dt'],
+                'rept_dt': ['REPT_DT', 'rept_dt'],
+                'country': ['COUNTRY', 'REPORTER_COUNTRY', 'country', 'reporter_country']
+            }
             
-        Returns:
-            DataFrame with standardized dates
-        """
-        if df.empty:
-            return df
-            
-        df = df.copy()
-        
-        # Process date columns in order matching R script
-        date_columns = ['event_dt', 'mfr_dt', 'fda_dt', 'rept_dt']
-        
-        # FAERS date formats we need to handle
-        date_formats = [
-            '%Y%m%d',      # YYYYMMDD
-            '%Y%m',        # YYYYMM
-            '%Y',          # YYYY
-            '%d%b%Y',      # DDMONYYYY
-            '%b%Y',        # MONYYYY
-            '%d/%m/%Y',    # DD/MM/YYYY
-            '%m/%d/%Y',    # MM/DD/YYYY
-            '%Y-%m-%d',    # YYYY-MM-DD
-            '%Y%m%d.0',    # YYYYMMDD.0 (from float conversion)
-            '%Y-%m-%dT%H:%M:%S',  # ISO8601
-            '%Y-%m-%d %H:%M:%S',  # ISO8601 without T
-            '%Y-%m',       # YYYY-MM
-            '%m/%Y',       # MM/YYYY
-            '%Y%m.0',      # YYYYMM.0 (from float conversion)
-            '%y%m%d',      # YYMMDD (2-digit year)
-        ]
-        
-        def try_parse_date(date_str):
-            """Try to parse a date string using multiple formats."""
-            if pd.isna(date_str):
-                return pd.NaT
-                
-            # Convert to string and clean
-            date_str = str(date_str).strip()
-            
-            # Handle empty strings
-            if not date_str or date_str == 'nan':
-                return pd.NaT
-                
-            # Remove .0 if present (from float conversion)
-            if date_str.endswith('.0'):
-                date_str = date_str[:-2]
-                
-            # Handle quarter format (e.g., 2011Q1)
-            quarter_match = re.match(r'(\d{4})Q(\d)', date_str)
-            if quarter_match:
-                year, quarter = quarter_match.groups()
-                month = (int(quarter) - 1) * 3 + 1
-                return pd.Timestamp(f"{year}-{month:02d}-01")
-                
-            # Try each format
-            for fmt in date_formats:
-                try:
-                    parsed_date = pd.to_datetime(date_str, format=fmt)
-                    # Handle 2-digit years
-                    if fmt.startswith('%y'):
-                        if parsed_date.year > datetime.now().year:
-                            parsed_date = parsed_date.replace(year=parsed_date.year - 100)
-                    return parsed_date
-                except (ValueError, TypeError):
-                    continue
-                    
-            # If all formats fail, try dateutil parser with error handling
-            try:
-                parsed_date = pd.to_datetime(date_str, errors='coerce')
-                if pd.notna(parsed_date):
-                    # Validate year is reasonable
-                    if 1900 <= parsed_date.year <= datetime.now().year:
-                        return parsed_date
-            except (ValueError, TypeError):
-                pass
-                
-            return pd.NaT
-        
-        # Valid date range
-        min_date = pd.Timestamp('1960-01-01')
-        max_date = pd.Timestamp.now()
-        
-        for col in date_columns:
-            if col not in df.columns:
-                logging.warning(f"Required date column '{col}' not found, adding with default value: <NA>")
-                df[col] = pd.NaT
-                continue
-                
-            try:
-                # Convert column to string first to handle numeric dates
-                df[col] = df[col].astype(str)
-                
-                # Convert to datetime using our custom parser
-                df[col] = df[col].apply(try_parse_date)
-                
-                # Validate dates are within reasonable range
-                mask = df[col].notna()
-                invalid_dates = (
-                    (df[col] < min_date) | 
-                    (df[col] > max_date)
-                )
-                invalid_count = (mask & invalid_dates).sum()
-                df.loc[mask & invalid_dates, col] = pd.NaT
-                
-                # Log statistics
-                total_rows = len(df)
-                na_count = df[col].isna().sum()
-                if na_count > 0:
-                    logging.warning(
-                        f"{na_count}/{total_rows} rows ({na_count/total_rows*100:.1f}%) "
-                        f"had invalid dates in {col}"
-                    )
-                    if invalid_count > 0:
-                        logging.warning(
-                            f"  - {invalid_count} dates were outside valid range "
-                            f"({min_date.date()} to {max_date.date()})"
-                        )
-                    
-            except Exception as e:
-                logging.error(f"Error processing {col}: {str(e)}")
-                # Keep original values if conversion fails
-                continue
-        
-        return df
-
-    def standardize_dates(self, df: pd.DataFrame, max_date: int = None) -> pd.DataFrame:
-        """Standardize date values exactly matching R implementation.
-        
-        Handles dates with following rules:
-        - Only keeps dates with 4, 6, or 8 characters (yyyy, yyyymm, yyyymmdd)
-        - Dates before 1985 are invalid
-        - Dates after max_date are invalid
-        - Invalid dates are converted to NA
-        - Preserves original integer format to maintain data integrity
-        
-        Args:
-            df: DataFrame with date columns
-            max_date: Maximum valid date (e.g., 20230331 for 2023Q1)
-        
-        Returns:
-            DataFrame with standardized dates
-        """
-        try:
-            df = df.copy()
-            
-            def check_date(dt_series: pd.Series) -> pd.Series:
-                """Check date validity exactly matching R implementation."""
-                # Convert to string and get length
-                dt_str = dt_series.astype(str)
-                n = dt_str.str.len()
-                
-                # Check validity conditions
-                invalid_dates = (
-                    ((n == 4) & ((dt_series < 1985) | (dt_series > int(str(max_date)[:4])))) |
-                    ((n == 6) & ((dt_series < 198500) | (dt_series > int(str(max_date)[:6])))) |
-                    ((n == 8) & ((dt_series < 19850000) | (dt_series > max_date))) |
-                    (~n.isin([4, 6, 8]))
-                )
-                
-                # Convert invalid dates to NA
-                dt_series = dt_series.where(~invalid_dates)
-                return dt_series
-            
-            # Demo dataset date columns
-            demo_date_cols = ['fda_dt', 'rept_dt', 'mfr_dt', 'init_fda_dt', 'event_dt']
-            # Ther dataset date columns
-            ther_date_cols = ['start_dt', 'end_dt']
-            
-            # Process all date columns present in the DataFrame
-            date_cols = [col for col in df.columns if col in demo_date_cols + ther_date_cols]
-            
-            for col in date_cols:
-                df[col] = check_date(pd.to_numeric(df[col], errors='coerce'))
-                
-            return df
-            
-        except Exception as e:
-            logging.error(f"Error standardizing dates: {str(e)}")
-            return df
-
-    def standardize_duration(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize therapy duration values exactly matching R implementation.
-        
-        Converts all durations to days using:
-        1. FDA-provided duration (dur * dur_corrector)
-        2. Calculated from end_dt - start_dt + 1
-        
-        Duration rules:
-        - Convert all units to days
-        - Handle missing units as NA
-        - Max duration is 50 years
-        - Use calculated duration when available
-        - Use FDA duration as fallback
-        - Can impute missing start/end dates using duration
-        
-        Args:
-            df: DataFrame with duration columns (dur, dur_cod, start_dt, end_dt)
-        
-        Returns:
-            DataFrame with standardized durations in days
-        """
-        try:
-            df = df.copy()
-            
-            # Convert duration to numeric
-            df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
-            
-            # Create duration corrector exactly as in R
-            conditions = [
-                df['dur_cod'] == 'YR',
-                df['dur_cod'] == 'MON',
-                df['dur_cod'] == 'WK',
-                df['dur_cod'] == 'DAY',
-                df['dur_cod'] == 'HR',
-                df['dur_cod'] == 'MIN',
-                df['dur_cod'] == 'SEC'
-            ]
-            
-            choices = [
-                365,                    # YR
-                30.41667,              # MON
-                7,                     # WK
-                1,                     # DAY
-                0.04166667,            # HR
-                0.0006944444,          # MIN
-                1.157407e-05           # SEC
-            ]
-            
-            df['dur_corrector'] = np.select(conditions, choices, default=np.nan)
-            
-            # Calculate FDA-provided duration in days
-            df['dur_in_days'] = abs(df['dur']) * df['dur_corrector']
-            
-            # Cap at 50 years
-            df.loc[df['dur_in_days'] > 50 * 365, 'dur_in_days'] = np.nan
-            
-            # Calculate duration from dates when possible
-            def to_date(x):
-                if pd.isna(x) or len(str(x)) != 8:
-                    return pd.NaT
-                return pd.to_datetime(str(x), format='%Y%m%d')
-                
-            df['dur_std'] = (to_date(df['end_dt']) - to_date(df['start_dt'])).dt.days + 1
-            
-            # Handle negative durations and use FDA duration as fallback
-            df.loc[df['dur_std'] < 0, 'dur_std'] = np.nan
-            df['dur_std'] = df['dur_std'].fillna(df['dur_in_days'])
-            
-            # Impute missing dates using duration when possible
-            def from_date(x):
-                if pd.isna(x):
-                    return np.nan
-                return int(x.strftime('%Y%m%d'))
-                
-            # Impute start_dt
-            mask = (df['start_dt'].isna() & df['end_dt'].notna() & df['dur_std'].notna())
-            df.loc[mask, 'start_dt'] = df.loc[mask].apply(
-                lambda x: from_date(to_date(x['end_dt']) - pd.Timedelta(days=x['dur_std'] - 1)),
-                axis=1
-            )
-            
-            # Impute end_dt
-            mask = (df['end_dt'].isna() & df['start_dt'].notna() & df['dur_std'].notna())
-            df.loc[mask, 'end_dt'] = df.loc[mask].apply(
-                lambda x: from_date(to_date(x['start_dt']) + pd.Timedelta(days=x['dur_std'] - 1)),
-                axis=1
-            )
-            
-            # Use calculated duration as final duration
-            df['dur_in_days'] = df['dur_std']
-            
-            # Drop temporary columns
-            df = df.drop(columns=['dur_std', 'dur_corrector', 'dur', 'dur_cod'])
+            # Standardize column names
+            for std_name, possible_names in column_mappings.items():
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+                    if std_name == 'i_f_code':
+                        df[std_name] = 'I'
             
             return df
             
         except Exception as e:
-            logging.error(f"Error standardizing duration: {str(e)}")
+            self.logger.error(f"Error in standardize_demographics: {str(e)}")
+            return df
+
+    def standardize_drug_info(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize drug information."""
+        try:
+            # Column name mappings
+            column_mappings = {
+                'drugname': ['DRUGNAME', 'drugname', 'DRUG_NAME', 'drug_name'],
+                'drug_seq': ['DRUG_SEQ', 'drug_seq'],
+                'role_cod': ['ROLE_COD', 'role_cod'],
+                'route': ['ROUTE', 'route'],
+                'dose_amt': ['DOSE_AMT', 'DOSE_VBM', 'dose_amt', 'dose_vbm'],
+                'dose_unit': ['DOSE_UNIT', 'dose_unit'],
+                'prod_ai': ['PROD_AI', 'prod_ai']
+            }
+            
+            # Standardize column names
+            for std_name, possible_names in column_mappings.items():
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error in standardize_drug_info: {str(e)}")
+            return df
+
+    def standardize_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize reaction data."""
+        try:
+            # Column name mappings
+            column_mappings = {
+                'pt': ['PT', 'pt', 'REAC_PT', 'reac_pt'],
+                'drug_rec_act': ['DRUG_REC_ACT', 'drug_rec_act'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
+            }
+            
+            # Standardize column names
+            for std_name, possible_names in column_mappings.items():
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error in standardize_reactions: {str(e)}")
+            return df
+
+    def standardize_indications(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize indication data."""
+        try:
+            # Column name mappings
+            column_mappings = {
+                'indi_pt': ['INDI_PT', 'indi_pt'],
+                'drug_seq': ['DRUG_SEQ', 'drug_seq', 'INDI_DRUG_SEQ', 'indi_drug_seq'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
+            }
+            
+            # Standardize column names
+            for std_name, possible_names in column_mappings.items():
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error in standardize_indications: {str(e)}")
+            return df
+
+    def standardize_outcomes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize outcome data."""
+        try:
+            # Column name mappings
+            column_mappings = {
+                'outc_cod': ['OUTC_COD', 'outc_cod'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
+            }
+            
+            # Standardize column names
+            for std_name, possible_names in column_mappings.items():
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            # Standardize outcome codes
+            if 'outc_cod' in df.columns:
+                df['outc_cod'] = df['outc_cod'].str.upper()
+                invalid_codes = set(df['outc_cod'].dropna().unique()) - self.valid_outcomes
+                if invalid_codes:
+                    self.logger.warning(f"Converted invalid outcome codes to NA: {invalid_codes}")
+                    df.loc[df['outc_cod'].isin(invalid_codes), 'outc_cod'] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error in standardize_outcomes: {str(e)}")
+            return df
+
+    def standardize_therapies(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize therapy data."""
+        try:
+            # Column name mappings
+            column_mappings = {
+                'drug_seq': ['DRUG_SEQ', 'drug_seq', 'DSG_DRUG_SEQ', 'dsg_drug_seq'],
+                'start_dt': ['START_DT', 'start_dt'],
+                'end_dt': ['END_DT', 'end_dt'],
+                'dur': ['DUR', 'dur'],
+                'dur_cod': ['DUR_COD', 'dur_cod'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
+            }
+            
+            # Standardize column names
+            for std_name, possible_names in column_mappings.items():
+                col_name = self._get_column_case_insensitive(df, possible_names)
+                if col_name:
+                    if col_name != std_name:
+                        df = df.rename(columns={col_name: std_name})
+                else:
+                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            # Standardize dates
+            date_columns = ['start_dt', 'end_dt']
+            for col in date_columns:
+                if col in df.columns:
+                    try:
+                        df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
+                        invalid_dates = df[col].isna().sum()
+                        if invalid_dates > 0:
+                            self.logger.warning(f"Found {invalid_dates} invalid dates in {col}")
+                    except Exception as e:
+                        self.logger.error(f"Error converting {col} to datetime: {str(e)}")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error in standardize_therapies: {str(e)}")
             return df
 
     def remove_incomplete_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame,
@@ -511,7 +370,7 @@ class DataStandardizer:
         """Load reference data for standardization."""
         try:
             # Manual fix files are under external_data/manual_fixes
-            manual_fix_dir = self.external_dir / 'manual_fixes'
+            manual_fix_dir = Path(__file__).parent.parent / 'external_data' / 'manual_fixes'
             
             if not manual_fix_dir.exists():
                 raise FileNotFoundError(f"Manual fix directory not found at {manual_fix_dir}")
@@ -565,7 +424,7 @@ class DataStandardizer:
     def _load_meddra_data(self):
         """Load and process MedDRA data from ASC files."""
         try:
-            meddra_dir = self.external_dir / 'meddra/MedAscii'
+            meddra_dir = Path(__file__).parent.parent / 'external_data' / 'meddra' / 'MedAscii'
             
             # Read all MedDRA files with proper ASC file handling
             soc = pd.read_csv(meddra_dir / 'soc.asc', sep='\$', engine='python', header=None, usecols=[0,1,2])
@@ -617,9 +476,9 @@ class DataStandardizer:
                             .drop_duplicates())
             
             # Save to CSV files
-            meddra_distinct.to_csv(self.external_dir / 'meddra/meddra.csv', 
+            meddra_distinct.to_csv(Path(__file__).parent.parent / 'external_data' / 'meddra' / 'meddra.csv', 
                                  sep=';', index=False)
-            meddra_primary.to_csv(self.external_dir / 'meddra/meddra_primary.csv', 
+            meddra_primary.to_csv(Path(__file__).parent.parent / 'external_data' / 'meddra' / 'meddra_primary.csv', 
                                 sep=';', index=False)
             
             # Create PT list for standardization
@@ -637,7 +496,7 @@ class DataStandardizer:
     def _load_diana_dictionary(self):
         """Load and prepare the DiAna drug dictionary."""
         try:
-            dict_path = self.external_dir / 'DiAna_dictionary' / 'drugnames_standardized.csv'
+            dict_path = Path(__file__).parent.parent / 'external_data' / 'DiAna_dictionary' / 'drugnames_standardized.csv'
             if not dict_path.exists():
                 raise FileNotFoundError(f"DiAna dictionary not found at {dict_path}")
             
@@ -714,7 +573,7 @@ class DataStandardizer:
             
             # Try manual fixes
             manual_fixes = pd.read_csv(
-                self.external_dir / 'manual_fixes/pt_fixed.csv',  # Updated path
+                Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'pt_fixed.csv',  # Updated path
                 sep=';', 
                 low_memory=False
             )
@@ -746,7 +605,7 @@ class DataStandardizer:
                 })
                 manual_fixes = pd.concat([manual_fixes, new_manual_fixes]).drop_duplicates()
                 manual_fixes.to_csv(
-                    self.external_dir / 'manual_fixes/pt_fixed.csv',  # Updated path
+                    Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'pt_fixed.csv',  # Updated path
                     sep=';',
                     index=False
                 )
@@ -1178,10 +1037,7 @@ class DataStandardizer:
                 
             try:
                 # Read country mapping file using the correct path
-                countries_file = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                    'external_data', 'manual_fixes', 'countries.csv'
-                )
+                countries_file = Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'countries.csv'
                 
                 countries_df = pd.read_csv(
                     countries_file, 
@@ -1354,7 +1210,7 @@ class DataStandardizer:
         df = df.copy()
         
         # Load route mappings (case-sensitive as in R script)
-        route_map = pd.read_csv(self.external_dir / 'manual_fixes/routes.csv', 
+        route_map = pd.read_csv(Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'routes.csv', 
                               sep=';', low_memory=False)
         
         # Create route mapping dictionary preserving original case
@@ -1403,7 +1259,7 @@ class DataStandardizer:
         
         # Load dose form standardization mapping
         dose_form_st = pd.read_csv(
-            self.external_dir / 'manual_fixes/dose_form_st.csv',
+            Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'dose_form_st.csv',
             sep=';',
             usecols=['dose_form', 'dose_form_st'],
             low_memory=False
@@ -1442,7 +1298,7 @@ class DataStandardizer:
         
         # Load unit standardization mapping
         unit_st = pd.read_csv(
-            self.external_dir / 'manual_fixes/unit_st.csv',
+            Path(__file__).parent.parent / 'external_data' / 'manual_fixes' / 'unit_st.csv',
             sep=';',
             usecols=['unit', 'unit_st', 'conversion_factor'],
             low_memory=False
