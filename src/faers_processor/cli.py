@@ -34,10 +34,10 @@ from typing import Optional
 import re
 from datetime import datetime
 
-from faers_processor.services.standardizer import DataStandardizer
-from faers_processor.services.downloader import FAERSDownloader
-from faers_processor.services.deduplicator import FAERSDeduplicator
-from faers_processor.services.processor import FAERSProcessor
+from src.faers_processor.services.standardizer import DataStandardizer
+from src.faers_processor.services.downloader import FAERSDownloader
+from src.faers_processor.services.deduplicator import FAERSDeduplicator
+from src.faers_processor.services.processor import FAERSProcessor
 
 class ProjectPaths:
     """
