@@ -161,31 +161,16 @@ class DataStandardizer:
         self._load_meddra_data()
         self._load_diana_dictionary()
         
-    def _get_column_case_insensitive(self, df: pd.DataFrame, column_names: Union[str, List[str]]) -> Optional[str]:
-        """Get the actual column name that matches any of the given names case-insensitive.
-        First tries exact match, then tries upper case, then lower case."""
-        if isinstance(column_names, str):
-            column_names = [column_names]
-        
-        df_cols = set(df.columns)
-        
-        # First try exact match
-        for name in column_names:
-            if name in df_cols:
-                return name
-                
-        # Try upper case
-        for name in column_names:
-            upper_name = name.upper()
-            if upper_name in df_cols:
-                return upper_name
-                
-        # Try lower case
-        for name in column_names:
-            lower_name = name.lower()
-            if lower_name in df_cols:
-                return lower_name
-                
+    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: Union[str, List[str]]) -> Optional[str]:
+        """Get the actual column name that matches the given name case-insensitive."""
+        if isinstance(column_name, str):
+            column_name = [column_name]
+            
+        df_cols = df.columns.tolist()
+        for col in df_cols:
+            for name in column_name:
+                if col.upper() == name.upper():
+                    return col
         return None
 
     def _has_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> bool:
@@ -2244,15 +2229,15 @@ class DataStandardizer:
         try:
             # Define required columns and their possible names (case-insensitive)
             required_columns = {
-                'drugname': ['drugname', 'drug_name', 'DRUGNAME', 'DRUG_NAME'],
-                'prod_ai': ['prod_ai', 'PROD_AI'],
-                'route': ['route', 'ROUTE'],
-                'dose_amt': ['dose_amt', 'DOSE_AMT'],
-                'dose_unit': ['dose_unit', 'DOSE_UNIT'],
-                'dose_form': ['dose_form', 'DOSE_FORM'],
-                'dose_freq': ['dose_freq', 'DOSE_FREQ'],
-                'drug_seq': ['drug_seq', 'DRUG_SEQ'],
-                'isr': ['isr', 'ISR', 'primaryid', 'PRIMARYID', 'caseid', 'CASEID']
+                'drugname': ['DRUGNAME', 'drugname'],
+                'prod_ai': ['PROD_AI', 'prod_ai'],
+                'route': ['ROUTE', 'route'],
+                'dose_amt': ['DOSE_AMT', 'dose_amt'],
+                'dose_unit': ['DOSE_UNIT', 'dose_unit'],
+                'dose_form': ['DOSE_FORM', 'dose_form'],
+                'dose_freq': ['DOSE_FREQ', 'dose_freq'],
+                'drug_seq': ['DRUG_SEQ', 'drug_seq'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
             }
             
             # Check each required column
@@ -2276,11 +2261,9 @@ class DataStandardizer:
         try:
             # Define required columns and their possible names (case-insensitive)
             required_columns = {
-                'pt': ['pt', 'reac_pt', 'preferred_term'],
-                'drug_rec_act': ['drug_rec_act'],
-                'isr': ['isr', 'primaryid', 'caseid'],
-                'drug_seq': ['drug_seq'],
-                'meddra_pt_code': ['meddra_pt_code', 'pt_code']
+                'pt': ['PT', 'pt', 'REAC_PT', 'reac_pt'],
+                'drug_rec_act': ['DRUG_REC_ACT', 'drug_rec_act'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
             }
             
             # Check each required column
@@ -2309,10 +2292,9 @@ class DataStandardizer:
         try:
             # Define required columns and their possible names (case-insensitive)
             required_columns = {
-                'indi_pt': ['indi_pt', 'indication_pt', 'indication'],
-                'indi_drug_seq': ['indi_drug_seq', 'drug_seq'],
-                'isr': ['isr', 'primaryid', 'caseid'],
-                'meddra_pt_code': ['meddra_pt_code', 'pt_code', 'indi_pt_code']
+                'indi_pt': ['INDI_PT', 'indi_pt'],
+                'indi_drug_seq': ['INDI_DRUG_SEQ', 'drug_seq'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
             }
             
             # Check each required column
@@ -2341,8 +2323,8 @@ class DataStandardizer:
         try:
             # Define required columns and their possible names (case-insensitive)
             required_columns = {
-                'outc_cod': ['outc_cod', 'outcome_code'],
-                'isr': ['isr', 'primaryid', 'caseid']
+                'outc_cod': ['OUTC_COD', 'outc_cod'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
             }
             
             # Check each required column
@@ -2379,12 +2361,12 @@ class DataStandardizer:
         try:
             # Define required columns and their possible names (case-insensitive)
             required_columns = {
-                'dsg_drug_seq': ['dsg_drug_seq', 'drug_seq'],
-                'start_dt': ['start_dt'],
-                'end_dt': ['end_dt'],
-                'dur': ['dur'],
-                'dur_cod': ['dur_cod'],
-                'isr': ['isr', 'primaryid', 'caseid']
+                'dsg_drug_seq': ['DSG_DRUG_SEQ', 'drug_seq'],
+                'start_dt': ['START_DT', 'start_dt'],
+                'end_dt': ['END_DT', 'end_dt'],
+                'dur': ['DUR', 'dur'],
+                'dur_cod': ['DUR_COD', 'dur_cod'],
+                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
             }
             
             # Check each required column
