@@ -991,39 +991,103 @@ class DataStandardizer:
     def standardize_country(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize country codes using ISO standards.
         
+        Handles two country fields:
+        - occr_country: Where the event occurred
+        - reporter_country: Where the report was submitted from
+        
+        Uses ISO country codes mapping from countries.csv, with special cases:
+        - "COUNTRY NOT SPECIFIED" -> NA
+        - "A1" -> NA
+        - Continent codes (e.g., XE -> Europe, QU -> Oceania)
+        
+        Note: Requires countries.csv in External Sources/Manual_fix/ directory
+        with format: country;Country_Name
+        
         Args:
             df: DataFrame with country columns
             
         Returns:
             DataFrame with standardized country names
         """
-        df = df.copy()
-        
-        # Load country mappings
-        countries_df = pd.read_csv(self.external_dir / 'manual_fixes/countries.csv', sep=';', low_memory=False)
-        
-        # Handle special case for Namibia (NA)
-        countries_df.loc[countries_df['country'].isna(), 'country'] = 'NA'
-        
-        # Create mapping dictionary
-        country_map = dict(zip(countries_df['country'], countries_df['Country_Name']))
-        
-        # Standardize country columns
-        country_cols = ['occr_country', 'reporter_country']
-        for col in country_cols:
-            if col in df.columns:
-                # Apply mapping
-                df[col] = df[col].map(country_map)
+        try:
+            df = df.copy()
+            
+            # Check for required columns
+            if 'occr_country' not in df.columns:
+                df['occr_country'] = ''
+                logging.warning("Occurrence country column not found - initialized with empty strings")
                 
-                # Log unmapped countries
-                unmapped = df[~df[col].isna() & ~df[col].isin(country_map.values())][col].unique()
-                if len(unmapped) > 0:
-                    logging.warning(f"Unmapped countries in {col}: {unmapped}")
+            if 'reporter_country' not in df.columns:
+                df['reporter_country'] = ''
+                logging.warning("Reporter country column not found - initialized with empty strings")
                 
-                # Convert to categorical
-                df[col] = df[col].astype('category')
-        
-        return df
+            try:
+                # Read country mapping file
+                countries_file = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    'External Sources', 'Manual_fix', 'countries.csv'
+                )
+                
+                countries_df = pd.read_csv(
+                    countries_file, 
+                    sep=';',
+                    dtype={'country': str, 'Country_Name': str},
+                    keep_default_na=False,
+                    na_values=['']
+                )
+                
+                # Handle special case for Namibia (NA)
+                countries_df.loc[countries_df['Country_Name'].isna(), 'Country_Name'] = 'NA'
+                
+                # Create mapping dictionary
+                country_map = dict(zip(countries_df['country'], countries_df['Country_Name']))
+                
+                # Special mappings for continents and unspecified
+                special_mappings = {
+                    'XE': 'Europe',
+                    'QU': 'Oceania',
+                    'COUNTRY NOT SPECIFIED': np.nan,
+                    'A1': np.nan,
+                    '': np.nan
+                }
+                country_map.update(special_mappings)
+                
+                # Map occurrence country
+                df['occr_country'] = df['occr_country'].map(country_map)
+                
+                # Map reporter country
+                df['reporter_country'] = df['reporter_country'].map(country_map)
+                
+                # Log country distributions
+                logging.info("Occurrence country distribution:")
+                occr_stats = df['occr_country'].value_counts().head()
+                for country, count in occr_stats.items():
+                    logging.info(f"  {country}: {count}")
+                    
+                logging.info("Reporter country distribution:")
+                reporter_stats = df['reporter_country'].value_counts().head()
+                for country, count in reporter_stats.items():
+                    logging.info(f"  {country}: {count}")
+                
+                # Check for unmapped countries
+                unmapped_occr = df[~df['occr_country'].isna()]['occr_country'].unique()
+                unmapped_reporter = df[~df['reporter_country'].isna()]['reporter_country'].unique()
+                unmapped = set(unmapped_occr) | set(unmapped_reporter) - set(country_map.values())
+                if unmapped:
+                    logging.warning(f"Found unmapped countries: {unmapped}")
+                
+                return df
+                
+            except FileNotFoundError:
+                logging.error(
+                    "countries.csv not found in External Sources/Manual_fix/. "
+                    "Please ensure the file exists with format: country;Country_Name"
+                )
+                return df
+                
+        except Exception as e:
+            logging.error(f"Error standardizing country values: {str(e)}")
+            return df
 
     def standardize_occupation(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize occupation codes.
