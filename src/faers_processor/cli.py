@@ -101,13 +101,13 @@ def download_data(paths: ProjectPaths, max_date: Optional[str] = None) -> None:
         except Exception as e:
             logging.error(f"Error downloading quarter {quarter}: {str(e)}")
 
-def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
-                parallel: bool = True, max_workers: Optional[int] = None,
+def process_data(paths: ProjectPaths, parallel: bool = True, 
+                max_workers: Optional[int] = None,
                 chunk_size: Optional[int] = None) -> None:
     """Process all FAERS data in parallel."""
     # Initialize standardizer and processor
     standardizer = DataStandardizer(paths.external, paths.clean)
-    processor = FAERSProcessor(standardizer, max_date=max_date if max_date else None)
+    processor = FAERSProcessor(standardizer)
     
     # Process all available quarters
     quarters = []
@@ -122,7 +122,6 @@ def process_data(paths: ProjectPaths, max_date: Optional[str] = None,
                 logging.info(f"Processing quarter {quarter_dir.name}...")
                 processor.process_quarter(
                     ascii_dir,
-                    max_date=max_date,
                     parallel=parallel,
                     max_workers=max_workers,
                     chunk_size=chunk_size or 50000
@@ -214,7 +213,6 @@ def main():
         logging.info("Starting processing of all quarters...")
         process_data(
             paths,
-            max_date=args.max_date,
             parallel=args.parallel,
             max_workers=args.max_workers,
             chunk_size=args.chunk_size

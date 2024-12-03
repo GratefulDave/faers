@@ -216,12 +216,13 @@ class FAERSProcessingSummary:
 class FAERSProcessor:
     """Processor for FAERS data files."""
 
-    def __init__(self, standardizer: DataStandardizer, max_date: Optional[int] = None):
+    def __init__(self, standardizer: DataStandardizer):
         """Initialize the FAERS processor."""
-        self.max_date = max_date
         self.standardizer = standardizer
         self.deduplicator = FAERSDeduplicator()
         self.logger = logging.getLogger(__name__)
+        # Set current date in YYYYMMDD format
+        self.current_date = datetime.now().strftime("%Y%m%d")
 
     def process_all(self, input_dir: Path, output_dir: Path, max_workers: int = None) -> None:
         """Process all quarters in the input directory and save merged results in output_dir."""
@@ -415,8 +416,16 @@ class FAERSProcessor:
         self.logger.warning(f"No ASCII directory found in {quarter_dir} or its subdirectories")
         return None
 
-    def process_quarter(self, quarter_dir: Path) -> Dict[str, pd.DataFrame]:
-        """Process a single quarter directory."""
+    def process_quarter(self, quarter_dir: Path, parallel: bool = True, 
+                       max_workers: Optional[int] = None, chunk_size: int = 50000) -> Dict[str, pd.DataFrame]:
+        """Process a single quarter directory.
+        
+        Args:
+            quarter_dir: Path to quarter directory
+            parallel: Whether to use parallel processing
+            max_workers: Number of worker processes for parallel processing
+            chunk_size: Size of chunks for parallel processing
+        """
         quarter_dir = self._normalize_quarter_path(quarter_dir)
         ascii_dir = self._find_ascii_directory(quarter_dir)
         
@@ -473,7 +482,8 @@ class FAERSProcessor:
                 self.logger.info(f"Processing {data_type} file: {file_path}")
                 
                 table_summary = getattr(quarter_summary, f"{data_type}_summary")
-                df = self.process_file(file_path, data_type, table_summary)
+                df = self.process_file(file_path, data_type, table_summary, parallel=parallel, 
+                                     max_workers=max_workers, chunk_size=chunk_size)
                 
                 if not df.empty:
                     results[data_type] = df
@@ -498,7 +508,9 @@ class FAERSProcessor:
         
         return results
 
-    def process_file(self, file_path: Path, data_type: str, table_summary: TableSummary) -> pd.DataFrame:
+    def process_file(self, file_path: Path, data_type: str, table_summary: TableSummary, 
+                    parallel: bool = True, max_workers: Optional[int] = None, 
+                    chunk_size: int = 50000) -> pd.DataFrame:
         """Process a single FAERS file with enhanced error tracking.
         
         NOTE: DO NOT MODIFY FILE FINDING LOGIC - case insensitive file matching is working as intended.
@@ -548,7 +560,7 @@ class FAERSProcessor:
             # Process based on data type
             try:
                 if data_type == 'demo':
-                    df = self.standardizer.standardize_demographics(df, self.max_date)
+                    df = self.standardizer.standardize_demographics(df, self.current_date)
                 elif data_type == 'drug':
                     df = self.standardizer.standardize_drugs(df)
                 elif data_type == 'reac':
@@ -558,7 +570,7 @@ class FAERSProcessor:
                 elif data_type == 'rpsr':
                     df = self.standardizer.standardize_sources(df)
                 elif data_type == 'ther':
-                    df = self.standardizer.standardize_therapies(df, self.max_date)
+                    df = self.standardizer.standardize_therapies(df, self.current_date)
                 elif data_type == 'indi':
                     df = self.standardizer.standardize_indications(df)
                 
@@ -1651,7 +1663,7 @@ class FAERSProcessor:
             demo_df = pd.concat([
                 self.standardizer.standardize_demographics(
                     pd.read_csv(f, sep='$', dtype=str),
-                    self.max_date
+                    self.current_date
                 )
                 for f in demo_files
             ])
@@ -1662,7 +1674,7 @@ class FAERSProcessor:
                 ther_df = pd.concat([
                     self.standardizer.standardize_therapies(
                         pd.read_csv(f, sep='$', dtype=str),
-                        self.max_date
+                        self.current_date
                     )
                     for f in ther_files
                 ])
@@ -1691,7 +1703,7 @@ class FAERSProcessor:
         Returns:
             Processed DataFrame with standardized therapy regimen
         """
-        df = self.standardizer.standardize_drug_info(df, self.max_date)
+        df = self.standardizer.standardize_drug_info(df, self.current_date)
         return df
 
     def remove_incomplete_reports(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame, 
