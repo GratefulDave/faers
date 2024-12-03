@@ -1575,7 +1575,7 @@ class FAERSProcessor:
             self.logger.error(f"Error identifying pre-marketing cases: {str(e)}")
             return demo_df
 
-    def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None) -> pd.DataFrame:
+    def standardize_data(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize data based on its type."""
         try:
             file_name = os.path.basename(file_path) if file_path else "unknown_file"
@@ -1617,7 +1617,7 @@ class FAERSProcessor:
                 df['drugname'] = pd.NA
             
             # Standardize the data
-            df = self.standardizer.standardize_data(df, data_type, str(file_path))
+            df = self.standardizer.standardize_data(df, data_type, quarter_name, file_name)
             
             if df is not None:
                 self.logger.info(f"({file_name}) Successfully processed {len(df):,} rows")
@@ -1644,7 +1644,7 @@ class FAERSProcessor:
             self._log_validation_warnings(validation_result, quarter_name, file_name)
             
             # Process the data based on type
-            df = self.standardizer.standardize_data(df, data_type, file_name, quarter_name)
+            df = self.standardizer.standardize_data(df, data_type, quarter_name, file_name)
             
             # Update summary
             table_summary.success = True

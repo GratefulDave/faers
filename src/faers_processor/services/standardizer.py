@@ -182,96 +182,117 @@ class DataStandardizer:
                 column_name.upper() in df_cols or 
                 column_name.lower() in df_cols)
         
-    def standardize_demographics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize demographics data."""
+    def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize demographics information."""
         try:
-            # Column name mappings (standardized name: possible names)
-            column_mappings = {
-                'i_f_code': ['I_F_CODE', 'I_F_COD', 'i_f_code', 'i_f_cod'],
-                'sex': ['SEX', 'GNDR_COD', 'sex', 'gndr_cod'],
-                'age': ['AGE', 'age'],
-                'age_cod': ['AGE_COD', 'age_cod'],
-                'event_dt': ['EVENT_DT', 'event_dt'],
-                'fda_dt': ['FDA_DT', 'fda_dt'],
-                'rept_dt': ['REPT_DT', 'rept_dt'],
-                'country': ['COUNTRY', 'REPORTER_COUNTRY', 'country', 'reporter_country']
+            # Required columns exactly as defined in documentation.html
+            required_columns = {
+                'isr': ['ISR'],
+                'age': ['AGE'],
+                'age_cod': ['AGE_COD'],
+                'sex': ['SEX'],
+                'event_dt': ['EVENT_DT'],
+                'i_f_cod': ['I_F_COD'],
+                'rept_cod': ['REPT_COD'],
+                'lit_ref': ['LIT_REF'],
+                'age_grp': ['AGE_GRP']
             }
             
-            # Standardize column names
-            for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names[0])
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
-                else:
-                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
-                    if std_name == 'i_f_code':
-                        df[std_name] = 'I'
+            # Process each required column
+            for target_col, source_cols in required_columns.items():
+                found = False
+                for col in source_cols:
+                    if col in df.columns:
+                        if col != target_col:
+                            df = df.rename(columns={col: target_col})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
+                    df[target_col] = pd.NA
+                    if target_col == 'i_f_cod':
+                        df[target_col] = 'I'
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error in standardize_demographics: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_demographics: {str(e)}")
             return df
 
-    def standardize_drug_info(self, df: pd.DataFrame) -> pd.DataFrame:
+    def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize drug information."""
         try:
-            # Column name mappings
-            column_mappings = {
-                'drugname': ['DRUGNAME', 'drugname', 'DRUG_NAME', 'drug_name'],
-                'drug_seq': ['DRUG_SEQ', 'drug_seq'],
-                'role_cod': ['ROLE_COD', 'role_cod'],
-                'route': ['ROUTE', 'route'],
-                'dose_amt': ['DOSE_AMT', 'DOSE_VBM', 'dose_amt', 'dose_vbm'],
-                'dose_unit': ['DOSE_UNIT', 'dose_unit'],
-                'prod_ai': ['PROD_AI', 'prod_ai']
+            # Required columns exactly as defined in documentation.html
+            required_columns = {
+                'isr': ['ISR'],
+                'drug_seq': ['DRUG_SEQ'],
+                'role_cod': ['ROLE_COD'],
+                'drugname': ['DRUGNAME'],
+                'prod_ai': ['PROD_AI'],
+                'val_vbm': ['VAL_VBM'],
+                'route': ['ROUTE'],
+                'dose_vbm': ['DOSE_VBM'],
+                'cum_dose_chr': ['CUM_DOSE_CHR'],
+                'cum_dose_unit': ['CUM_DOSE_UNIT'],
+                'dechal': ['DECHAL'],
+                'rechal': ['RECHAL'],
+                'lot_num': ['LOT_NUM'],
+                'exp_dt': ['EXP_DT'],
+                'nda_num': ['NDA_NUM']
             }
             
-            # Standardize column names
-            for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names[0])
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
-                else:
-                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+            # Process each required column
+            for target_col, source_cols in required_columns.items():
+                found = False
+                for col in source_cols:
+                    if col in df.columns:
+                        if col != target_col:
+                            df = df.rename(columns={col: target_col})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
+                    df[target_col] = pd.NA
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error in standardize_drug_info: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_drug_info: {str(e)}")
             return df
 
-    def standardize_reactions(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize reaction data."""
+    def standardize_reactions(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize reactions information."""
         try:
-            # Column name mappings
-            column_mappings = {
-                'pt': ['PT', 'pt', 'REAC_PT', 'reac_pt'],
-                'drug_rec_act': ['DRUG_REC_ACT', 'drug_rec_act'],
-                'isr': ['ISR', 'isr', 'PRIMARYID', 'primaryid', 'CASEID', 'caseid']
+            # Required columns exactly as defined in documentation.html
+            required_columns = {
+                'isr': ['ISR'],
+                'pt': ['PT'],
+                'drug_rec_act': ['DRUG_REC_ACT']
             }
             
-            # Standardize column names
-            for std_name, possible_names in column_mappings.items():
-                col_name = self._get_column_case_insensitive(df, possible_names[0])
-                if col_name:
-                    if col_name != std_name:
-                        df = df.rename(columns={col_name: std_name})
-                else:
-                    self.logger.warning(f"{std_name} column not found - initialized with empty values")
-                    df[std_name] = pd.NA
+            # Process each required column
+            for target_col, source_cols in required_columns.items():
+                found = False
+                for col in source_cols:
+                    if col in df.columns:
+                        if col != target_col:
+                            df = df.rename(columns={col: target_col})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
+                    df[target_col] = pd.NA
             
             return df
             
         except Exception as e:
-            self.logger.error(f"Error in standardize_reactions: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_reactions: {str(e)}")
             return df
 
-    def standardize_indications(self, df: pd.DataFrame) -> pd.DataFrame:
+    def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize indication data."""
         try:
             # Column name mappings
@@ -297,7 +318,7 @@ class DataStandardizer:
             self.logger.error(f"Error in standardize_indications: {str(e)}")
             return df
 
-    def standardize_outcomes(self, df: pd.DataFrame) -> pd.DataFrame:
+    def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize outcome data."""
         try:
             # Column name mappings
@@ -330,7 +351,7 @@ class DataStandardizer:
             self.logger.error(f"Error in standardize_outcomes: {str(e)}")
             return df
 
-    def standardize_therapies(self, df: pd.DataFrame) -> pd.DataFrame:
+    def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize therapy data."""
         try:
             # Column name mappings
@@ -1449,121 +1470,13 @@ class DataStandardizer:
         
         return df
 
-    def standardize_sources(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize report source data following R script.
-        
-        Standardizes:
-        - rpsr_cod (report source codes)
-        - Removes duplicates
-        """
-        try:
-            # Standardize report source codes
-            source_map = {
-                'HP': 'Health Professional',
-                'FG': 'Foreign',
-                'LR': 'Literature',
-                'CR': 'Company Representative',
-                'CT': 'Clinical Trial',
-                'DT': 'Direct',
-                'UF': 'User Facility',
-                'OT': 'Other'
-            }
-            
-            if 'rpsr_cod' in df.columns:
-                df['rpsr_cod'] = df['rpsr_cod'].str.upper().map(source_map)
-            
-            # Remove duplicates
-            df = df.drop_duplicates()
-            
-            return df
-            
-        except Exception as e:
-            logging.error(f"Error standardizing sources: {str(e)}")
-            return df
-
-    def standardize_therapies(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize therapy data following R script.
-        
-        Standardizes:
-        - start_dt and end_dt (therapy dates)
-        - dur and dur_cod (duration and duration codes)
-        - Removes duplicates
-        """
-        try:
-            # Standardize therapy dates
-            date_cols = ['start_dt', 'end_dt']
-            for col in date_cols:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
-            
-            # Standardize duration codes
-            duration_map = {
-                'YR': 'Years',
-                'MON': 'Months',
-                'WK': 'Weeks',
-                'DAY': 'Days',
-                'HR': 'Hours',
-                'MIN': 'Minutes'
-            }
-            
-            if 'dur_cod' in df.columns:
-                df['dur_cod'] = df['dur_cod'].str.upper().map(duration_map)
-            
-            # Convert duration to days if possible
-            if 'dur' in df.columns and 'dur_cod' in df.columns:
-                df['dur'] = pd.to_numeric(df['dur'], errors='coerce')
-                # Convert to days based on duration code
-                conversion = {
-                    'Years': 365,
-                    'Months': 30,
-                    'Weeks': 7,
-                    'Days': 1,
-                    'Hours': 1/24,
-                    'Minutes': 1/1440
-                }
-                df['dur_days'] = df.apply(lambda x: 
-                    x['dur'] * conversion.get(x['dur_cod'], 0) 
-                    if pd.notnull(x['dur']) and pd.notnull(x['dur_cod']) 
-                    else None, axis=1)
-            
-            # Remove duplicates
-            df = df.drop_duplicates()
-            
-            return df
-            
-        except Exception as e:
-            logging.error(f"Error standardizing therapies: {str(e)}")
-            return df
-
-    def standardize_indications(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize indication data following R script.
-        
-        Standardizes:
-        - indi_pt (indication preferred terms)
-        - Removes duplicates
-        """
-        try:
-            # Standardize indication preferred terms using MedDRA
-            if 'indi_pt' in df.columns:
-                df = self.standardize_pt(df, pt_variable='indi_pt')
-            
-            # Remove duplicates
-            df = df.drop_duplicates()
-            
-            return df
-            
-        except Exception as e:
-            logging.error(f"Error standardizing indications: {str(e)}")
-            return df
-
-    def standardize_reactions(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize reactions information."""
+    def standardize_sources(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize report source information."""
         try:
             # Required columns exactly as defined in documentation.html
             required_columns = {
                 'isr': ['ISR'],
-                'pt': ['PT'],
-                'drug_rec_act': ['DRUG_REC_ACT']
+                'rpsr_cod': ['RPSR_COD']
             }
             
             # Process each required column
@@ -1583,66 +1496,7 @@ class DataStandardizer:
             return df
             
         except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_reactions: {str(e)}")
-            return df
-
-    def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize indications information."""
-        try:
-            # Required columns exactly as defined in documentation.html
-            required_columns = {
-                'isr': ['ISR'],
-                'drug_seq': ['DRUG_SEQ'],
-                'indi_pt': ['INDI_PT']
-            }
-            
-            # Process each required column
-            for target_col, source_cols in required_columns.items():
-                found = False
-                for col in source_cols:
-                    if col in df.columns:
-                        if col != target_col:
-                            df = df.rename(columns={col: target_col})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
-                    df[target_col] = pd.NA
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_indications: {str(e)}")
-            return df
-
-    def standardize_outcomes(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
-        """Standardize outcomes information."""
-        try:
-            # Required columns exactly as defined in documentation.html
-            required_columns = {
-                'isr': ['ISR'],
-                'outc_cod': ['OUTC_COD']
-            }
-            
-            # Process each required column
-            for target_col, source_cols in required_columns.items():
-                found = False
-                for col in source_cols:
-                    if col in df.columns:
-                        if col != target_col:
-                            df = df.rename(columns={col: target_col})
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
-                    df[target_col] = pd.NA
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_outcomes: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_sources: {str(e)}")
             return df
 
     def standardize_therapies(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
@@ -1676,6 +1530,36 @@ class DataStandardizer:
             
         except Exception as e:
             self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_therapies: {str(e)}")
+            return df
+
+    def standardize_indications(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize indications information."""
+        try:
+            # Required columns exactly as defined in documentation.html
+            required_columns = {
+                'isr': ['ISR'],
+                'drug_seq': ['DRUG_SEQ'],
+                'indi_pt': ['INDI_PT']
+            }
+            
+            # Process each required column
+            for target_col, source_cols in required_columns.items():
+                found = False
+                for col in source_cols:
+                    if col in df.columns:
+                        if col != target_col:
+                            df = df.rename(columns={col: target_col})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Required column '{target_col}' not found, adding with default value: <NA>")
+                    df[target_col] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_indications: {str(e)}")
             return df
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
@@ -1828,54 +1712,49 @@ class DataStandardizer:
             self.logger.error(f"Error processing quarter {quarter_dir}: {str(e)}")
             return None
 
-    def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None, quarter_name: Optional[str] = None) -> pd.DataFrame:
+    def standardize_data(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize data based on its type.
         
         Args:
             df: DataFrame to standardize
-            data_type: Type of data ('demo', 'drug', 'reac', etc.)
-            file_path: Optional path to source file for error logging
-            quarter_name: Optional quarter name for logging
+            data_type: Type of data (demo, drug, reac, etc.)
+            quarter_name: Name of the quarter being processed
+            file_name: Name of the file being processed
             
         Returns:
             Standardized DataFrame
         """
         try:
-            if df.empty:
+            # Apply type-specific standardization
+            if data_type == 'demo':
+                df = self.standardize_demographics(df, quarter_name, file_name)
+            elif data_type == 'drug':
+                df = self.standardize_drug_info(df, quarter_name, file_name)
+            elif data_type == 'reac':
+                df = self.standardize_reactions(df, quarter_name, file_name)
+            elif data_type == 'outc':
+                df = self.standardize_outcomes(df, quarter_name, file_name)
+            elif data_type == 'rpsr':
+                df = self.standardize_sources(df, quarter_name, file_name)
+            elif data_type == 'ther':
+                df = self.standardize_therapies(df, quarter_name, file_name)
+            elif data_type == 'indi':
+                df = self.standardize_indications(df, quarter_name, file_name)
+            else:
+                self.logger.warning(f"({quarter_name}) {file_name}: Unknown data type: {data_type}")
                 return df
                 
-            df = df.copy()
-            
-            # Common standardization for all types
-            # Replace empty strings with NaN for better processing
-            df = df.replace(r'^\s*$', np.nan, regex=True)
-            
-            # Type-specific standardization
-            if data_type == 'demo':
-                df = self.standardize_demographics(df, quarter_name, file_path)
-            elif data_type == 'drug':
-                df = self.standardize_drugs(df)
-            elif data_type == 'reac':
-                df = self.standardize_reactions(df)
-            elif data_type == 'outc':
-                df = self.standardize_outcomes(df)
-            elif data_type == 'rpsr':
-                df = self.standardize_sources(df)
-            elif data_type == 'ther':
-                df = self.standardize_therapies(df)
-            elif data_type == 'indi':
-                df = self.standardize_indications(df)
-                
             # Final cleanup
-            # Replace NaN back with empty strings for consistency
+            # Replace NaN with empty strings for consistency
             df = df.fillna('')
+            
+            # Log standardization results
+            self.logger.info(f"({quarter_name}) {file_name}: Successfully standardized {len(df):,} rows of {data_type} data")
             
             return df
             
         except Exception as e:
-            file_info = f" in file {file_path}" if file_path else ""
-            quarter_info = f" ({quarter_name})" if quarter_name else ""
-            logging.error(f"Error in standardize_data for {data_type}{file_info}{quarter_info}: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error standardizing {data_type} data: {str(e)}")
             return df
 
     def calculate_time_to_onset(self, demo_df: pd.DataFrame, ther_df: pd.DataFrame) -> pd.DataFrame:
