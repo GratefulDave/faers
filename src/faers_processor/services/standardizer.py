@@ -693,7 +693,7 @@ class DataStandardizer:
         """
         try:
             if 'sex' not in df.columns:
-                logging.warning("Sex column not found in DataFrame")
+                logging.warning(f"Sex column not found in DataFrame - file may be corrupted or have unexpected format")
                 return df
                 
             df = df.copy()
@@ -723,7 +723,10 @@ class DataStandardizer:
             # Track unmapped values before standardization
             unmapped = df[~df['sex'].isin(sex_map.keys())]['sex'].unique()
             if len(unmapped) > 0:
-                logging.warning(f"Found unmapped sex values: {unmapped}")
+                logging.warning(f"Found unmapped sex values that will be set to empty string: {unmapped}")
+                # Add unmapped values to map with empty string to preserve rows
+                for val in unmapped:
+                    sex_map[val] = ''
             
             # Apply mapping
             df['sex'] = df['sex'].map(sex_map)
@@ -731,24 +734,20 @@ class DataStandardizer:
             # Fill any remaining NaN with empty string
             df['sex'] = df['sex'].fillna('')
             
-            # Validate all values are in categories
-            invalid = df[~df['sex'].isin(categories)]['sex'].unique()
-            if len(invalid) > 0:
-                logging.error(f"Found invalid sex values after mapping: {invalid}")
-                
-            # Convert to categorical with predefined categories
-            df['sex'] = pd.Categorical(df['sex'], categories=categories)
-            
             # Log distribution
             value_counts = df['sex'].value_counts(dropna=False)
             logging.info("Sex value distribution:")
             for val, count in value_counts.items():
                 logging.info(f"  {val}: {count} ({count/len(df)*100:.1f}%)")
             
+            # Convert to categorical with predefined categories
+            df['sex'] = pd.Categorical(df['sex'], categories=categories)
+            
             return df
             
         except Exception as e:
-            logging.error(f"Error standardizing sex: {str(e)}")
+            logging.error(f"Error standardizing sex values: {str(e)}")
+            # Return original DataFrame to preserve data
             return df
 
     def standardize_age(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1759,18 +1758,25 @@ class DataStandardizer:
                 df['age_group'] = pd.Categorical([''] * len(df), categories=age_group_categories)
                 logging.info("Age group column initialized")
             
-            # Standardize fields
+            # Standardize fields - preserve all rows
             df = self.standardize_dates(df)
             df = self.standardize_sex(df, sex_categories)
             df = self.standardize_age(df)
             df = self.standardize_age_groups(df, age_group_categories)
             df = self.standardize_weight(df)
             df = self.standardize_country(df)
+            df = self.standardize_occupation(df)
+            df = self.standardize_manufacturer(df)
+            
+            # Verify no rows were lost
+            if len(df) != len(df):
+                logging.error(f"Row count mismatch in demographics standardization: started with {len(df)} rows, ended with {len(df)} rows")
             
             return df
             
         except Exception as e:
             logging.error(f"Error in standardize_demographics: {str(e)}")
+            # Return original DataFrame to preserve data
             return df
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
@@ -1879,89 +1885,62 @@ class DataStandardizer:
         Returns:
             Processed DataFrame
         """
-        def detect_delimiter(sample_lines: List[str]) -> str:
-            """Detect the most likely delimiter in the file."""
-            delimiters = ['$', '|', '\t', ',']
-            max_consistent_cols = 0
-            best_delimiter = ','
-            
-            for delimiter in delimiters:
-                cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
-                # Get most common column count
-                from collections import Counter
-                col_counts = Counter(cols_per_row)
-                if col_counts:
-                    most_common_count = col_counts.most_common(1)[0][1]
-                    if most_common_count > max_consistent_cols:
-                        max_consistent_cols = most_common_count
-                        best_delimiter = delimiter
-                        
-            return best_delimiter
-        
-        def clean_line(line: str) -> str:
-            """Clean problematic characters from a line."""
-            # Remove null bytes
-            line = line.replace('\0', '')
-            # Normalize line endings
-            line = line.strip('\r\n')
-            # Handle escaped quotes
-            line = re.sub(r'(?<!\\)"', '\\"', line)
-            return line
-        
-        def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
-            """Read and clean the file, detecting delimiter."""
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                # Read sample for delimiter detection
-                sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
-                
-            # Detect delimiter
-            delimiter = detect_delimiter(sample_lines)
-            
-            # Clean all lines
-            cleaned_lines = [clean_line(line) for line in sample_lines]
-            
-            return cleaned_lines, delimiter
-        
         try:
             # First try standard parsing
             df = pd.read_csv(file_path, low_memory=False)
             logging.info(f"Successfully parsed {file_path} using standard method")
+            
+            # Standardize data
+            df = self.standardize_data(df, 'drug', str(file_path))
+            
             return df
+            
         except Exception as e:
             logging.warning(f"Standard parsing failed for {file_path}, attempting manual fix: {str(e)}")
-        
-        try:
-            # Read and clean file
-            cleaned_lines, delimiter = read_and_clean_file(file_path)
             
-            # Get header
-            header = cleaned_lines[0].split(delimiter)
-            header = [col.strip() for col in header]
-            
-            # Process data rows
-            data = []
-            for line in cleaned_lines[1:]:
-                fields = line.split(delimiter)
-                # Skip malformed rows
-                if len(fields) != len(header):
-                    continue
-                data.append([field.strip() for field in fields])
-            
-            # Create DataFrame
-            df = pd.DataFrame(data, columns=header)
-            logging.info(f"Successfully parsed {file_path} using manual method")
-            return df
-        
-        except Exception as e:
-            logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
-            return pd.DataFrame()  # Return empty DataFrame on failure
+            try:
+                # Read and clean file
+                cleaned_lines, delimiter = read_and_clean_file(file_path)
+                
+                # Get header
+                header = cleaned_lines[0].split(delimiter)
+                header = [col.strip() for col in header]
+                
+                # Process data rows
+                data = []
+                for line in cleaned_lines[1:]:
+                    fields = line.split(delimiter)
+                    # Log malformed rows but don't skip them
+                    if len(fields) != len(header):
+                        logging.warning(f"Malformed row in {file_path} - expected {len(header)} fields, got {len(fields)}")
+                        # Pad or truncate to match header length
+                        if len(fields) < len(header):
+                            fields.extend([''] * (len(header) - len(fields)))
+                        else:
+                            fields = fields[:len(header)]
+                    data.append([field.strip() for field in fields])
+                
+                # Create DataFrame
+                df = pd.DataFrame(data, columns=header)
+                logging.info(f"Successfully parsed {file_path} using manual method")
+                
+                # Standardize data
+                df = self.standardize_data(df, 'drug', str(file_path))
+                
+                return df
+                
+            except Exception as e:
+                logging.error(f"Failed to process {file_path} even after fixes: {str(e)}")
+                # Return empty DataFrame on failure to maintain row count
+                return pd.DataFrame(columns=header if 'header' in locals() else None)
 
-    def standardize_data(self, df: pd.DataFrame, data_type: str) -> pd.DataFrame:
+    def standardize_data(self, df: pd.DataFrame, data_type: str, file_path: Optional[str] = None) -> pd.DataFrame:
         """Standardize data based on its type.
         
         Args:
             df: DataFrame to standardize
             data_type: Type of data ('demo', 'drug', 'reac', etc.)
+            file_path: Optional path to source file for error logging
             
         Returns:
             Standardized DataFrame
@@ -1999,7 +1978,8 @@ class DataStandardizer:
             return df
             
         except Exception as e:
-            logging.error(f"Error in standardize_data for {data_type}: {str(e)}")
+            file_info = f" in file {file_path}" if file_path else ""
+            logging.error(f"Error in standardize_data for {data_type}{file_info}: {str(e)}")
             return df
 
     def standardize_age_groups(self, df: pd.DataFrame, categories=None) -> pd.DataFrame:
@@ -2065,3 +2045,40 @@ class DataStandardizer:
         except Exception as e:
             logging.error(f"Error creating age groups: {str(e)}")
             raise e  # Re-raise to see full traceback
+
+def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
+    """Read and clean the file, detecting delimiter."""
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        # Read sample for delimiter detection
+        sample_lines = [next(f) for _ in range(min(1000, sum(1 for _ in f)))]
+        
+    # Detect delimiter
+    delimiters = ['$', '|', '\t', ',']
+    max_consistent_cols = 0
+    best_delimiter = ','
+    
+    for delimiter in delimiters:
+        cols_per_row = [len(line.split(delimiter)) for line in sample_lines]
+        # Get most common column count
+        from collections import Counter
+        col_counts = Counter(cols_per_row)
+        if col_counts:
+            most_common_count = col_counts.most_common(1)[0][1]
+            if most_common_count > max_consistent_cols:
+                max_consistent_cols = most_common_count
+                best_delimiter = delimiter
+                
+    # Clean all lines
+    cleaned_lines = [clean_line(line) for line in sample_lines]
+    
+    return cleaned_lines, best_delimiter
+
+def clean_line(line: str) -> str:
+    """Clean problematic characters from a line."""
+    # Remove null bytes
+    line = line.replace('\0', '')
+    # Normalize line endings
+    line = line.strip('\r\n')
+    # Handle escaped quotes
+    line = re.sub(r'(?<!\\)"', '\\"', line)
+    return line
