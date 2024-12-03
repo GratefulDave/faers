@@ -99,38 +99,95 @@ class TestFAERSProcessor(unittest.TestCase):
     def test_error_handling(self):
         """Test error handling during processing."""
         # Create quarter with invalid data
-        quarter_dir = self.test_dir / '2022q1'
-        quarter_dir.mkdir(parents=True)
+        invalid_quarter = self.test_dir / '2022q1'
+        invalid_quarter.mkdir(parents=True)
+        pd.DataFrame({'invalid': ['data']}).to_csv(invalid_quarter / 'DEMO22Q1.txt', index=False)
         
-        # Create invalid demo file (missing required columns)
-        invalid_demo = pd.DataFrame({
-            'some_column': ['value1', 'value2']
-        })
-        invalid_demo.to_csv(quarter_dir / 'DEMO22Q1.txt', index=False)
-        
-        # Process quarter
-        summary = self.processor.process_quarter(quarter_dir)
-        
-        # Verify error handling
+        # Test sequential processing error handling
+        summary = self.processor.process_quarter(invalid_quarter, parallel=False)
         self.assertIsNotNone(summary)
         self.assertTrue(any('Missing required columns' in err 
                           for err in summary.demo_summary.parsing_errors))
         
+        # Test parallel processing error handling
+        summary = self.processor.process_quarter(invalid_quarter, parallel=True, max_workers=2)
+        self.assertIsNotNone(summary)
+        self.assertTrue(any('Missing required columns' in err 
+                          for err in summary.demo_summary.parsing_errors))
+        
+        # Test process_all error handling
+        output_dir = self.test_dir / 'output'
+        output_dir.mkdir()
+        
+        # Create a mix of valid and invalid quarters
+        valid_quarter = self.create_test_files('2022q2')
+        
+        # Test sequential processing with mixed quarters
+        result = self.processor.process_all(self.test_dir, output_dir, parallel=False)
+        self.assertEqual(len(result['summaries']), 2)
+        
+        # Test parallel processing with mixed quarters
+        result = self.processor.process_all(self.test_dir, output_dir, parallel=True, max_workers=2)
+        self.assertEqual(len(result['summaries']), 2)
+        
+        # Verify error reporting in processing summary
+        report_files = list(output_dir.glob('faers_processing_report_*.md'))
+        self.assertGreater(len(report_files), 0)
+        
+        # Test with invalid max_workers
+        with self.assertRaises(ValueError):
+            self.processor.process_quarter(invalid_quarter, parallel=True, max_workers=0)
+            
+        # Test with non-existent directory
+        non_existent = self.test_dir / 'non_existent'
+        summary = self.processor.process_quarter(non_existent, parallel=False)
+        self.assertIsNone(summary)
+
     def test_parallel_processing(self):
         """Test parallel processing of quarters."""
         # Create multiple test quarters
-        for q in ['2022q1', '2022q2', '2022q3']:
+        quarters = ['2022q1', '2022q2', '2022q3', '2022q4']
+        for q in quarters:
             self.create_test_files(q)
             
         output_dir = self.test_dir / 'output'
         output_dir.mkdir()
         
-        # Process with parallel=True
-        result = self.processor.process_all(self.test_dir, output_dir, parallel=True, max_workers=2)
+        # Test with different numbers of workers
+        worker_counts = [1, 2, 4]
+        for workers in worker_counts:
+            result = self.processor.process_all(
+                self.test_dir, 
+                output_dir, 
+                parallel=True, 
+                max_workers=workers
+            )
+            self.assertEqual(len(result['summaries']), len(quarters))
+            
+        # Test parallel processing at quarter level
+        quarter_dir = self.test_dir / '2022q1'
+        for workers in worker_counts:
+            summary = self.processor.process_quarter(
+                quarter_dir,
+                parallel=True,
+                max_workers=workers
+            )
+            self.assertIsNotNone(summary)
+            self.assertEqual(summary.quarter, '2022q1')
+            
+        # Test parallel processing with large number of workers
+        result = self.processor.process_all(
+            self.test_dir,
+            output_dir,
+            parallel=True,
+            max_workers=10  # More workers than quarters
+        )
+        self.assertEqual(len(result['summaries']), len(quarters))
         
-        # Verify results
-        self.assertEqual(len(result['summaries']), 3)
-        
+        # Verify processing times are recorded
+        for summary in result['summaries']:
+            self.assertGreater(summary.processing_time, 0)
+
     def test_summary_generation(self):
         """Test generation of processing summary."""
         # Create and process test data
