@@ -218,18 +218,21 @@ class FAERSProcessor:
     def _find_data_file(self, directory: Path, patterns: List[str]) -> Optional[Path]:
         """Find a data file matching any of the patterns case-insensitively."""
         if not directory.exists():
+            self.logger.error(f"Directory does not exist: {directory}")
             return None
             
         # Convert patterns to lowercase for comparison
         patterns = [p.lower() for p in patterns]
         
-        # Search for .txt files case-insensitively
-        for file in directory.glob('*'):
+        # Search recursively for .txt files case-insensitively
+        for file in directory.rglob('*'):
             if file.is_file() and file.suffix.lower() == '.txt':
                 file_name = file.stem.lower()
                 if any(pattern in file_name for pattern in patterns):
+                    self.logger.info(f"Found matching file: {file}")
                     return file
         
+        self.logger.warning(f"No files found matching patterns {patterns} in {directory}")
         return None
 
     def process_quarter(self, quarter_dir: Path, parallel: bool = False, max_workers: Optional[int] = None) -> Optional[QuarterSummary]:
@@ -300,9 +303,18 @@ class FAERSProcessor:
     def _process_file_type(self, quarter_dir: Path, file_prefix: str, data_type: str, summary: TableSummary) -> None:
         """Process files of a specific type in a quarter directory."""
         try:
-            # Find matching files
-            pattern = f"{file_prefix}*.txt"
-            matching_files = list(quarter_dir.glob(pattern))
+            # First find the ASCII directory
+            ascii_dir = self._find_ascii_directory(quarter_dir)
+            if not ascii_dir:
+                self.logger.error(f"({quarter_dir.name}) No ASCII directory found for {file_prefix} files")
+                return
+
+            # Find matching files case-insensitively
+            matching_files = []
+            for file in ascii_dir.rglob('*'):
+                if file.is_file() and file.suffix.lower() == '.txt':
+                    if file_prefix.lower() in file.stem.lower():
+                        matching_files.append(file)
             
             if not matching_files:
                 self.logger.warning(f"({quarter_dir.name}) No {file_prefix} files found")
@@ -313,13 +325,17 @@ class FAERSProcessor:
                 file_start_time = time.time()
                 
                 try:
-                    df, table_summary = self._process_dataset(pd.read_csv(file_path, delimiter='$', dtype=str), data_type, quarter_dir.name, file_path.name)
+                    # Read and clean file
+                    df = self._read_and_clean_file(file_path)
                     
                     if df is not None:
-                        summary.total_rows += len(df)
-                        summary.processed_rows += len(df)
-                        summary.processing_time += time.time() - file_start_time
+                        df, table_summary = self._process_dataset(df, data_type, quarter_dir.name, file_path.name)
                         
+                        if df is not None:
+                            summary.total_rows += len(df)
+                            summary.processed_rows += len(df)
+                            summary.processing_time += time.time() - file_start_time
+                            
                 except Exception as e:
                     error_msg = f"Error processing {file_path.name}: {str(e)}"
                     summary.add_parsing_error(error_msg)
@@ -327,6 +343,21 @@ class FAERSProcessor:
                     
         except Exception as e:
             self.logger.error(f"({quarter_dir.name}) Error processing {file_prefix} files: {str(e)}")
+
+    def _read_and_clean_file(self, file_path: Path) -> Optional[pd.DataFrame]:
+        """Read and perform initial cleaning of a FAERS data file."""
+        try:
+            # Read file with case-insensitive column handling
+            df = pd.read_csv(file_path, delimiter='$', dtype=str)
+            
+            # Clean the DataFrame
+            df = self._clean_dataframe(df)
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error reading file {file_path}: {str(e)}")
+            raise
 
     def _process_dataset(self, df: pd.DataFrame, data_type: str, quarter_name: str, file_name: str) -> Tuple[pd.DataFrame, TableSummary]:
         """Process a dataset with error tracking and validation."""
@@ -336,9 +367,6 @@ class FAERSProcessor:
         try:
             # Record initial stats
             table_summary.total_rows = len(df)
-            
-            # Basic data cleaning
-            df = self._clean_dataframe(df)
             
             # Validate data
             validation_result = self.validator.validate_data(df, data_type)
@@ -362,10 +390,10 @@ class FAERSProcessor:
             return df, table_summary
             
     def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Perform basic DataFrame cleaning."""
+        """Perform basic DataFrame cleaning with case-insensitive column handling."""
         try:
-            # Convert column names to lowercase
-            df.columns = df.columns.str.lower()
+            # Convert column names to lowercase and remove whitespace
+            df.columns = [col.strip().lower() for col in df.columns]
             
             # Remove leading/trailing whitespace from string columns
             for col in df.select_dtypes(include=['object']).columns:
@@ -549,12 +577,26 @@ class FAERSProcessor:
 
     def find_faers_files(self, input_dir: Path) -> List[Path]:
         """Exact match to R's list.files with pattern=".TXT"."""
-        faers_list = []
-        for file in input_dir.rglob('*.[tT][xX][tT]'):
-            # Match R's: faers_list[!grepl("STAT|SIZE",faers_list)]
-            if not re.search(r'STAT|SIZE', str(file), re.IGNORECASE):
-                faers_list.append(file)
-        return faers_list
+        if not input_dir.exists():
+            self.logger.error(f"Input directory does not exist: {input_dir}")
+            return []
+
+        # Find ASCII directory first
+        ascii_dir = self._find_ascii_directory(input_dir)
+        if not ascii_dir:
+            self.logger.error(f"No ASCII directory found in {input_dir}")
+            return []
+
+        # Find all .txt files case-insensitively
+        files = []
+        for file in ascii_dir.rglob('*'):
+            if file.is_file() and file.suffix.lower() == '.txt':
+                files.append(file)
+
+        if not files:
+            self.logger.warning(f"No .txt files found in {ascii_dir}")
+            
+        return sorted(files)
 
     def get_project_paths(self) -> Dict[str, Path]:
         """Get standardized project paths matching exact project structure."""
