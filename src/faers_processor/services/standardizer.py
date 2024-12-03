@@ -728,7 +728,7 @@ class DataStandardizer:
             }
             
             # Convert to uppercase and map
-            df['sex'] = df['sex'].str.upper().map(sex_map)
+            df['sex'] = df['sex'].fillna('').astype(str).str.upper().map(sex_map)
             
             # Convert unknown values to Unknown
             df.loc[df['sex'].isna(), 'sex'] = 'Unknown'
@@ -736,7 +736,7 @@ class DataStandardizer:
             # Ensure empty string is in categories and convert to categorical
             if '' not in categories:
                 categories = list(categories) + ['']
-            df['sex'] = pd.Categorical(df['sex'], categories=categories)
+            df['sex'] = pd.Categorical(df['sex'].values, categories=categories)
             
             # Log distribution
             sex_dist = df['sex'].value_counts(dropna=False)
@@ -859,7 +859,7 @@ class DataStandardizer:
             
             # Convert to categorical with all categories (including empty string)
             df['age_group'] = df['age_group'].astype(str).replace('nan', '')
-            df['age_group'] = pd.Categorical(df['age_group'], categories=categories)
+            df['age_group'] = pd.Categorical(df['age_group'].values, categories=categories)
             
             # Log distribution
             age_dist = df['age_group'].value_counts(dropna=False)
@@ -1737,7 +1737,7 @@ class DataStandardizer:
             sex_categories = ['Male', 'Female', 'Unknown', 'Not Specified', '']
             age_group_categories = [
                 'Prenatal',
-                'Infant (0-2)',
+                'Infant (0-2)', 
                 'Child (2-12)',
                 'Adolescent (12-18)',
                 'Young Adult (18-35)',
@@ -1747,9 +1747,10 @@ class DataStandardizer:
                 ''
             ]
             
-            # Initialize categorical columns with empty string category
+            # Initialize categorical columns with empty strings first
             if 'sex' in df.columns:
-                df['sex'] = pd.Categorical(df['sex'], categories=sex_categories)
+                df['sex'] = df['sex'].fillna('').astype(str)
+                df['sex'] = pd.Categorical(df['sex'].values, categories=sex_categories)
             
             # Standardize dates
             df = self.standardize_dates(df)
@@ -1760,7 +1761,8 @@ class DataStandardizer:
             # Standardize age values and create age groups
             df = self.standardize_age(df)
             if 'age_group' not in df.columns:
-                df['age_group'] = pd.Categorical('', categories=age_group_categories)
+                df['age_group'] = pd.Series([''] * len(df), dtype='str')
+            df['age_group'] = pd.Categorical(df['age_group'].values, categories=age_group_categories)
             df = self.standardize_age_groups(df, age_group_categories)
             
             # Standardize weight values
