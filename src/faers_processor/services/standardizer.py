@@ -578,7 +578,7 @@ class DataStandardizer:
             
             # Try manual fixes
             manual_fixes = pd.read_csv(
-                self.external_dir / 'Manual_fix/pt_fixed.csv',
+                self.external_dir / 'manual_fixes/pt_fixed.csv',  # Updated path
                 sep=';', 
                 low_memory=False
             )
@@ -610,7 +610,7 @@ class DataStandardizer:
                 })
                 manual_fixes = pd.concat([manual_fixes, new_manual_fixes]).drop_duplicates()
                 manual_fixes.to_csv(
-                    self.external_dir / 'Manual_fix/pt_fixed.csv',
+                    self.external_dir / 'manual_fixes/pt_fixed.csv',  # Updated path
                     sep=';',
                     index=False
                 )
@@ -627,7 +627,7 @@ class DataStandardizer:
             logging.info(f"Final standardized PT percentage: {final_std_pct}%")
             
             # Replace original with standardized
-            df[pt_variable] = df['standard_pt']
+            df[pt_variable] = df['standard_pt'].astype(str).replace('nan', '')  # Handle categorical
             df = df.drop('standard_pt', axis=1)
             
             return df
@@ -901,7 +901,7 @@ class DataStandardizer:
         df = df.copy()
         
         # Load country mappings
-        countries_df = pd.read_csv(self.external_dir / 'Manual_fix/countries.csv', sep=';', low_memory=False)
+        countries_df = pd.read_csv(self.external_dir / 'manual_fixes/countries.csv', sep=';', low_memory=False)
         
         # Handle special case for Namibia (NA)
         countries_df.loc[countries_df['country'].isna(), 'country'] = 'NA'
@@ -1019,7 +1019,7 @@ class DataStandardizer:
         df = df.copy()
         
         # Load route mappings (case-sensitive as in R script)
-        route_map = pd.read_csv(self.external_dir / 'Manual_fix/routes.csv', 
+        route_map = pd.read_csv(self.external_dir / 'manual_fixes/routes.csv', 
                               sep=';', low_memory=False)
         
         # Create route mapping dictionary preserving original case
@@ -1070,7 +1070,7 @@ class DataStandardizer:
         
         # Load dose form standardization mapping
         dose_form_st = pd.read_csv(
-            self.external_dir / 'Manual_fix/dose_form_st.csv',
+            self.external_dir / 'manual_fixes/dose_form_st.csv',
             sep=';',
             usecols=['dose_form', 'dose_form_st'],
             low_memory=False
@@ -1108,7 +1108,7 @@ class DataStandardizer:
         
         # Load unit standardization mapping
         unit_st = pd.read_csv(
-            self.external_dir / 'Manual_fix/unit_st.csv',
+            self.external_dir / 'manual_fixes/unit_st.csv',
             sep=';',
             usecols=['unit', 'unit_st', 'conversion_factor'],
             low_memory=False
