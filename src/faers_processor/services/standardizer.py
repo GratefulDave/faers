@@ -2031,21 +2031,36 @@ class DataStandardizer:
     def standardize_demographics(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
         """Standardize demographics data."""
         try:
-            # Convert column names to lowercase for consistent processing
-            df.columns = df.columns.str.lower()
+            # Define required columns and their possible names (case-insensitive)
+            required_columns = {
+                'i_f_code': ['i_f_code', 'i_f_cod'],
+                'sex': ['sex', 'gndr_cod'],
+                'age': ['age'],
+                'age_cod': ['age_cod'],
+                'event_dt': ['event_dt'],
+                'fda_dt': ['fda_dt'],
+                'rept_dt': ['rept_dt'],
+                'country': ['country', 'reporter_country'],
+                'occp_cod': ['occp_cod']
+            }
             
-            # Check for required columns using both legacy and new names
-            if 'i_f_cod' in df.columns:
-                df = df.rename(columns={'i_f_cod': 'i_f_code'})
-            elif 'i_f_code' not in df.columns:
-                self.logger.warning(f"({quarter_name}) {file_name}: i_f_code column not found - initialized with default value: I")
-                df['i_f_code'] = 'I'
-            
-            if 'gndr_cod' in df.columns:
-                df = df.rename(columns={'gndr_cod': 'sex'})
-            elif 'sex' not in df.columns:
-                self.logger.warning(f"({quarter_name}) {file_name}: sex column not found - initialized with empty values")
-                df['sex'] = pd.NA
+            # Check each required column
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if any(col.lower() == name.lower() for col in df.columns):
+                        # Get the actual column name with original case
+                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with default value")
+                    df[std_name] = pd.NA
+                    if std_name == 'i_f_code':
+                        df[std_name] = 'I'
             
             # Standardize dates
             date_columns = ['fda_dt', 'rept_dt', 'event_dt']
@@ -2065,149 +2080,50 @@ class DataStandardizer:
             self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_demographics: {str(e)}")
             return df
 
-    def standardize_drug_info(self, df: pd.DataFrame, max_date: int = None) -> pd.DataFrame:
-        """Standardize drug information exactly matching R implementation.
-        
-        Standardizes:
-        - Route of administration using route_st.csv
-        - Dechallenge/rechallenge (Y/N/D only)
-        - Dose form using dose_form_st.csv
-        - Dose frequency using dose_freq_st.csv
-        - Route-form combinations using route_form_st.csv
-        - Expiration date validation
-        
-        Args:
-            df: Drug information DataFrame
-            max_date: Maximum valid date for exp_dt validation
-        
-        Returns:
-            DataFrame with standardized drug information
-        """
+    def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize drug information."""
         try:
-            df = df.copy()
+            # Define required columns and their possible names (case-insensitive)
+            required_columns = {
+                'drugname': ['drugname', 'drug_name'],
+                'drug_seq': ['drug_seq'],
+                'role_cod': ['role_cod'],
+                'route': ['route'],
+                'dose_amt': ['dose_amt', 'dose_vbm'],
+                'dose_unit': ['dose_unit'],
+                'prod_ai': ['prod_ai'],
+                'val_vbm': ['val_vbm']
+            }
             
-            # 1. Standardize route of administration
+            # Check each required column
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if any(col.lower() == name.lower() for col in df.columns):
+                        # Get the actual column name with original case
+                        actual_name = next(col for col in df.columns if col.lower() == name.lower())
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            # Standardize route
             if 'route' in df.columns:
-                df['route'] = df['route'].str.lower().str.strip()
-                
-                # Load route standardization mapping
-                route_st = pd.read_csv(
-                    os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                        'external_data', 'manual_fixes', 'route_st.csv'
-                    ),
-                    sep=';'
-                )
-                route_st = route_st[['route', 'route_st']].drop_duplicates()
-                
-                # Map routes
-                df = pd.merge(df, route_st, on='route', how='left')
-                
-                # Log unmapped routes
-                unmapped = df[df['route_st'].isna()]['route'].unique()
-                if len(unmapped) > 0:
-                    logging.warning(f"Unmapped routes found: {'; '.join(unmapped)}")
-            
-            # 2. Standardize dechallenge/rechallenge
-            valid_responses = ['Y', 'N', 'D']
-            if 'dechal' in df.columns:
-                df.loc[~df['dechal'].isin(valid_responses), 'dechal'] = pd.NA
-                
-            if 'rechal' in df.columns:
-                df.loc[~df['rechal'].isin(valid_responses), 'rechal'] = pd.NA
-            
-            # 3. Standardize dose form
-            if 'dose_form' in df.columns:
-                df['dose_form'] = df['dose_form'].str.lower().str.strip()
-                
-                # Load dose form standardization
-                dose_form_st = pd.read_csv(
-                    os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                        'external_data', 'manual_fixes', 'dose_form_st.csv'
-                    ),
-                    sep=';'
-                )
-                dose_form_st = dose_form_st[['dose_form', 'dose_form_st']].drop_duplicates()
-                
-                # Map dose forms
-                df = pd.merge(df, dose_form_st, on='dose_form', how='left')
-                
-                # Log unmapped dose forms
-                unmapped = df[df['dose_form_st'].isna()]['dose_form'].unique()
-                if len(unmapped) > 0:
-                    logging.warning(f"Unmapped dose forms found: {'; '.join(unmapped)}")
-            
-            # 4. Standardize dose frequency
-            if 'dose_freq' in df.columns:
-                # Load dose frequency standardization
-                dose_freq_st = pd.read_csv(
-                    os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                        'external_data', 'manual_fixes', 'dose_freq_st.csv'
-                    ),
-                    sep=';'
-                )
-                dose_freq_st = dose_freq_st[['dose_freq', 'dose_freq_st']].dropna().drop_duplicates()
-                
-                # Map frequencies
-                df = pd.merge(df, dose_freq_st, on='dose_freq', how='left')
-                
-                # Log unmapped frequencies
-                unmapped = df[df['dose_freq_st'].isna()]['dose_freq'].unique()
-                if len(unmapped) > 0:
-                    logging.warning(f"Unmapped dose frequencies found: {'; '.join(unmapped)}")
-            
-            # 5. Handle route-form combinations
-            if 'dose_form_st' in df.columns:
-                # Load route-form standardization
-                route_form_st = pd.read_csv(
-                    os.path.join(
-                        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                        'external_data', 'manual_fixes', 'route_form_st.csv'
-                    ),
-                    sep=';'
-                )
-                route_form_st = route_form_st[['dose_form_st', 'route_plus']].drop_duplicates()
-                
-                # Map route-form combinations
-                df = pd.merge(df, route_form_st, on='dose_form_st', how='left')
-                
-                # Update route_st with route_plus where appropriate
-                mask = (df['route_st'].isna() | (df['route_st'] == 'unknown'))
-                df.loc[mask, 'route_st'] = df.loc[mask, 'route_plus']
-            
-            # 6. Clean up temporary columns
-            drop_cols = ['route', 'dose_form', 'dose_freq', 'route_plus']
-            df = df.drop(columns=[col for col in drop_cols if col in df.columns])
-            
-            # 7. Validate expiration date
-            if 'exp_dt' in df.columns:
-                def check_date(dt_series):
-                    n = dt_series.astype(str).str.len()
-                    invalid_dates = (
-                        ((n == 4) & ((dt_series < 1985) | (dt_series > int(str(max_date)[:4])))) |
-                        ((n == 6) & ((dt_series < 198500) | (dt_series > int(str(max_date)[:6])))) |
-                        ((n == 8) & ((dt_series < 19850000) | (dt_series > max_date))) |
-                        (~n.isin([4, 6, 8]))
-                    )
-                    return dt_series.where(~invalid_dates)
-                
-                df['exp_dt'] = check_date(pd.to_numeric(df['exp_dt'], errors='coerce'))
-            
-            # 8. Keep required columns in correct order
-            keep_cols = [
-                'primaryid', 'drug_seq', 'val_vbm', 'route_st', 'dose_vbm',
-                'cum_dose_unit', 'cum_dose_chr', 'dose_amt', 'dose_unit',
-                'dose_form_st', 'dose_freq_st', 'dechal', 'rechal',
-                'lot_num', 'nda_num', 'exp_dt'
-            ]
-            df = df[[col for col in keep_cols if col in df.columns]]
+                df['route'] = df['route'].str.upper()
+                valid_routes = {'ORAL', 'INTRAVENOUS', 'SUBCUTANEOUS', 'INTRAMUSCULAR', 'TOPICAL'}
+                invalid_routes = set(df['route'].dropna().str.upper().unique()) - valid_routes
+                if invalid_routes:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Converted invalid routes to NA: {invalid_routes}")
+                    df.loc[df['route'].str.upper().isin(invalid_routes), 'route'] = pd.NA
             
             return df
             
         except Exception as e:
-            logging.error(f"Error standardizing drug information: {str(e)}")
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_drug_info: {str(e)}")
             return df
 
     def process_quarters(self, quarters_dir: Path, parallel: bool = False, n_workers: Optional[int] = None) -> str:
@@ -2521,6 +2437,60 @@ class DataStandardizer:
         
         except Exception as e:
             logging.error(f"Error removing duplicate primaryids: {str(e)}")
+            return df
+
+    def _has_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> bool:
+        """Check if DataFrame has a column, case-insensitive."""
+        return any(col.lower() == column_name.lower() for col in df.columns)
+
+    def _get_column_case_insensitive(self, df: pd.DataFrame, column_name: str) -> str:
+        """Get the actual column name that matches the given name case-insensitive."""
+        for col in df.columns:
+            if col.lower() == column_name.lower():
+                return col
+        return column_name
+
+    def standardize_drug_info(self, df: pd.DataFrame, quarter_name: str, file_name: str) -> pd.DataFrame:
+        """Standardize drug information."""
+        try:
+            # Check for required columns case-insensitively
+            required_columns = {
+                'drugname': ['drugname', 'drug_name'],
+                'prod_ai': ['prod_ai'],
+                'route': ['route'],
+                'dose_amt': ['dose_amt', 'dose_vbm'],
+                'dose_unit': ['dose_unit'],
+                'role_cod': ['role_cod']
+            }
+            
+            # For each required column, check all its possible names case-insensitively
+            for std_name, possible_names in required_columns.items():
+                found = False
+                for name in possible_names:
+                    if self._has_column_case_insensitive(df, name):
+                        actual_name = self._get_column_case_insensitive(df, name)
+                        if actual_name != std_name:
+                            df = df.rename(columns={actual_name: std_name})
+                        found = True
+                        break
+                
+                if not found:
+                    self.logger.warning(f"({quarter_name}) {file_name}: {std_name} column not found - initialized with empty values")
+                    df[std_name] = pd.NA
+            
+            # Standardize route
+            if 'route' in df.columns:
+                df['route'] = df['route'].str.upper()
+                valid_routes = {'ORAL', 'INTRAVENOUS', 'SUBCUTANEOUS', 'INTRAMUSCULAR', 'TOPICAL'}
+                invalid_routes = set(df['route'].dropna().str.upper().unique()) - valid_routes
+                if invalid_routes:
+                    self.logger.warning(f"({quarter_name}) {file_name}: Converted invalid routes to NA: {invalid_routes}")
+                    df.loc[df['route'].str.upper().isin(invalid_routes), 'route'] = pd.NA
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"({quarter_name}) {file_name}: Error in standardize_drug_info: {str(e)}")
             return df
 
 def read_and_clean_file(file_path: Path) -> Tuple[List[str], str]:
