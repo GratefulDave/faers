@@ -1201,6 +1201,111 @@ class FAERSProcessor:
             self.logger.error(f"Error processing OUTC dataset: {str(e)}")
             raise
 
+    def process_reac_dataset(self) -> None:
+        """Process REAC dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Process REAC files
+        2. Remove rows with no reaction specified (NA pt)
+        3. Save to RDS/pickle format
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing REAC dataset")
+        
+        # Find REAC files (str_detect(faers_list, regex("reac", ignore_case = T)))
+        reac_files = []
+        for quarter_dir in paths["raw"].iterdir():
+            if quarter_dir.is_dir():
+                ascii_dir = quarter_dir / "ascii"
+                if ascii_dir.exists():
+                    for file in ascii_dir.glob("*.[tT][xX][tT]"):
+                        if re.search(r'reac', file.name, re.IGNORECASE):
+                            reac_files.append(file)
+        
+        if not reac_files:
+            raise ValueError("No REAC files found in the ascii directories")
+            
+        try:
+            # Process REAC dataset with exact R parameters
+            reac_df = self.unify_data(
+                files_list=reac_files,
+                namekey={
+                    "ISR": "primaryid",
+                    "PT": "pt"
+                },
+                column_subset=[
+                    "primaryid",
+                    "pt",
+                    "drug_rec_act"
+                ],
+                duplicated_cols_x=None,  # NA in R
+                duplicated_cols_y=None   # NA in R
+            )
+            
+            # Remove rows with NA pt (REAC <- REAC[!is.na(pt)])
+            reac_df = reac_df.dropna(subset=['pt'])
+            
+            # Save processed REAC dataset
+            output_path = paths["clean"] / "REAC.rds"
+            reac_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed REAC dataset to {output_path}")
+            self.logger.info(f"REAC shape: {reac_df.shape}")
+            self.logger.info(f"REAC columns: {', '.join(reac_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing REAC dataset: {str(e)}")
+            raise
+
+    def process_rpsr_dataset(self) -> None:
+        """Process RPSR dataset exactly as in the R implementation.
+        
+        Specific steps:
+        1. Process RPSR files
+        2. Save to RDS/pickle format without any filtering
+        """
+        paths = self.get_project_paths()
+        self.logger.info("Processing RPSR dataset")
+        
+        # Find RPSR files (str_detect(faers_list, regex("rpsr", ignore_case = T)))
+        rpsr_files = []
+        for quarter_dir in paths["raw"].iterdir():
+            if quarter_dir.is_dir():
+                ascii_dir = quarter_dir / "ascii"
+                if ascii_dir.exists():
+                    for file in ascii_dir.glob("*.[tT][xX][tT]"):
+                        if re.search(r'rpsr', file.name, re.IGNORECASE):
+                            rpsr_files.append(file)
+        
+        if not rpsr_files:
+            raise ValueError("No RPSR files found in the ascii directories")
+            
+        try:
+            # Process RPSR dataset with exact R parameters
+            rpsr_df = self.unify_data(
+                files_list=rpsr_files,
+                namekey={
+                    "ISR": "primaryid",
+                    "RPSR_COD": "rpsr_cod"
+                },
+                column_subset=[
+                    "primaryid",
+                    "rpsr_cod"
+                ],
+                duplicated_cols_x=None,  # NA in R
+                duplicated_cols_y=None   # NA in R
+            )
+            
+            # Save processed RPSR dataset (no filtering needed)
+            output_path = paths["clean"] / "RPSR.rds"
+            rpsr_df.to_pickle(output_path)
+            self.logger.info(f"Saved processed RPSR dataset to {output_path}")
+            self.logger.info(f"RPSR shape: {rpsr_df.shape}")
+            self.logger.info(f"RPSR columns: {', '.join(rpsr_df.columns)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error processing RPSR dataset: {str(e)}")
+            raise
+
     def correct_problematic_file(self, file_path: Path, old_line: str) -> None:
         """Exact match to R's correct_problematic_file function.
         
@@ -1291,8 +1396,16 @@ class FAERSProcessor:
             
         # Save faers_list
         faers_df = pd.DataFrame({'x': [str(f) for f in faers_list]})
-        self.save_faers_list(faers_list)
         
+        # Create clean directory if it doesn't exist
+        paths = self.get_project_paths()
+        paths["clean"].mkdir(parents=True, exist_ok=True)
+        
+        # Save using semicolon separator like R's write.csv2
+        output_path = paths["clean"] / "faers_list.csv"
+        faers_df.to_csv(output_path, sep=';', index=False)
+        self.logger.info(f"Saved faers_list to {output_path}")
+
         # Correct known problematic files
         problem_files = {
             "Raw_FAERS_QD//aers_ascii_2011q2/ascii/DRUG11Q2.txt": "\\$\\$\\$\\$\\$\\$7475791",
