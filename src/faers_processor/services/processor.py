@@ -810,7 +810,7 @@ class FAERSProcessor:
         result_df = None
         
         for i, f in enumerate(files_list):
-            # Match R's gsub(".TXT", ".rds", f, ignore.case = TRUE)
+            # Match R's gsub(".TXT",".rds",f, ignore.case = TRUE)
             name = re.sub(r'\.TXT$', '.rds', f, flags=re.IGNORECASE)
             self.logger.info(f"Processing {name}")
             
@@ -1053,10 +1053,13 @@ class FAERSProcessor:
             # 5. Remove incomplete reports
             demo_df = self.remove_incomplete_reports(demo_df, drug_df, reac_df)
             
-            # 6. Convert specified columns to categorical
+            # 6. Identify pre-marketing and literature cases
+            demo_df = self.identify_premarketing_cases(demo_df, drug_df)
+            
+            # 7. Convert specified columns to categorical
             demo_df = self.finalize_demo_dataset(demo_df)
             
-            # 7. Save final result
+            # 8. Save final result
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / 'DEMO.rds'
             demo_df.to_pickle(output_path)
@@ -1635,4 +1638,63 @@ class FAERSProcessor:
             
         except Exception as e:
             self.logger.error(f"Error removing incomplete reports: {str(e)}")
+            return demo_df
+
+    def identify_premarketing_cases(self, demo_df: pd.DataFrame, drug_df: pd.DataFrame) -> pd.DataFrame:
+        """Identify pre-marketing and literature cases.
+        
+        Matches R implementation:
+        Demo[,premarketing:=primaryid%in%Drug[trial==TRUE]$primaryid]
+        Demo[,literature:=!is.na(lit_ref)]
+        
+        Args:
+            demo_df: Demographics DataFrame
+            drug_df: Drug DataFrame with trial information
+            
+        Returns:
+            Demographics DataFrame with premarketing and literature flags
+        """
+        try:
+            # 1. Identify pre-marketing cases from trial drugs
+            trial_primaryids = set(drug_df[drug_df['trial'] == True]['primaryid'])
+            demo_df['premarketing'] = demo_df['primaryid'].isin(trial_primaryids)
+            
+            # 2. Identify literature cases
+            demo_df['literature'] = demo_df['lit_ref'].notna()
+            
+            # Log statistics
+            total_cases = len(demo_df)
+            premarketing_cases = demo_df['premarketing'].sum()
+            literature_cases = demo_df['literature'].sum()
+            
+            self.logger.info(f"Case identification statistics:")
+            self.logger.info(f"  Total cases: {total_cases}")
+            self.logger.info(f"  Pre-marketing cases: {premarketing_cases} ({100*premarketing_cases/total_cases:.1f}%)")
+            self.logger.info(f"  Literature cases: {literature_cases} ({100*literature_cases/total_cases:.1f}%)")
+            
+            # Log some examples of pre-marketing cases
+            if premarketing_cases > 0:
+                sample_premarketing = demo_df[demo_df['premarketing']].head(3)
+                self.logger.debug("Sample of pre-marketing cases:")
+                for _, case in sample_premarketing.iterrows():
+                    self.logger.debug(
+                        f"Primaryid: {case['primaryid']}, "
+                        f"Quarter: {case.get('quarter', 'N/A')}"
+                    )
+            
+            # Log some examples of literature cases
+            if literature_cases > 0:
+                sample_literature = demo_df[demo_df['literature']].head(3)
+                self.logger.debug("Sample of literature cases:")
+                for _, case in sample_literature.iterrows():
+                    self.logger.debug(
+                        f"Primaryid: {case['primaryid']}, "
+                        f"Quarter: {case.get('quarter', 'N/A')}, "
+                        f"Lit_ref: {case['lit_ref']}"
+                    )
+            
+            return demo_df
+            
+        except Exception as e:
+            self.logger.error(f"Error identifying pre-marketing cases: {str(e)}")
             return demo_df
